@@ -11,23 +11,23 @@
 #include <TargetConditionals.h>
 
 /// macOS
-#ifndef RT64_MACOS
-#    define RT64_MACOS                (TARGET_OS_OSX || TARGET_OS_MACCATALYST)
+#ifndef PLUME_MACOS
+#    define PLUME_MACOS                (TARGET_OS_OSX || TARGET_OS_MACCATALYST)
 #endif
 
 /// iOS
-#ifndef RT64_IOS
-#    define RT64_IOS                    (TARGET_OS_IOS && !TARGET_OS_MACCATALYST)
+#ifndef PLUME_IOS
+#    define PLUME_IOS                    (TARGET_OS_IOS && !TARGET_OS_MACCATALYST)
 #endif
 
 /// Apple Silicon (iOS, tvOS, macOS)
-#ifndef RT64_APPLE_SILICON
-#    define RT64_APPLE_SILICON        TARGET_CPU_ARM64
+#ifndef PLUME_APPLE_SILICON
+#    define PLUME_APPLE_SILICON        TARGET_CPU_ARM64
 #endif
 
 /// Apple Silicon on macOS
-#ifndef RT64_MACOS_APPLE_SILICON
-#    define RT64_MACOS_APPLE_SILICON    (RT64_MACOS && RT64_APPLE_SILICON)
+#ifndef PLUME_MACOS_APPLE_SILICON
+#    define PLUME_MACOS_APPLE_SILICON    (PLUME_MACOS && PLUME_APPLE_SILICON)
 #endif
 
 namespace plume {
@@ -358,6 +358,7 @@ namespace plume {
         void setViewports(const RenderViewport *viewports, uint32_t count) override;
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+        void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepth(bool clearDepth, float depthValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
@@ -368,6 +369,9 @@ namespace plume {
         void resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) override;
         void buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) override;
         void buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) override;
+        void discardTexture(const RenderTexture* texture) override;
+        void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
+        void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
 
         void endOtherEncoders(EncoderType type);
         void checkActiveComputeEncoder();
@@ -423,6 +427,7 @@ namespace plume {
         void unmap(uint32_t subresource, const RenderRange *writtenRange) override;
         std::unique_ptr<RenderBufferFormattedView> createBufferFormattedView(RenderFormat format) override;
         void setName(const std::string &name) override;
+        uint64_t getDeviceAddress() const override;
     };
 
     struct MetalBufferFormattedView : RenderBufferFormattedView {
@@ -435,6 +440,7 @@ namespace plume {
 
     struct MetalDrawable : ExtendedRenderTexture {
         CA::MetalDrawable *mtl = nullptr;
+
 
         MetalDrawable() = default;
         MetalDrawable(MetalDevice *device, MetalPool *pool, const RenderTextureDesc &desc);
@@ -524,15 +530,19 @@ namespace plume {
 
     struct MetalComputePipeline : MetalPipeline {
         MetalComputeState state;
+        
         MetalComputePipeline(const MetalDevice *device, const RenderComputePipelineDesc &desc);
         ~MetalComputePipeline() override;
+        void setName(const std::string& name) const override;
         RenderPipelineProgram getProgram(const std::string &name) const override;
     };
 
     struct MetalGraphicsPipeline : MetalPipeline {
         MetalRenderState state;
+        
         MetalGraphicsPipeline(const MetalDevice *device, const RenderGraphicsPipelineDesc &desc);
         ~MetalGraphicsPipeline() override;
+        void setName(const std::string& name) const override;
         RenderPipelineProgram getProgram(const std::string &name) const override;
     };
 
@@ -569,6 +579,7 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;
@@ -602,6 +613,7 @@ namespace plume {
         ~MetalInterface() override;
         std::unique_ptr<RenderDevice> createDevice(const std::string &preferredDeviceName) override;
         const RenderInterfaceCapabilities &getCapabilities() const override;
+        const std::vector<std::string> &getDeviceNames() const override;
         bool isValid() const;
 
         // Shader libraries and pipeline states used for emulated operations

@@ -1031,6 +1031,11 @@ namespace plume {
         mtl->setLabel(label);
     }
 
+    uint64_t MetalBuffer::getDeviceAddress() const {
+        // TODO: New - check if this needs an OS check
+        return mtl->gpuAddress();
+    }
+
     // MetalBufferFormattedView
 
     MetalBufferFormattedView::MetalBufferFormattedView(MetalBuffer *buffer, RenderFormat format) {
@@ -1276,6 +1281,10 @@ namespace plume {
         if (state.pipelineState) state.pipelineState->release();
     }
 
+    void MetalComputePipeline::setName(const std::string& name) const {
+        // TODO: New - setting name happens at descriptor level - this would have to be reworked
+    }
+
     RenderPipelineProgram MetalComputePipeline::getProgram(const std::string &name) const {
         assert(false && "Compute pipelines can't retrieve shader programs.");
         return RenderPipelineProgram();
@@ -1378,6 +1387,10 @@ namespace plume {
     MetalGraphicsPipeline::~MetalGraphicsPipeline() {
         if (state.renderPipelineState) state.renderPipelineState->release();
         if (state.depthStencilState) state.depthStencilState->release();
+    }
+
+    void MetalGraphicsPipeline::setName(const std::string& name) const {
+        // TODO: New - setting name happens at descriptor level - this would have to be reworked
     }
 
     RenderPipelineProgram MetalGraphicsPipeline::getProgram(const std::string &name) const {
@@ -2025,7 +2038,7 @@ namespace plume {
     }
 
     // TODO: NEW - Incorporate offset and size (new)
-    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) {
+    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
         assert(activeGraphicsPipelineLayout != nullptr);
         assert(rangeIndex < activeGraphicsPipelineLayout->pushConstantRanges.size());
 
@@ -2150,6 +2163,10 @@ namespace plume {
         } else {
             targetFramebuffer = nullptr;
         }
+    }
+
+    void MetalCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
+        // TODO: New - implement this in Metal
     }
 
     void MetalCommandList::setCommonClearState() const {
@@ -2534,6 +2551,21 @@ namespace plume {
 
     void MetalCommandList::buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) {
         // TODO: Unimplemented.
+    }
+
+    void MetalCommandList::discardTexture(const RenderTexture* texture) {
+        // TODO: New - check if this is required in Metal
+        // Not required in Metal.
+    }
+
+    void MetalCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
+        assert(queryPool != nullptr);
+        // TODO: New - check if this is required in Metal
+    }
+
+    void MetalCommandList::writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        // TODO: New - check if this is required in Metal
     }
 
     void MetalCommandList::endOtherEncoders(EncoderType type) {
@@ -2933,7 +2965,7 @@ namespace plume {
         // capabilities.raytracing = [this->renderInterface->device supportsFamily:MTLGPUFamilyApple9];
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
-#if RT64_IOS
+#if PLUME_IOS
         capabilities.descriptorIndexing = mtl->supportsFamily(MTL::GPUFamilyApple3);
 #else
         capabilities.descriptorIndexing = true;
@@ -3007,6 +3039,10 @@ namespace plume {
 
     std::unique_ptr<RenderFramebuffer> MetalDevice::createFramebuffer(const RenderFramebufferDesc &desc) {
         return std::make_unique<MetalFramebuffer>(this, desc);
+    }
+
+    std::unique_ptr<RenderQueryPool> MetalDevice::createQueryPool(uint32_t queryCount) {
+        return std::make_unique<MetalQueryPool>(this, queryCount);
     }
 
     void MetalDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
@@ -3101,6 +3137,11 @@ namespace plume {
 
     const RenderInterfaceCapabilities &MetalInterface::getCapabilities() const {
         return capabilities;
+    }
+
+    const std::vector<std::string> &MetalInterface::getDeviceNames() const {
+        // TODO: New - Implement this in Metal
+        return {};
     }
 
     bool MetalInterface::isValid() const {
