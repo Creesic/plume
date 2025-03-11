@@ -171,7 +171,7 @@ namespace plume {
         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         bool activeSamplePositions = false;
 
-        D3D12CommandList(D3D12Device *device, RenderCommandListType type);
+        D3D12CommandList(D3D12CommandQueue *queue, RenderCommandListType type);
         ~D3D12CommandList() override;
         void begin() override;
         void end() override;

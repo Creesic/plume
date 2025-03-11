@@ -1485,10 +1485,10 @@ namespace plume {
 
     // D3D12CommandList
 
-    D3D12CommandList::D3D12CommandList(D3D12Device *device, RenderCommandListType type) {
-        assert(device != nullptr);
+    D3D12CommandList::D3D12CommandList(D3D12CommandQueue *queue, RenderCommandListType type) {
+        assert(queue->device != nullptr);
 
-        this->device = device;
+        this->device = queue->device;
         this->type = type;
 
         D3D12_COMMAND_LIST_TYPE commandListType;
@@ -2280,6 +2280,10 @@ namespace plume {
         }
     }
 
+    std::unique_ptr<RenderCommandList> D3D12CommandQueue::createCommandList(RenderCommandListType type) {
+        return std::make_unique<D3D12CommandList>(this, type);
+    }
+
     std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {
         return std::make_unique<D3D12SwapChain>(this, renderWindow, bufferCount, format, maxFrameLatency);
     }
@@ -2743,6 +2747,8 @@ namespace plume {
 
     D3D12ComputePipeline::D3D12ComputePipeline(D3D12Device *device, const RenderComputePipelineDesc &desc) : D3D12Pipeline(device, Type::Compute) {
         assert(desc.pipelineLayout != nullptr);
+        assert(desc.computeShader != nullptr);
+        assert((desc.threadGroupSizeX > 0) && (desc.threadGroupSizeY > 0) && (desc.threadGroupSizeZ > 0));
 
         const D3D12PipelineLayout *rootSignature = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
         const D3D12Shader *computeShader = static_cast<const D3D12Shader *>(desc.computeShader);
@@ -3520,6 +3526,7 @@ namespace plume {
         capabilities.descriptorIndexing = true;
         capabilities.scalarBlockLayout = true;
         capabilities.presentWait = true;
+        capabilities.maxTextureSize = 16384;
         capabilities.preferHDR = description.dedicatedVideoMemory > (512 * 1024 * 1024);
 
         // Create descriptor heaps allocator.
@@ -3542,10 +3549,6 @@ namespace plume {
         rtDummyGlobalPipelineLayout.reset();
         rtDummyLocalPipelineLayout.reset();
         release();
-    }
-
-    std::unique_ptr<RenderCommandList> D3D12Device::createCommandList(RenderCommandListType type) {
-        return std::make_unique<D3D12CommandList>(this, type);
     }
 
     std::unique_ptr<RenderDescriptorSet> D3D12Device::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
@@ -3816,6 +3819,14 @@ namespace plume {
 
     bool D3D12Device::isValid() const {
         return d3d != nullptr;
+    }
+
+    bool D3D12Device::beginCapture() {
+        return false;
+    }
+
+    bool D3D12Device::endCapture() {
+        return false;
     }
 
     // D3D12Interface
