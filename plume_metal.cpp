@@ -1972,7 +1972,8 @@ namespace plume {
         }
     }
 
-    void MetalCommandList::setComputePushConstants(const uint32_t rangeIndex, const void *data) {
+    // TODO: NEW - Incorporate offset and size (new)
+    void MetalCommandList::setComputePushConstants(uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
         assert(activeComputePipelineLayout != nullptr);
         assert(rangeIndex < activeComputePipelineLayout->pushConstantRanges.size());
 
@@ -2023,7 +2024,8 @@ namespace plume {
         }
     }
 
-    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data) {
+    // TODO: NEW - Incorporate offset and size (new)
+    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) {
         assert(activeGraphicsPipelineLayout != nullptr);
         assert(rangeIndex < activeGraphicsPipelineLayout->pushConstantRanges.size());
 
@@ -2055,7 +2057,7 @@ namespace plume {
         // TODO: Metal RT
     }
 
-    void MetalCommandList::setRaytracingPushConstants(uint32_t rangeIndex, const void *data) {
+    void MetalCommandList::setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
         // TODO: Metal RT
     }
 
@@ -2460,7 +2462,8 @@ namespace plume {
         pool->release();
     }
 
-    void MetalCommandList::resolveTextureRegion(const RenderTexture *dstTexture, const uint32_t dstX, const uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect) {
+    // TODO: NEW - Incorporate resolveMode
+    void MetalCommandList::resolveTextureRegion(const RenderTexture *dstTexture, const uint32_t dstX, const uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
@@ -2816,7 +2819,8 @@ namespace plume {
         return std::make_unique<MetalCommandList>(this, type);
     }
 
-    std::unique_ptr<RenderSwapChain> MetalCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format) {
+    // TODO: NEW - Incorporate maxFrameLatency (new)
+    std::unique_ptr<RenderSwapChain> MetalCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency) {
         return std::make_unique<MetalSwapChain>(this, renderWindow, textureCount, format);
     }
 
@@ -3089,7 +3093,8 @@ namespace plume {
         reusableBlitDescriptor->release();
     }
 
-    std::unique_ptr<RenderDevice> MetalInterface::createDevice() {
+    // TODO: NEW - Incorporate preferredDeviceName (new)
+    std::unique_ptr<RenderDevice> MetalInterface::createDevice(const std::string &preferredDeviceName) {
         std::unique_ptr<MetalDevice> createdDevice = std::make_unique<MetalDevice>(this);
         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
     }

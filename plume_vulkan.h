@@ -294,7 +294,7 @@ namespace plume {
         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
 
-        VulkanCommandList(VulkanDevice *device, RenderCommandListType type);
+        VulkanCommandList(VulkanCommandQueue *queue, RenderCommandListType type);
         ~VulkanCommandList() override;
         void begin() override;
         void end() override;

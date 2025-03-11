@@ -2598,11 +2598,11 @@ namespace plume {
 
     // VulkanCommandList
 
-    VulkanCommandList::VulkanCommandList(VulkanDevice *device, RenderCommandListType type) {
-        assert(device != nullptr);
+    VulkanCommandList::VulkanCommandList(VulkanCommandQueue *queue, RenderCommandListType type) {
+        assert(queue->device != nullptr);
         assert(type != RenderCommandListType::UNKNOWN);
 
-        this->device = device;
+        this->device = queue->device;
         this->type = type;
 
         VkCommandPoolCreateInfo poolInfo = {};
@@ -3908,6 +3908,7 @@ namespace plume {
         capabilities.scalarBlockLayout = scalarBlockLayout;
         capabilities.presentWait = presentWait;
         capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
         capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
         capabilities.triangleFan = true;
         capabilities.dynamicDepthBias = true;
@@ -4208,6 +4209,14 @@ namespace plume {
 
     bool VulkanDevice::isValid() const {
         return vk != nullptr;
+    }
+
+    bool VulkanDevice::beginCapture() {
+        return false;
+    }
+
+    bool VulkanDevice::endCapture() {
+        return false;
     }
 
     // VulkanInterface
