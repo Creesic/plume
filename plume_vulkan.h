@@ -20,6 +20,8 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #elif defined(__linux__)
 #define VK_USE_PLATFORM_XLIB_KHR
+#elif defined(__APPLE__)
+#define VK_USE_PLATFORM_METAL_EXT
 #endif
 
 #include <volk.h>
@@ -50,7 +52,6 @@ namespace plume {
         VmaAllocationInfo allocationInfo = {};
         RenderBufferDesc desc;
         RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
-
         VulkanBuffer() = default;
         VulkanBuffer(VulkanDevice *device, VulkanPool *pool, const RenderBufferDesc &desc);
         ~VulkanBuffer() override;
@@ -65,8 +66,7 @@ namespace plume {
         VkBufferView vk = VK_NULL_HANDLE;
         VulkanBuffer *buffer = nullptr;
 
-        VulkanBufferFormattedView(VulkanBuffer *buffer, RenderFormat format);
-        ~VulkanBufferFormattedView() override;
+        VulkanBufferFormattedView(VulkanBuffer *buffer, RenderFormat format);        ~VulkanBufferFormattedView() override;
     };
 
     struct VulkanTexture : RenderTexture {
@@ -363,6 +363,7 @@ namespace plume {
 
         VulkanCommandQueue(VulkanDevice *device, RenderCommandListType commandListType);
         ~VulkanCommandQueue() override;
+        std::unique_ptr<RenderCommandList> createCommandList(RenderCommandListType type) override;
         std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
@@ -433,6 +434,8 @@ namespace plume {
         void waitIdle() const override;
         void release();
         bool isValid() const;
+        bool beginCapture() override;
+        bool endCapture() override;
     };
 
     struct VulkanInterface : RenderInterface {

@@ -25,8 +25,10 @@
 #undef LockMask
 #undef ControlMask
 #undef Success
+#undef Always
+
 #elif defined(__APPLE__)
-typedef struct _NSWindow NSWindow;
+#include <SDL.h>
 #endif
 
 #ifdef SDL_VULKAN_ENABLED
@@ -52,9 +54,11 @@ namespace plume {
     };
 #elif defined(__APPLE__)
     struct RenderWindow {
-        NSWindow* window;
+        void* window;
+        void* view;
+
         bool operator==(const struct RenderWindow& rhs) const {
-            return window == rhs.window;
+            return window == rhs.window && view == rhs.view;
         }
         bool operator!=(const struct RenderWindow& rhs) const { return !(*this == rhs); }
     };
@@ -362,7 +366,8 @@ namespace plume {
     enum class RenderShaderFormat {
         UNKNOWN,
         DXIL,
-        SPIRV
+        SPIRV,
+        METAL
     };
 
     enum class RenderRaytracingPipelineLibrarySymbolType {
@@ -723,6 +728,14 @@ namespace plume {
         // Valid range is [-8, 7].
         int8_t x = 0;
         int8_t y = 0;
+
+        bool operator==(const RenderMultisamplingLocation& other) const {
+            return x == other.x && y == other.y;
+        }
+
+        bool operator!=(const RenderMultisamplingLocation& other) const {
+            return !(*this == other);
+        }
     };
 
     struct RenderMultisampling {
@@ -1173,12 +1186,18 @@ namespace plume {
         const RenderShader *computeShader = nullptr;
         const RenderSpecConstant *specConstants = nullptr;
         uint32_t specConstantsCount = 0;
+        uint32_t threadGroupSizeX = 0;
+        uint32_t threadGroupSizeY = 0;
+        uint32_t threadGroupSizeZ = 0;
 
         RenderComputePipelineDesc() = default;
 
-        RenderComputePipelineDesc(const RenderPipelineLayout *pipelineLayout, const RenderShader *computeShader) {
+        RenderComputePipelineDesc(const RenderPipelineLayout *pipelineLayout, const RenderShader *computeShader, uint32_t threadGroupSizeX, uint32_t threadGroupSizeY, uint32_t threadGroupSizeZ) {
             this->pipelineLayout = pipelineLayout;
             this->computeShader = computeShader;
+            this->threadGroupSizeX = threadGroupSizeX;
+            this->threadGroupSizeY = threadGroupSizeY;
+            this->threadGroupSizeZ = threadGroupSizeZ;
         }
     };
 
@@ -1797,6 +1816,9 @@ namespace plume {
         // Present.
         bool presentWait = false;
         bool displayTiming = false;
+
+        // Framebuffers.
+        uint64_t maxTextureSize = 0;
 
         // HDR.
         bool preferHDR = false;
