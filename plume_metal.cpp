@@ -1665,6 +1665,10 @@ namespace plume {
         return true;
     }
 
+    void MetalSwapChain::wait() {
+        // TODO: New - implement wait
+    }
+
     bool MetalSwapChain::resize() {
         getWindowSize(width, height);
 
@@ -1828,6 +1832,35 @@ namespace plume {
 
     uint32_t MetalFramebuffer::getHeight() const {
         return height;
+    }
+
+    // MetalQueryPool
+
+    MetalQueryPool::MetalQueryPool(MetalDevice *device, uint32_t queryCount) {
+        assert(device != nullptr);
+        assert(queryCount > 0);
+
+        this->device = device;
+        
+        // TODO: New - implement this in Metal if required
+    }
+
+    MetalQueryPool::~MetalQueryPool() {
+        // TODO: New - implement this in Metal if required
+    }
+
+    void MetalQueryPool::queryResults() {
+        // TODO: New - implement this in Metal if required
+    }
+
+    const uint64_t *MetalQueryPool::getResults() const {
+        // TODO: New - implement this in Metal if required
+        return nullptr;
+    }
+
+    uint32_t MetalQueryPool::getCount() const {
+        // TODO: New - implement this in Metal if required
+        return 0;
     }
 
     // MetalCommandList
@@ -2064,6 +2097,10 @@ namespace plume {
             dirtyGraphicsState.descriptorSets = 1;
             dirtyGraphicsState.descriptorSetDirtyIndex = std::min(dirtyGraphicsState.descriptorSetDirtyIndex, setIndex);
         }
+    }
+
+    void MetalCommandList::setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) {
+        assert(false && "Root descriptors are not supported in Metal.");
     }
 
     void MetalCommandList::setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) {
@@ -3074,6 +3111,10 @@ namespace plume {
         }
 
         return supportedSampleCounts;
+    }
+
+    void MetalDevice::waitIdle() const {
+        // TODO: New - Implement this in Metal
     }
 
     void MetalDevice::release() {

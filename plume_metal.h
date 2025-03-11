@@ -205,6 +205,7 @@ namespace plume {
         MetalSwapChain(MetalCommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format);
         ~MetalSwapChain() override;
         bool present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) override;
+        void wait() override;
         bool resize() override;
         bool needsResize() const override;
         void setVsyncEnabled(bool vsyncEnabled) override;
@@ -266,6 +267,16 @@ namespace plume {
             return !(*this == other);
         }
 
+    };
+
+    struct MetalQueryPool : RenderQueryPool {
+        MetalDevice *device = nullptr;
+
+        MetalQueryPool(MetalDevice *device, uint32_t queryCount);
+        virtual ~MetalQueryPool() override;
+        virtual void queryResults() override;
+        virtual const uint64_t *getResults() const override;
+        virtual uint32_t getCount() const override;
     };
 
     struct MetalCommandList : RenderCommandList {
@@ -350,6 +361,7 @@ namespace plume {
         void setGraphicsPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
         void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
+        void setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) override;
         void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
         void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setRaytracingDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
@@ -586,6 +598,7 @@ namespace plume {
         const RenderDeviceCapabilities &getCapabilities() const override;
         const RenderDeviceDescription &getDescription() const override;
         RenderSampleCounts getSampleCountsSupported(RenderFormat format) const override;
+        void waitIdle() const override;
         void release();
         bool isValid() const;
         bool beginCapture() override;
