@@ -30,7 +30,7 @@
 #    define RT64_MACOS_APPLE_SILICON    (RT64_MACOS && RT64_APPLE_SILICON)
 #endif
 
-namespace RT64 {
+namespace plume {
     static constexpr size_t MAX_CLEAR_RECTS = 16;
     static constexpr uint32_t MAX_BINDING_NUMBER = 64;
     static constexpr size_t DESCRIPTOR_SET_MAX_INDEX = 8;
@@ -345,13 +345,13 @@ namespace RT64 {
         void drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) override;
         void setPipeline(const RenderPipeline *pipeline) override;
         void setComputePipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
-        void setComputePushConstants(uint32_t rangeIndex, const void *data) override;
+        void setComputePushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setComputeDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
         void setGraphicsPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
-        void setGraphicsPushConstants(uint32_t rangeIndex, const void *data) override;
+        void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
         void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
-        void setRaytracingPushConstants(uint32_t rangeIndex, const void *data) override;
+        void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
         void setRaytracingDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
         void setIndexBuffer(const RenderIndexBufferView *view) override;
         void setVertexBuffers(uint32_t startSlot, const RenderVertexBufferView *views, uint32_t viewCount, const RenderInputSlot *inputSlots) override;
@@ -365,7 +365,7 @@ namespace RT64 {
         void copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) override;
         void copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) override;
         void resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) override;
-        void resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect) override;
+        void resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) override;
         void buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) override;
         void buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) override;
 
@@ -405,7 +405,7 @@ namespace RT64 {
         MetalCommandQueue(MetalDevice *device, RenderCommandListType type);
         ~MetalCommandQueue() override;
         std::unique_ptr<RenderCommandList> createCommandList(RenderCommandListType type) override;
-        std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format) override;
+        std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
     };
@@ -600,7 +600,7 @@ namespace RT64 {
 
         MetalInterface();
         ~MetalInterface() override;
-        std::unique_ptr<RenderDevice> createDevice() override;
+        std::unique_ptr<RenderDevice> createDevice(const std::string &preferredDeviceName) override;
         const RenderInterfaceCapabilities &getCapabilities() const override;
         bool isValid() const;
 

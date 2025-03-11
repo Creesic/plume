@@ -3391,6 +3391,10 @@ namespace plume {
         device->queueFamilies[familyIndex].remove(this);
     }
 
+    std::unique_ptr<RenderCommandList> VulkanCommandQueue::createCommandList(RenderCommandListType type) {
+        return std::make_unique<VulkanCommandList>(this, type);
+    }
+
     std::unique_ptr<RenderSwapChain> VulkanCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {
         return std::make_unique<VulkanSwapChain>(this, renderWindow, bufferCount, format, maxFrameLatency);
     }
@@ -3914,10 +3918,6 @@ namespace plume {
 
     VulkanDevice::~VulkanDevice() {
         release();
-    }
-
-    std::unique_ptr<RenderCommandList> VulkanDevice::createCommandList(RenderCommandListType type) {
-        return std::make_unique<VulkanCommandList>(this, type);
     }
 
     std::unique_ptr<RenderDescriptorSet> VulkanDevice::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
