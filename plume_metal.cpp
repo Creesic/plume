@@ -11,9 +11,9 @@
 #include <xxHash/xxh3.h>
 #include <mutex>
 
-#include "rt64_metal.h"
+#include "plume_metal.h"
 
-namespace RT64 {
+namespace plume {
     // MARK: - Constants
 
     static constexpr size_t MAX_DRAWABLES = 3;

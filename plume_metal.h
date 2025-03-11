@@ -2,7 +2,7 @@
 
 #include <set>
 
-#include "rhi/rt64_render_interface.h"
+#include "plume_render_interface.h"
 #include "apple/rt64_apple.h"
 
 #include <simd/simd.h>
