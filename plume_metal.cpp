@@ -2591,7 +2591,6 @@ namespace plume {
     }
 
     void MetalCommandList::discardTexture(const RenderTexture* texture) {
-        // TODO: New - check if this is required in Metal
         // Not required in Metal.
     }
 
