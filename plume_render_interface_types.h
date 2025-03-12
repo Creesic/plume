@@ -1310,9 +1310,9 @@ namespace plume {
         RenderFilter minFilter = RenderFilter::LINEAR;
         RenderFilter magFilter = RenderFilter::LINEAR;
         RenderMipmapMode mipmapMode = RenderMipmapMode::LINEAR;
-        RenderTextureAddressMode addressU = RenderTextureAddressMode::CLAMP;
-        RenderTextureAddressMode addressV = RenderTextureAddressMode::CLAMP;
-        RenderTextureAddressMode addressW = RenderTextureAddressMode::CLAMP;
+        RenderTextureAddressMode addressU = RenderTextureAddressMode::WRAP;
+        RenderTextureAddressMode addressV = RenderTextureAddressMode::WRAP;
+        RenderTextureAddressMode addressW = RenderTextureAddressMode::WRAP;
         float mipLODBias = 0.0f;
         uint32_t maxAnisotropy = 16;
         bool anisotropyEnabled = false;
