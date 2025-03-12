@@ -1,10 +1,16 @@
+//
+// plume
+//
+// Copyright (c) 2024 renderbag and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file for details.
+//
+
 #pragma once
 
 #include <set>
 
 #include "plume_render_interface.h"
-// TODO: Should not import rt64 files
-#include "apple/rt64_apple.h"
+#include "plume_apple.h"
 
 #include <simd/simd.h>
 #include <Metal/Metal.hpp>
