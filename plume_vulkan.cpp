@@ -1301,6 +1301,7 @@ namespace plume {
     VulkanComputePipeline::VulkanComputePipeline(VulkanDevice *device, const RenderComputePipelineDesc &desc) : VulkanPipeline(device, Type::Compute) {
         assert(desc.computeShader != nullptr);
         assert(desc.pipelineLayout != nullptr);
+        assert((desc.threadGroupSizeX > 0) && (desc.threadGroupSizeY > 0) && (desc.threadGroupSizeZ > 0));
 
         std::vector<VkSpecializationMapEntry> specEntries(desc.specConstantsCount);
         std::vector<uint32_t> specData(desc.specConstantsCount);

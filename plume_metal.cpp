@@ -1252,6 +1252,7 @@ namespace plume {
     MetalComputePipeline::MetalComputePipeline(const MetalDevice *device, const RenderComputePipelineDesc &desc) : MetalPipeline(device, Type::Compute) {
         assert(desc.computeShader != nullptr);
         assert(desc.pipelineLayout != nullptr);
+        assert((desc.threadGroupSizeX > 0) && (desc.threadGroupSizeY > 0) && (desc.threadGroupSizeZ > 0));
 
         const MetalShader *computeShader = static_cast<const MetalShader *>(desc.computeShader);
 
