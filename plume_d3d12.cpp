@@ -3822,10 +3822,12 @@ namespace plume {
     }
 
     bool D3D12Device::beginCapture() {
+        assert(false && "Captures are not currently implemented in D3D12.");
         return false;
     }
 
     bool D3D12Device::endCapture() {
+        assert(false && "Captures are not currently implemented in D3D12.");
         return false;
     }
 

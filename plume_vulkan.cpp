@@ -4213,10 +4213,12 @@ namespace plume {
     }
 
     bool VulkanDevice::beginCapture() {
+        assert(false && "Captures are not currently implemented in Vulkan.");
         return false;
     }
 
     bool VulkanDevice::endCapture() {
+        assert(false && "Captures are not currently implemented in Vulkan.");
         return false;
     }
 
