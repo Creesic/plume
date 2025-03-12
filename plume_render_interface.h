@@ -37,7 +37,8 @@ namespace plume {
 
     struct RenderTexture {
         virtual ~RenderTexture() { }
-        virtual std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) = 0;        virtual void setName(const std::string &name) = 0;
+        virtual std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) = 0;
+        virtual void setName(const std::string &name) = 0;
     };
 
     struct RenderAccelerationStructure {
