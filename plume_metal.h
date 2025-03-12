@@ -3,6 +3,7 @@
 #include <set>
 
 #include "plume_render_interface.h"
+// TODO: Should not import rt64 files
 #include "apple/rt64_apple.h"
 
 #include <simd/simd.h>
@@ -328,7 +329,6 @@ namespace plume {
         std::vector<PushConstantData> pushConstants;
 
         MetalDevice *device = nullptr;
-        RenderCommandListType type = RenderCommandListType::UNKNOWN;
         const MetalCommandQueue *queue = nullptr;
         const MetalFramebuffer *targetFramebuffer = nullptr;
         const MetalPipelineLayout *activeComputePipelineLayout = nullptr;
@@ -340,7 +340,7 @@ namespace plume {
         const MetalDescriptorSet* renderDescriptorSets[DESCRIPTOR_SET_MAX_INDEX + 1] = {};
         const MetalDescriptorSet* computeDescriptorSets[DESCRIPTOR_SET_MAX_INDEX + 1] = {};
 
-        MetalCommandList(const MetalCommandQueue *queue, RenderCommandListType type);
+        MetalCommandList(const MetalCommandQueue *queue);
         ~MetalCommandList() override;
         void begin() override;
         void end() override;
@@ -420,7 +420,7 @@ namespace plume {
 
         MetalCommandQueue(MetalDevice *device, RenderCommandListType type);
         ~MetalCommandQueue() override;
-        std::unique_ptr<RenderCommandList> createCommandList(RenderCommandListType type) override;
+        std::unique_ptr<RenderCommandList> createCommandList() override;
         std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;

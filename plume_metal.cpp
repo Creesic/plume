@@ -1870,11 +1870,8 @@ namespace plume {
 
     // MetalCommandList
 
-    MetalCommandList::MetalCommandList(const MetalCommandQueue *queue, const RenderCommandListType type) {
-        assert(type != RenderCommandListType::UNKNOWN);
-
+    MetalCommandList::MetalCommandList(const MetalCommandQueue *queue) {
         this->device = queue->device;
-        this->type = type;
         this->queue = queue;
     }
 
@@ -2888,8 +2885,8 @@ namespace plume {
         mtl->release();
     }
 
-    std::unique_ptr<RenderCommandList> MetalCommandQueue::createCommandList(RenderCommandListType type) {
-        return std::make_unique<MetalCommandList>(this, type);
+    std::unique_ptr<RenderCommandList> MetalCommandQueue::createCommandList() {
+        return std::make_unique<MetalCommandList>(this);
     }
 
     // TODO: NEW - Incorporate maxFrameLatency (new)
