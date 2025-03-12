@@ -1039,7 +1039,7 @@ namespace plume {
     }
 
     uint64_t MetalBuffer::getDeviceAddress() const {
-        // TODO: New - check if this needs an OS check
+        assert(device->mtl->supportsFamily(MTL::GPUFamilyMetal3) && "Device address is only supported on Metal3 devices.");
         return mtl->gpuAddress();
     }
 
