@@ -2599,19 +2599,17 @@ namespace plume {
 
     // VulkanCommandList
 
-    VulkanCommandList::VulkanCommandList(VulkanCommandQueue *queue, RenderCommandListType type) {
-        assert(queue->device != nullptr);
-        assert(type != RenderCommandListType::UNKNOWN);
+    VulkanCommandList::VulkanCommandList(VulkanCommandQueue *queue) {
+        assert(queue != nullptr);
 
-        this->device = queue->device;
-        this->type = type;
+        this->queue = queue;
 
         VkCommandPoolCreateInfo poolInfo = {};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        poolInfo.queueFamilyIndex = device->queueFamilyIndices[toFamilyIndex(type)];
+        poolInfo.queueFamilyIndex = queue->device->queueFamilyIndices[toFamilyIndex(queue->type)];
 
-        VkResult res = vkCreateCommandPool(device->vk, &poolInfo, nullptr, &commandPool);
+        VkResult res = vkCreateCommandPool(queue->device->vk, &poolInfo, nullptr, &commandPool);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateCommandPool failed with error code 0x%X.\n", res);
             return;
@@ -2623,7 +2621,7 @@ namespace plume {
         allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocateInfo.commandBufferCount = 1;
 
-        res = vkAllocateCommandBuffers(device->vk, &allocateInfo, &vk);
+        res = vkAllocateCommandBuffers(queue->device->vk, &allocateInfo, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkAllocateCommandBuffers failed with error code 0x%X.\n", res);
             return;
@@ -2632,11 +2630,11 @@ namespace plume {
 
     VulkanCommandList::~VulkanCommandList() {
         if (vk != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device->vk, commandPool, 1, &vk);
+            vkFreeCommandBuffers(queue->device->vk, commandPool, 1, &vk);
         }
 
         if (commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(device->vk, commandPool, nullptr);
+            vkDestroyCommandPool(queue->device->vk, commandPool, nullptr);
         }
     }
 
@@ -2678,7 +2676,7 @@ namespace plume {
 
         endActiveRenderPass();
 
-        const bool rtEnabled = device->capabilities.raytracing;
+        const bool rtEnabled = queue->device->capabilities.raytracing;
         VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT | toStageFlags(stages, rtEnabled);
         thread_local std::vector<VkBufferMemoryBarrier> bufferMemoryBarriers;
@@ -2744,7 +2742,7 @@ namespace plume {
         tableAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         tableAddressInfo.buffer = interfaceBuffer->vk;
 
-        const VkDeviceAddress tableAddress = vkGetBufferDeviceAddress(device->vk, &tableAddressInfo) + shaderBindingTable.offset;
+        const VkDeviceAddress tableAddress = vkGetBufferDeviceAddress(queue->device->vk, &tableAddressInfo) + shaderBindingTable.offset;
         const RenderShaderBindingGroupInfo &rayGen = shaderBindingGroupsInfo.rayGen;
         const RenderShaderBindingGroupInfo &miss = shaderBindingGroupsInfo.miss;
         const RenderShaderBindingGroupInfo &hitGroup = shaderBindingGroupsInfo.hitGroup;
@@ -3218,7 +3216,7 @@ namespace plume {
         buildGeometryInfo.flags = toRTASBuildFlags(buildInfo.preferFastBuild, buildInfo.preferFastTrace);
         buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         buildGeometryInfo.dstAccelerationStructure = interfaceAccelerationStructure->vk;
-        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(device->vk, &scratchAddressInfo) + scratchBuffer.offset;
+        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
         buildGeometryInfo.pGeometries = reinterpret_cast<const VkAccelerationStructureGeometryKHR *>(buildInfo.buildData.data());
         buildGeometryInfo.geometryCount = buildInfo.meshCount;
 
@@ -3260,14 +3258,14 @@ namespace plume {
 
         VkAccelerationStructureGeometryInstancesDataKHR &instancesData = topGeometry.geometry.instances;
         instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
-        instancesData.data.deviceAddress = vkGetBufferDeviceAddress(device->vk, &instancesAddressInfo) + instancesBuffer.offset;
+        instancesData.data.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &instancesAddressInfo) + instancesBuffer.offset;
 
         VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo = {};
         buildGeometryInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
         buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         buildGeometryInfo.dstAccelerationStructure = interfaceAccelerationStructure->vk;
-        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(device->vk, &scratchAddressInfo) + scratchBuffer.offset;
+        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
         buildGeometryInfo.pGeometries = &topGeometry;
         buildGeometryInfo.geometryCount = 1;
 
@@ -3378,13 +3376,14 @@ namespace plume {
 
     // VulkanCommandQueue
 
-    VulkanCommandQueue::VulkanCommandQueue(VulkanDevice *device, RenderCommandListType commandListType) {
+    VulkanCommandQueue::VulkanCommandQueue(VulkanDevice *device, RenderCommandListType type) {
         assert(device != nullptr);
-        assert(commandListType != RenderCommandListType::UNKNOWN);
+        assert(type != RenderCommandListType::UNKNOWN);
 
         this->device = device;
+        this->type = type;
 
-        familyIndex = device->queueFamilyIndices[toFamilyIndex(commandListType)];
+        familyIndex = device->queueFamilyIndices[toFamilyIndex(type)];
         device->queueFamilies[familyIndex].add(this);
     }
 
@@ -3392,8 +3391,8 @@ namespace plume {
         device->queueFamilies[familyIndex].remove(this);
     }
 
-    std::unique_ptr<RenderCommandList> VulkanCommandQueue::createCommandList(RenderCommandListType type) {
-        return std::make_unique<VulkanCommandList>(this, type);
+    std::unique_ptr<RenderCommandList> VulkanCommandQueue::createCommandList() {
+        return std::make_unique<VulkanCommandList>(this);
     }
 
     std::unique_ptr<RenderSwapChain> VulkanCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {

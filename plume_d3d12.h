@@ -159,8 +159,7 @@ namespace plume {
     struct D3D12CommandList : RenderCommandList {
         ID3D12GraphicsCommandList9 *d3d = nullptr;
         ID3D12CommandAllocator *commandAllocator = nullptr;
-        D3D12Device *device = nullptr;
-        RenderCommandListType type = RenderCommandListType::UNKNOWN;
+        D3D12CommandQueue *queue = nullptr;
         const D3D12Framebuffer *targetFramebuffer = nullptr;
         bool targetFramebufferSamplePositionsSet = false;
         bool open = false;
@@ -247,7 +246,7 @@ namespace plume {
 
         D3D12CommandQueue(D3D12Device *device, RenderCommandListType type);
         ~D3D12CommandQueue() override;
-        std::unique_ptr<RenderCommandList> createCommandList(RenderCommandListType type) override;
+        std::unique_ptr<RenderCommandList> createCommandList() override;
         std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t newFrameLatency) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;

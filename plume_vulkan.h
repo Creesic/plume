@@ -286,15 +286,14 @@ namespace plume {
     struct VulkanCommandList : RenderCommandList {
         VkCommandBuffer vk = VK_NULL_HANDLE;
         VkCommandPool commandPool = VK_NULL_HANDLE;
-        VulkanDevice *device = nullptr;
-        RenderCommandListType type = RenderCommandListType::UNKNOWN;
+        VulkanCommandQueue *queue = nullptr;
         const VulkanFramebuffer *targetFramebuffer = nullptr;
         const VulkanPipelineLayout *activeComputePipelineLayout = nullptr;
         const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
 
-        VulkanCommandList(VulkanCommandQueue *queue, RenderCommandListType type);
+        VulkanCommandList(VulkanCommandQueue *queue);
         ~VulkanCommandList() override;
         void begin() override;
         void end() override;
@@ -360,10 +359,11 @@ namespace plume {
         uint32_t familyIndex = 0;
         uint32_t queueIndex = 0;
         std::unordered_set<VulkanSwapChain *> swapChains;
+        RenderCommandListType type = RenderCommandListType::UNKNOWN;
 
-        VulkanCommandQueue(VulkanDevice *device, RenderCommandListType commandListType);
+        VulkanCommandQueue(VulkanDevice *device, RenderCommandListType type);
         ~VulkanCommandQueue() override;
-        std::unique_ptr<RenderCommandList> createCommandList(RenderCommandListType type) override;
+        std::unique_ptr<RenderCommandList> createCommandList() override;
         std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;

@@ -1485,14 +1485,13 @@ namespace plume {
 
     // D3D12CommandList
 
-    D3D12CommandList::D3D12CommandList(D3D12CommandQueue *queue, RenderCommandListType type) {
-        assert(queue->device != nullptr);
+    D3D12CommandList::D3D12CommandList(D3D12CommandQueue *queue) {
+        assert(queue != nullptr);
 
-        this->device = queue->device;
-        this->type = type;
+        this->queue = queue;
 
         D3D12_COMMAND_LIST_TYPE commandListType;
-        switch (type) {
+        switch (queue->type) {
         case RenderCommandListType::DIRECT:
             commandListType = D3D12_COMMAND_LIST_TYPE_DIRECT;
             break;
@@ -1507,13 +1506,13 @@ namespace plume {
             return;
         }
 
-        HRESULT res = device->d3d->CreateCommandAllocator(commandListType, IID_PPV_ARGS(&commandAllocator));
+        HRESULT res = queue->device->d3d->CreateCommandAllocator(commandListType, IID_PPV_ARGS(&commandAllocator));
         if (FAILED(res)) {
             fprintf(stderr, "CreateCommandAllocator failed with error code 0x%lX.\n", res);
             return;
         }
 
-        res = device->d3d->CreateCommandList(0, commandListType, commandAllocator, nullptr, IID_PPV_ARGS(&d3d));
+        res = queue->device->d3d->CreateCommandList(0, commandListType, commandAllocator, nullptr, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
             fprintf(stderr, "CreateCommandList failed with error code 0x%lX.\n", res);
             return;
@@ -1878,7 +1877,7 @@ namespace plume {
     }
 
     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
-        assert(device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
+        assert(queue->device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
         d3d->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
     }
 
@@ -2065,7 +2064,7 @@ namespace plume {
 
     void D3D12CommandList::checkDescriptorHeaps() {
         if (!descriptorHeapsSet) {
-            ID3D12DescriptorHeap *descriptorHeaps[] = { device->viewHeapAllocator->heap, device->samplerHeapAllocator->heap };
+            ID3D12DescriptorHeap *descriptorHeaps[] = { queue->device->viewHeapAllocator->heap, queue->device->samplerHeapAllocator->heap };
             d3d->SetDescriptorHeaps(std::size(descriptorHeaps), descriptorHeaps);
             descriptorHeapsSet = true;
         }
@@ -2134,8 +2133,8 @@ namespace plume {
         checkDescriptorHeaps();
 
         D3D12DescriptorSet *interfaceDescriptorSet = static_cast<D3D12DescriptorSet *>(descriptorSet);
-        setRootDescriptorTable(device->viewHeapAllocator.get(), interfaceDescriptorSet->viewAllocation, activePipelineLayout->setViewRootIndices[setIndex], setCompute);
-        setRootDescriptorTable(device->samplerHeapAllocator.get(), interfaceDescriptorSet->samplerAllocation, activePipelineLayout->setSamplerRootIndices[setIndex], setCompute);
+        setRootDescriptorTable(queue->device->viewHeapAllocator.get(), interfaceDescriptorSet->viewAllocation, activePipelineLayout->setViewRootIndices[setIndex], setCompute);
+        setRootDescriptorTable(queue->device->samplerHeapAllocator.get(), interfaceDescriptorSet->samplerAllocation, activePipelineLayout->setSamplerRootIndices[setIndex], setCompute);
     }
 
     void D3D12CommandList::setRootDescriptorTable(D3D12DescriptorHeapAllocator *heapAllocator, D3D12DescriptorSet::HeapAllocation &heapAllocation, uint32_t rootIndex, bool setCompute) {
@@ -2280,8 +2279,8 @@ namespace plume {
         }
     }
 
-    std::unique_ptr<RenderCommandList> D3D12CommandQueue::createCommandList(RenderCommandListType type) {
-        return std::make_unique<D3D12CommandList>(this, type);
+    std::unique_ptr<RenderCommandList> D3D12CommandQueue::createCommandList() {
+        return std::make_unique<D3D12CommandList>(this);
     }
 
     std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {
