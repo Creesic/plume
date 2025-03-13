@@ -880,6 +880,19 @@ namespace plume {
         return metalMask;
     }
 
+    RenderDeviceType mapDeviceType(MTL::DeviceLocation location) {
+        switch (location) {
+            case MTL::DeviceLocationBuiltIn:
+                return RenderDeviceType::INTEGRATED;
+            case MTL::DeviceLocationExternal:
+            case MTL::DeviceLocationSlot:
+                return RenderDeviceType::DISCRETE;
+            default:
+                assert(false && "Unknown device location.");
+                return RenderDeviceType::UNKNOWN;
+        }
+    }
+
     // MARK: - Helper Structures
 
     MetalDescriptorSetLayout::MetalDescriptorSetLayout(MetalDevice *device, const RenderDescriptorSetDesc &desc) {
@@ -2269,8 +2282,8 @@ namespace plume {
         activeRenderEncoder->pushDebugGroup(MTLSTR("ColorClear"));
 
         MTL::RenderPipelineDescriptor* pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
-        pipelineDesc->setVertexFunction(device->renderInterface->clearVertexFunction);
-        pipelineDesc->setFragmentFunction(device->renderInterface->clearColorFunction);
+        pipelineDesc->setVertexFunction(device->clearVertexFunction);
+        pipelineDesc->setFragmentFunction(device->clearColorFunction);
         pipelineDesc->setRasterSampleCount(targetFramebuffer->colorAttachments[attachmentIndex]->desc.multisampling.sampleCount);
 
         MTL::RenderPipelineColorAttachmentDescriptor *pipelineColorAttachment = pipelineDesc->colorAttachments()->object(attachmentIndex);
@@ -2288,7 +2301,7 @@ namespace plume {
             depthStencilDescriptor->release();
         }
 
-        const MTL::RenderPipelineState *pipelineState = device->renderInterface->getOrCreateClearRenderPipelineState(pipelineDesc);
+        const MTL::RenderPipelineState *pipelineState = device->getOrCreateClearRenderPipelineState(pipelineDesc);
         activeRenderEncoder->setRenderPipelineState(pipelineState);
 
         setCommonClearState();
@@ -2350,8 +2363,8 @@ namespace plume {
             activeRenderEncoder->pushDebugGroup(MTLSTR("DepthClear"));
 
             MTL::RenderPipelineDescriptor* pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
-            pipelineDesc->setVertexFunction(device->renderInterface->clearVertexFunction);
-            pipelineDesc->setFragmentFunction(device->renderInterface->clearDepthFunction);
+            pipelineDesc->setVertexFunction(device->clearVertexFunction);
+            pipelineDesc->setFragmentFunction(device->clearDepthFunction);
             pipelineDesc->setDepthAttachmentPixelFormat(targetFramebuffer->depthAttachment->mtl->pixelFormat());
             pipelineDesc->setRasterSampleCount(targetFramebuffer->depthAttachment->desc.multisampling.sampleCount);
 
@@ -2362,9 +2375,9 @@ namespace plume {
                 pipelineColorAttachment->setWriteMask(MTL::ColorWriteMaskNone);
             }
 
-            const MTL::RenderPipelineState *pipelineState = device->renderInterface->getOrCreateClearRenderPipelineState(pipelineDesc, true);
+            const MTL::RenderPipelineState *pipelineState = device->getOrCreateClearRenderPipelineState(pipelineDesc, true);
             activeRenderEncoder->setRenderPipelineState(pipelineState);
-            activeRenderEncoder->setDepthStencilState(device->renderInterface->clearDepthStencilState);
+            activeRenderEncoder->setDepthStencilState(device->clearDepthStencilState);
 
             setCommonClearState();
             pipelineDesc->release();
@@ -2863,7 +2876,7 @@ namespace plume {
         activeType = EncoderType::Blit;
 
         if (activeBlitEncoder == nullptr) {
-            activeBlitEncoder = mtl->blitCommandEncoder(device->renderInterface->reusableBlitDescriptor);
+            activeBlitEncoder = mtl->blitCommandEncoder(device->sharedBlitDescriptor);
             activeBlitEncoder->setLabel(MTLSTR("Copy Blit Encoder"));
         }
     }
@@ -2885,7 +2898,7 @@ namespace plume {
         if (activeResolveComputeEncoder == nullptr) {
             activeResolveComputeEncoder = mtl->computeCommandEncoder();
             activeResolveComputeEncoder->setLabel(MTLSTR("Resolve Texture Encoder"));
-            activeResolveComputeEncoder->setComputePipelineState(device->renderInterface->resolveTexturePipelineState);
+            activeResolveComputeEncoder->setComputePipelineState(device->resolveTexturePipelineState);
         }
     }
 
@@ -3040,10 +3053,77 @@ namespace plume {
 
     // MetalDevice
 
-    MetalDevice::MetalDevice(MetalInterface *renderInterface) {
+    MetalDevice::MetalDevice(MetalInterface *renderInterface, const std::string &preferredDeviceName) {
         assert(renderInterface != nullptr);
         this->renderInterface = renderInterface;
-        this->mtl = renderInterface->device;
+
+        // Device Selection
+        uint32_t currentDeviceTypeScore = 0;
+        auto deviceTypeScoreTable = [](const MTL::Device *device) -> uint32_t {
+            switch (device->location()) {
+            case MTL::DeviceLocationBuiltIn:
+                if (device->locationNumber() == 0) { // low power
+                    return 3; // Integrated GPU - Intel GPU
+                }
+                return 4; // Apple Silicon GPU or AMD GPU
+                break;
+            case MTL::DeviceLocationSlot: // Discrete GPU
+            case MTL::DeviceLocationExternal: // Discrete eGPU
+                return 4;
+                break;
+            default: // Unknown
+                return 0;
+            }
+        };
+
+        auto deviceVendor = [](const MTL::Device *device) -> RenderDeviceVendor {
+            switch (device->location()) {
+            case MTL::DeviceLocationBuiltIn:
+                if (device->locationNumber() == 0) {
+                    // low power
+                    return RenderDeviceVendor::INTEL;
+                }
+#ifdef __aarch64__
+                return RenderDeviceVendor::APPLE;
+#endif
+                return RenderDeviceVendor::AMD;
+                break;
+            case MTL::DeviceLocationSlot: // Discrete GPU
+            case MTL::DeviceLocationExternal: // Discrete eGPU
+                return RenderDeviceVendor::AMD;
+                break;
+            default: // Unknown
+                return RenderDeviceVendor::UNKNOWN;
+            }
+        };
+
+        const NS::Array* devices = MTL::CopyAllDevices();
+        for (NS::UInteger i = 0; i < devices->count(); i++) {
+            MTL::Device *device = (MTL::Device *)devices->object(i);
+
+            const std::string deviceName(device->name()->utf8String());
+            const NS::String *preferredDeviceNameNS = NS::String::string(preferredDeviceName.c_str(), NS::UTF8StringEncoding);
+            const uint32_t deviceTypeScore = deviceTypeScoreTable(device);
+            const bool preferDeviceTypeScore = (deviceTypeScore > currentDeviceTypeScore);
+            const bool preferUserChoice = device->name()->isEqualToString(preferredDeviceNameNS);
+            if (preferDeviceTypeScore || preferUserChoice) {
+                mtl = device;
+                description.name = deviceName;
+                description.type = mapDeviceType(device->location());
+                description.driverVersion = 1; // Unavailable
+                description.vendor = deviceVendor(device);
+                currentDeviceTypeScore = deviceTypeScore;
+
+                if (preferUserChoice) {
+                    break;
+                }
+            }
+        }
+
+        // Setup blit, clear and resolve shaders / pipelines
+        createClearShaderLibrary();
+        createResolvePipelineState();
+        sharedBlitDescriptor = MTL::BlitPassDescriptor::alloc()->init();
 
         // Fill capabilities.
         // TODO: Support Raytracing.
@@ -3060,11 +3140,21 @@ namespace plume {
         capabilities.presentWait = true;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);
         capabilities.dynamicDepthBias = true;
-        description.name = "Metal";
     }
 
     MetalDevice::~MetalDevice() {
         mtl->release();
+
+        for (const auto& [key, state] : clearRenderPipelineStates) {
+            state->release();
+        }
+
+        resolveTexturePipelineState->release();
+        clearVertexFunction->release();
+        clearColorFunction->release();
+        clearDepthFunction->release();
+        clearDepthFunction->release();
+        sharedBlitDescriptor->release();
     }
 
     std::unique_ptr<RenderDescriptorSet> MetalDevice::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
@@ -3187,60 +3277,7 @@ namespace plume {
         return true;
     }
 
-    // MetalInterface
-
-    MetalInterface::MetalInterface() {
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
-        // We only have one device on Metal atm, so we create it here.
-        // Ok, that's not entirely true... but we'll support just the discrete for now.
-        device = MTL::CreateSystemDefaultDevice();
-        capabilities.shaderFormat = RenderShaderFormat::METAL;
-
-        createClearShaderLibrary();
-        createResolvePipelineState();
-
-        // We do not specialize the blit descriptor, so create one and use it for all blit passes
-        reusableBlitDescriptor = MTL::BlitPassDescriptor::alloc()->init();
-
-        releasePool->release();
-    }
-
-    MetalInterface::~MetalInterface() {
-        for (const auto& [key, state] : clearRenderPipelineStates) {
-            state->release();
-        }
-
-        resolveTexturePipelineState->release();
-        clearVertexFunction->release();
-        clearColorFunction->release();
-        clearDepthFunction->release();
-        clearDepthFunction->release();
-        device->release();
-        reusableBlitDescriptor->release();
-    }
-
-    // TODO: NEW - Incorporate preferredDeviceName (new)
-    std::unique_ptr<RenderDevice> MetalInterface::createDevice(const std::string &preferredDeviceName) {
-        std::unique_ptr<MetalDevice> createdDevice = std::make_unique<MetalDevice>(this);
-        return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
-    }
-
-    const RenderInterfaceCapabilities &MetalInterface::getCapabilities() const {
-        return capabilities;
-    }
-
-    const std::vector<std::string> &MetalInterface::getDeviceNames() const {
-        // TODO: New - Implement this in Metal
-        return {};
-    }
-
-    bool MetalInterface::isValid() const {
-        // check if Metal is available and we support bindless textures: GPUFamilyMac2 or GPUFamilyApple6
-        return MTL::CopyAllDevices()->count() > 0 && (device->supportsFamily(MTL::GPUFamilyMac2) || device->supportsFamily(MTL::GPUFamilyApple6));
-    }
-
-    void MetalInterface::createResolvePipelineState() {
+    void MetalDevice::createResolvePipelineState() {
         const char* resolve_shader = R"(
             #include <metal_stdlib>
             using namespace metal;
@@ -3270,14 +3307,14 @@ namespace plume {
         )";
 
         NS::Error* error = nullptr;
-        MTL::Library *library = device->newLibrary(NS::String::string(resolve_shader, NS::UTF8StringEncoding), nullptr, &error);
+        MTL::Library *library = mtl->newLibrary(NS::String::string(resolve_shader, NS::UTF8StringEncoding), nullptr, &error);
         assert(library != nullptr && "Failed to create library");
 
         MTL::Function *resolveFunction = library->newFunction(NS::String::string("msaaResolve", NS::UTF8StringEncoding));
         assert(resolveFunction != nullptr && "Failed to create resolve function");
 
         error = nullptr;
-        resolveTexturePipelineState = device->newComputePipelineState(resolveFunction, &error);
+        resolveTexturePipelineState = mtl->newComputePipelineState(resolveFunction, &error);
         assert(resolveTexturePipelineState != nullptr && "Failed to create MSAA resolve pipeline state");
 
         // Destroy
@@ -3285,7 +3322,7 @@ namespace plume {
         library->release();
     }
 
-    void MetalInterface::createClearShaderLibrary() {
+    void MetalDevice::createClearShaderLibrary() {
         const char* clear_shader = R"(
             #include <metal_stdlib>
             using namespace metal;
@@ -3327,7 +3364,7 @@ namespace plume {
         )";
 
         NS::Error* error = nullptr;
-        MTL::Library *clearShaderLibrary = device->newLibrary(NS::String::string(clear_shader, NS::UTF8StringEncoding), nullptr, &error);
+        MTL::Library *clearShaderLibrary = mtl->newLibrary(NS::String::string(clear_shader, NS::UTF8StringEncoding), nullptr, &error);
         if (error != nullptr) {
             fprintf(stderr, "Error: %s\n", error->localizedDescription()->utf8String());
         }
@@ -3342,13 +3379,13 @@ namespace plume {
         MTL::DepthStencilDescriptor *depthDescriptor = MTL::DepthStencilDescriptor::alloc()->init();
         depthDescriptor->setDepthWriteEnabled(true);
         depthDescriptor->setDepthCompareFunction(MTL::CompareFunctionAlways);
-        clearDepthStencilState = device->newDepthStencilState(depthDescriptor);
+        clearDepthStencilState = mtl->newDepthStencilState(depthDescriptor);
 
         depthDescriptor->release();
         clearShaderLibrary->release();
     }
 
-    MTL::RenderPipelineState* MetalInterface::getOrCreateClearRenderPipelineState(MTL::RenderPipelineDescriptor *pipelineDesc, const bool depthWriteEnabled) {
+    MTL::RenderPipelineState* MetalDevice::getOrCreateClearRenderPipelineState(MTL::RenderPipelineDescriptor *pipelineDesc, const bool depthWriteEnabled) {
         uint64_t hash = hashForRenderPipelineDescriptor(pipelineDesc, depthWriteEnabled);
 
         std::lock_guard lock(clearPipelineStateMutex);
@@ -3359,7 +3396,7 @@ namespace plume {
 
         // If not found, create new pipeline state while holding the lock
         NS::Error *error = nullptr;
-        MTL::RenderPipelineState *clearPipelineState = device->newRenderPipelineState(pipelineDesc, &error);
+        MTL::RenderPipelineState *clearPipelineState = mtl->newRenderPipelineState(pipelineDesc, &error);
 
         if (error != nullptr) {
             fprintf(stderr, "Failed to create render pipeline state: %s\n", error->localizedDescription()->utf8String());
@@ -3368,6 +3405,43 @@ namespace plume {
 
         auto [inserted_it, success] = clearRenderPipelineStates.insert(std::make_pair(hash, clearPipelineState));
         return inserted_it->second;
+    }
+
+
+    // MetalInterface
+
+    MetalInterface::MetalInterface() {
+        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+        capabilities.shaderFormat = RenderShaderFormat::METAL;
+
+        releasePool->release();
+
+        // Fill device names.
+        const NS::Array* devices = MTL::CopyAllDevices();
+        for (NS::UInteger i = 0; i < devices->count(); i++) {
+            NS::String* deviceName = ((MTL::Device *)devices->object(i))->name();
+            deviceNames.push_back(std::string(deviceName->utf8String()));
+        }
+    }
+
+    MetalInterface::~MetalInterface() {}
+
+    // TODO: NEW - Incorporate preferredDeviceName (new)
+    std::unique_ptr<RenderDevice> MetalInterface::createDevice(const std::string &preferredDeviceName) {
+        std::unique_ptr<MetalDevice> createdDevice = std::make_unique<MetalDevice>(this, preferredDeviceName);
+        return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
+    }
+
+    const RenderInterfaceCapabilities &MetalInterface::getCapabilities() const {
+        return capabilities;
+    }
+
+    const std::vector<std::string> &MetalInterface::getDeviceNames() const {
+        return deviceNames;
+    }
+
+    bool MetalInterface::isValid() const {
+        return true;
     }
 
     // Global creation function.

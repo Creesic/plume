@@ -594,7 +594,22 @@ namespace plume {
         RenderDeviceCapabilities capabilities;
         RenderDeviceDescription description;
 
-        explicit MetalDevice(MetalInterface *renderInterface);
+        // Resolve functionality
+        MTL::ComputePipelineState *resolveTexturePipelineState;
+
+        // Clear functionality
+        MTL::Function* clearVertexFunction;
+        MTL::Function* clearColorFunction;
+        MTL::Function* clearDepthFunction;
+        MTL::DepthStencilState *clearDepthStencilState;
+
+        std::mutex clearPipelineStateMutex;
+        std::unordered_map<uint64_t, MTL::RenderPipelineState *> clearRenderPipelineStates;
+
+        // Blit functionality
+        MTL::BlitPassDescriptor *sharedBlitDescriptor = nullptr;
+
+        explicit MetalDevice(MetalInterface *renderInterface, const std::string &preferredDeviceName);
         ~MetalDevice() override;
         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
@@ -623,24 +638,17 @@ namespace plume {
         bool isValid() const;
         bool beginCapture() override;
         bool endCapture() override;
+
+        // Shader libraries and pipeline states used for emulated operations
+        void createResolvePipelineState();
+        void createClearShaderLibrary();
+
+        MTL::RenderPipelineState* getOrCreateClearRenderPipelineState(MTL::RenderPipelineDescriptor *pipelineDesc, bool depthWriteEnabled = false);
     };
 
     struct MetalInterface : RenderInterface {
-        MTL::Device* device;
+        std::vector<std::string> deviceNames;
         RenderInterfaceCapabilities capabilities;
-        MTL::ComputePipelineState *resolveTexturePipelineState;
-
-        // Clear functionality
-        MTL::Function* clearVertexFunction;
-        MTL::Function* clearColorFunction;
-        MTL::Function* clearDepthFunction;
-        MTL::DepthStencilState *clearDepthStencilState;
-
-        std::mutex clearPipelineStateMutex;
-        std::unordered_map<uint64_t, MTL::RenderPipelineState *> clearRenderPipelineStates;
-
-        // Blit functionality
-        MTL::BlitPassDescriptor *reusableBlitDescriptor = nullptr;
 
         MetalInterface();
         ~MetalInterface() override;
@@ -648,11 +656,5 @@ namespace plume {
         const RenderInterfaceCapabilities &getCapabilities() const override;
         const std::vector<std::string> &getDeviceNames() const override;
         bool isValid() const;
-
-        // Shader libraries and pipeline states used for emulated operations
-        void createResolvePipelineState();
-        void createClearShaderLibrary();
-
-        MTL::RenderPipelineState* getOrCreateClearRenderPipelineState(MTL::RenderPipelineDescriptor *pipelineDesc, bool depthWriteEnabled = false);
     };
 }

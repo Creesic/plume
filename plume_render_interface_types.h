@@ -81,7 +81,8 @@ namespace plume {
         UNKNOWN = 0x0,
         AMD = 0x1002,
         NVIDIA = 0x10DE,
-        INTEL = 0x8086
+        INTEL = 0x8086,
+        APPLE = 0x106B
     };
 
     enum class RenderFormat {
