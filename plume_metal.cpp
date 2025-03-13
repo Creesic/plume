@@ -3058,24 +3058,6 @@ namespace plume {
         this->renderInterface = renderInterface;
 
         // Device Selection
-        uint32_t currentDeviceTypeScore = 0;
-        auto deviceTypeScoreTable = [](const MTL::Device *device) -> uint32_t {
-            switch (device->location()) {
-            case MTL::DeviceLocationBuiltIn:
-                if (device->locationNumber() == 0) { // low power
-                    return 3; // Integrated GPU - Intel GPU
-                }
-                return 4; // Apple Silicon GPU or AMD GPU
-                break;
-            case MTL::DeviceLocationSlot: // Discrete GPU
-            case MTL::DeviceLocationExternal: // Discrete eGPU
-                return 4;
-                break;
-            default: // Unknown
-                return 0;
-            }
-        };
-
         auto deviceVendor = [](const MTL::Device *device) -> RenderDeviceVendor {
             switch (device->location()) {
             case MTL::DeviceLocationBuiltIn:
@@ -3098,27 +3080,22 @@ namespace plume {
         };
 
         const NS::Array* devices = MTL::CopyAllDevices();
+        MTL::Device *preferredDevice = nullptr;
         for (NS::UInteger i = 0; i < devices->count(); i++) {
             MTL::Device *device = (MTL::Device *)devices->object(i);
-
-            const std::string deviceName(device->name()->utf8String());
             const NS::String *preferredDeviceNameNS = NS::String::string(preferredDeviceName.c_str(), NS::UTF8StringEncoding);
-            const uint32_t deviceTypeScore = deviceTypeScoreTable(device);
-            const bool preferDeviceTypeScore = (deviceTypeScore > currentDeviceTypeScore);
-            const bool preferUserChoice = device->name()->isEqualToString(preferredDeviceNameNS);
-            if (preferDeviceTypeScore || preferUserChoice) {
-                mtl = device;
-                description.name = deviceName;
-                description.type = mapDeviceType(device->location());
-                description.driverVersion = 1; // Unavailable
-                description.vendor = deviceVendor(device);
-                currentDeviceTypeScore = deviceTypeScore;
-
-                if (preferUserChoice) {
-                    break;
-                }
+            if (device->name()->isEqualToString(preferredDeviceNameNS)) {
+                preferredDevice = device;
+                break;
             }
         }
+
+        mtl = preferredDevice ? preferredDevice : MTL::CreateSystemDefaultDevice();;
+        const std::string deviceName(mtl->name()->utf8String());
+        description.name = deviceName;
+        description.type = mapDeviceType(mtl->location());
+        description.driverVersion = 1; // Unavailable
+        description.vendor = deviceVendor(mtl);
 
         // Setup blit, clear and resolve shaders / pipelines
         createClearShaderLibrary();
