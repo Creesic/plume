@@ -9,30 +9,35 @@
 
 #include <atomic>
 #include <mutex>
+#include "plume_render_interface_types.h"
 
-struct CocoaWindowAttributes {
-    int x, y;
-    int width, height;
-};
+namespace plume {
+    RenderDeviceVendor getRenderDeviceVendor(uint64_t registryID);
 
-class CocoaWindow {
-    void* windowHandle;
-    CocoaWindowAttributes cachedAttributes;
-    std::atomic<int> cachedRefreshRate;
-    mutable std::mutex attributesMutex;
+    struct CocoaWindowAttributes {
+        int x, y;
+        int width, height;
+    };
 
-    void updateWindowAttributesInternal(bool forceSync = false);
-    void updateRefreshRateInternal(bool forceSync = false);
-public:
-    CocoaWindow(void* window);
-    ~CocoaWindow();
+    class CocoaWindow {
+        void* windowHandle;
+        CocoaWindowAttributes cachedAttributes;
+        std::atomic<int> cachedRefreshRate;
+        mutable std::mutex attributesMutex;
 
-    // Get cached window attributes, may trigger async update
-    void getWindowAttributes(CocoaWindowAttributes* attributes) const;
+        void updateWindowAttributesInternal(bool forceSync = false);
+        void updateRefreshRateInternal(bool forceSync = false);
+    public:
+        CocoaWindow(void* window);
+        ~CocoaWindow();
 
-    // Get cached refresh rate, may trigger async update
-    int getRefreshRate() const;
+        // Get cached window attributes, may trigger async update
+        void getWindowAttributes(CocoaWindowAttributes* attributes) const;
 
-    // Toggle fullscreen
-    void toggleFullscreen();
-};
+        // Get cached refresh rate, may trigger async update
+        int getRefreshRate() const;
+
+        // Toggle fullscreen
+        void toggleFullscreen();
+    };
+}

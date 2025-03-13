@@ -3095,7 +3095,7 @@ namespace plume {
         description.name = deviceName;
         description.type = mapDeviceType(mtl->location());
         description.driverVersion = 1; // Unavailable
-        description.vendor = deviceVendor(mtl);
+        description.vendor = mtl->supportsFamily(MTL::GPUFamilyApple1) ? RenderDeviceVendor::APPLE : getRenderDeviceVendor(mtl->registryID());
 
         // Setup blit, clear and resolve shaders / pipelines
         createClearShaderLibrary();
@@ -3103,8 +3103,9 @@ namespace plume {
         sharedBlitDescriptor = MTL::BlitPassDescriptor::alloc()->init();
 
         // Fill capabilities.
+        // https://developer.apple.com/documentation/metal/device-inspection
         // TODO: Support Raytracing.
-        // capabilities.raytracing = [this->renderInterface->device supportsFamily:MTLGPUFamilyApple9];
+        // capabilities.raytracing = mtl->supportsRaytracing();
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
 #if PLUME_IOS
