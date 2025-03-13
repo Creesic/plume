@@ -3538,6 +3538,7 @@ namespace plume {
         // Fill capabilities.
         capabilities.descriptorIndexing = true;
         capabilities.scalarBlockLayout = true;
+        capabilities.bufferDeviceAddress = true;
         capabilities.presentWait = true;
         capabilities.maxTextureSize = 16384;
         capabilities.preferHDR = description.dedicatedVideoMemory > (512 * 1024 * 1024);

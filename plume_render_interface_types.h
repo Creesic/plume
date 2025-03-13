@@ -1814,6 +1814,9 @@ namespace plume {
         bool descriptorIndexing = false;
         bool scalarBlockLayout = false;
 
+        // Buffers.
+        bool bufferDeviceAddress = false;
+
         // Present.
         bool presentWait = false;
         bool displayTiming = false;
