@@ -2807,6 +2807,7 @@ namespace plume {
         psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
         psoDesc.RasterizerState.DepthClipEnable = desc.depthClipEnabled;
         psoDesc.RasterizerState.DepthBias = desc.depthBias;
+        psoDesc.RasterizerState.DepthBiasClamp = desc.depthBiasClamp;
         psoDesc.RasterizerState.SlopeScaledDepthBias = desc.slopeScaledDepthBias;
 
         if (desc.dynamicDepthBiasEnabled) {

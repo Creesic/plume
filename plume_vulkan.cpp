@@ -1451,9 +1451,10 @@ namespace plume {
         if (desc.dynamicDepthBiasEnabled) {
             rasterization.depthBiasEnable = true;
         }
-        else if (desc.depthBias != 0 || desc.slopeScaledDepthBias != 0.0f) {
+        else if ((desc.depthBias != 0) || (desc.depthBiasClamp != 0.0f) || (desc.slopeScaledDepthBias != 0.0f)) {
             rasterization.depthBiasEnable = true;
             rasterization.depthBiasConstantFactor = float(desc.depthBias);
+            rasterization.depthBiasClamp = desc.depthBiasClamp;
             rasterization.depthBiasSlopeFactor = desc.slopeScaledDepthBias;
         }
 
