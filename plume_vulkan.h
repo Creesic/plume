@@ -24,6 +24,9 @@
 #define VK_USE_PLATFORM_METAL_EXT
 #endif
 
+// For VK_KHR_portability_subset
+#define VK_ENABLE_BETA_EXTENSIONS
+
 #include <volk.h>
 
 #ifdef __clang__
@@ -404,7 +407,9 @@ namespace plume {
         RenderDeviceDescription description;
         VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties = {};
         VkPhysicalDeviceSampleLocationsPropertiesEXT sampleLocationProperties = {};
+        std::unique_ptr<RenderBuffer> nullBuffer;
         bool loadStoreOpNoneSupported = false;
+        bool nullDescriptorSupported = false;
 
         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
         ~VulkanDevice() override;

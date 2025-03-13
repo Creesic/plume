@@ -84,7 +84,7 @@ namespace plume {
         INTEL = 0x8086,
         APPLE = 0x106B,
     };
-
+    
     enum class RenderFormat {
         UNKNOWN,
         R32G32B32A32_TYPELESS,
@@ -1804,6 +1804,9 @@ namespace plume {
     };
 
     struct RenderDeviceCapabilities {
+        // Geometry shaders.
+        bool geometryShader = false;
+
         // Raytracing.
         bool raytracing = false;
         bool raytracingStateUpdate = false;
