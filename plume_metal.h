@@ -633,7 +633,6 @@ namespace plume {
         const RenderDeviceCapabilities &getCapabilities() const override;
         const RenderDeviceDescription &getDescription() const override;
         RenderSampleCounts getSampleCountsSupported(RenderFormat format) const override;
-        void waitIdle() const override;
         void release();
         bool isValid() const;
         bool beginCapture() override;

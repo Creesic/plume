@@ -3231,10 +3231,6 @@ namespace plume {
         return supportedSampleCounts;
     }
 
-    void MetalDevice::waitIdle() const {
-        // TODO: New - Implement this in Metal
-    }
-
     void MetalDevice::release() {
         mtl->release();
     }
