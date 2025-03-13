@@ -162,6 +162,7 @@ namespace plume {
         MTL::CullMode cullMode = MTL::CullModeNone;
         MTL::DepthClipMode depthClipMode = MTL::DepthClipModeClip;
         MTL::Winding winding = MTL::WindingClockwise;
+        MTL::PrimitiveType primitiveType = MTL::PrimitiveTypeTriangle;
     };
 
     struct ExtendedRenderTexture: RenderTexture {

@@ -588,6 +588,26 @@ namespace plume {
         }
     }
 
+    MTL::PrimitiveType mapPrimitiveType(const RenderPrimitiveTopology topology) {
+        switch (topology) {
+            case RenderPrimitiveTopology::POINT_LIST:
+                return MTL::PrimitiveTypePoint;
+            case RenderPrimitiveTopology::LINE_LIST:
+                return MTL::PrimitiveTypeLine;
+            case RenderPrimitiveTopology::LINE_STRIP:
+                return MTL::PrimitiveTypeLineStrip;
+            case RenderPrimitiveTopology::TRIANGLE_LIST:
+                return MTL::PrimitiveTypeTriangle;
+            case RenderPrimitiveTopology::TRIANGLE_STRIP:
+                return MTL::PrimitiveTypeTriangleStrip;
+            case RenderPrimitiveTopology::TRIANGLE_FAN:
+                assert(false && "Triangle fan is not supported by Metal.");
+            default:
+                assert(false && "Unknown primitive topology.");
+                return MTL::PrimitiveTypePoint;
+        }
+    }
+
     MTL::VertexStepFunction mapVertexStepFunction(RenderInputSlotClassification classification) {
         switch (classification) {
             case RenderInputSlotClassification::PER_VERTEX_DATA:
@@ -1382,6 +1402,7 @@ namespace plume {
         state.depthClipMode = (desc.depthClipEnabled) ? MTL::DepthClipModeClip : MTL::DepthClipModeClamp;
         state.winding = MTL::WindingClockwise;
         state.renderPipelineState = device->mtl->newRenderPipelineState(descriptor, &error);
+        state.primitiveType = mapPrimitiveType(desc.primitiveTopology);
 
         if (error != nullptr) {
             fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
@@ -1967,7 +1988,7 @@ namespace plume {
         checkActiveRenderEncoder();
         checkForUpdatesInGraphicsState();
 
-        activeRenderEncoder->drawPrimitives(currentPrimitiveType, startVertexLocation, vertexCountPerInstance, instanceCount, startInstanceLocation);
+        activeRenderEncoder->drawPrimitives(activeRenderState->primitiveType, startVertexLocation, vertexCountPerInstance, instanceCount, startInstanceLocation);
     }
 
     void MetalCommandList::drawIndexedInstanced(const uint32_t indexCountPerInstance, const uint32_t instanceCount, const uint32_t startIndexLocation, const int32_t baseVertexLocation, const uint32_t startInstanceLocation) {
