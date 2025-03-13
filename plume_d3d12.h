@@ -13,7 +13,12 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <directx/d3d12.h>
+#ifdef D3D12_AGILITY_SDK_ENABLED
+#   include <directx/d3d12.h>
+#else
+#   include <d3d12.h>
+#endif
+
 #include <dxgi1_4.h>
 
 #include "D3D12MemAlloc.h"
@@ -157,7 +162,11 @@ namespace plume {
     };
 
     struct D3D12CommandList : RenderCommandList {
+#   ifdef D3D12_AGILITY_SDK_ENABLED
         ID3D12GraphicsCommandList9 *d3d = nullptr;
+#   else
+        ID3D12GraphicsCommandList7 *d3d = nullptr;
+#   endif
         ID3D12CommandAllocator *commandAllocator = nullptr;
         D3D12CommandQueue *queue = nullptr;
         const D3D12Framebuffer *targetFramebuffer = nullptr;

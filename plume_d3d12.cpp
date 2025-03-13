@@ -483,9 +483,11 @@ namespace plume {
         case RenderPrimitiveTopology::TRIANGLE_LIST:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;     
         case RenderPrimitiveTopology::TRIANGLE_STRIP:
-            return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;     
+            return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+#   ifdef D3D12_AGILITY_SDK_ENABLED
         case RenderPrimitiveTopology::TRIANGLE_FAN:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN;
+#   endif
         default:
             assert(false && "Unknown primitive topology.");
             return D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
@@ -1877,8 +1879,12 @@ namespace plume {
     }
 
     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
+#   ifdef D3D12_AGILITY_SDK_ENABLED
         assert(queue->device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
         d3d->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
+#   else
+        assert(false && "Dynamic depth bias is unsupported without the Agility SDK.");
+#   endif
     }
 
     void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
@@ -2804,7 +2810,11 @@ namespace plume {
         psoDesc.RasterizerState.SlopeScaledDepthBias = desc.slopeScaledDepthBias;
 
         if (desc.dynamicDepthBiasEnabled) {
+#       ifdef D3D12_AGILITY_SDK_ENABLED
             psoDesc.Flags |= D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
+#       else
+            assert(false && "Dynamic depth bias is unsupported without the Agility SDK.");
+#       endif
         }
 
         switch (desc.cullMode) {
@@ -3388,8 +3398,11 @@ namespace plume {
                 rtStateUpdateSupportOption = d3d12Options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
             }
 
-            // Check if triangle fan is supported.
             bool triangleFanSupportOption = false;
+            bool dynamicDepthBiasOption = false;
+
+#       ifdef D3D12_AGILITY_SDK_ENABLED
+            // Check if triangle fan is supported.
             D3D12_FEATURE_DATA_D3D12_OPTIONS15 d3d12Options15 = {};
             res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS15, &d3d12Options15, sizeof(d3d12Options15));
             if (SUCCEEDED(res)) {
@@ -3397,12 +3410,12 @@ namespace plume {
             }
 
             // Check if dynamic depth bias is supported.
-            bool dynamicDepthBiasOption = false;
             D3D12_FEATURE_DATA_D3D12_OPTIONS16 d3d12Options16 = {};
             res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, &d3d12Options16, sizeof(d3d12Options16));
             if (SUCCEEDED(res)) {
                 dynamicDepthBiasOption = d3d12Options16.DynamicDepthBiasSupported;
             }
+#       endif
 
             // Check if the architecture has UMA.
             bool uma = false;
