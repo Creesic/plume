@@ -87,6 +87,7 @@ namespace plume {
         uint32_t scissors : 1;
         uint32_t vertexBuffers : 1;
         uint32_t indexBuffer : 1;
+        uint32_t depthBias : 1;
 
         // marks from which descriptor set we'll invalidate from
         uint32_t descriptorSetDirtyIndex : 5;
@@ -99,6 +100,7 @@ namespace plume {
             scissors = 1;
             vertexBuffers = 1;
             indexBuffer = 1;
+            depthBias = 1;
 
             descriptorSetDirtyIndex = 0;
         }
@@ -163,6 +165,11 @@ namespace plume {
         MTL::DepthClipMode depthClipMode = MTL::DepthClipModeClip;
         MTL::Winding winding = MTL::WindingClockwise;
         MTL::PrimitiveType primitiveType = MTL::PrimitiveTypeTriangle;
+
+        bool dynamicDepthBiasEnabled;
+        float depthBiasConstantFactor;
+        float depthBiasClamp;
+        float depthBiasSlopeFactor;
     };
 
     struct ExtendedRenderTexture: RenderTexture {
@@ -334,6 +341,12 @@ namespace plume {
         std::vector<MTL::ScissorRect> scissorVector;
 
         std::vector<PushConstantData> pushConstants;
+
+        struct {
+            float depthBias;
+            float depthBiasClamp;
+            float slopeScaledDepthBias;
+        } dynamicDepthBias;
 
         MetalDevice *device = nullptr;
         const MetalCommandQueue *queue = nullptr;

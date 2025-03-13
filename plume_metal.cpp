@@ -1404,6 +1404,15 @@ namespace plume {
         state.renderPipelineState = device->mtl->newRenderPipelineState(descriptor, &error);
         state.primitiveType = mapPrimitiveType(desc.primitiveTopology);
 
+        if (desc.dynamicDepthBiasEnabled) {
+            state.dynamicDepthBiasEnabled = true;
+        } else if (desc.depthBias != 0 || desc.slopeScaledDepthBias != 0.0f) {
+            state.dynamicDepthBiasEnabled = false;
+            state.depthBiasConstantFactor = static_cast<float>(desc.depthBias);
+            state.depthBiasClamp = desc.depthBiasClamp;
+            state.depthBiasSlopeFactor = desc.slopeScaledDepthBias;
+        }
+
         if (error != nullptr) {
             fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
             return;
@@ -2233,8 +2242,9 @@ namespace plume {
     }
 
     void MetalCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
-        checkActiveRenderEncoder();
-        activeRenderEncoder->setDepthBias(depthBias, slopeScaledDepthBias, depthBiasClamp);
+        dynamicDepthBias.depthBias = depthBias;
+        dynamicDepthBias.depthBiasClamp = depthBiasClamp;
+        dynamicDepthBias.slopeScaledDepthBias = slopeScaledDepthBias;
     }
 
     void MetalCommandList::setCommonClearState() const {
@@ -2772,6 +2782,16 @@ namespace plume {
             activeRenderEncoder->setViewports(viewportVector.data(), viewportVector.size());
             stateCache.lastViewports = viewportVector;
             dirtyGraphicsState.viewports = 0;
+        }
+
+        if (dirtyGraphicsState.depthBias) {
+            if (activeRenderState->dynamicDepthBiasEnabled) {
+                activeRenderEncoder->setDepthBias(dynamicDepthBias.depthBias, dynamicDepthBias.slopeScaledDepthBias, dynamicDepthBias.depthBiasClamp);
+            } else {
+                activeRenderEncoder->setDepthBias(activeRenderState->depthBiasConstantFactor, activeRenderState->depthBiasSlopeFactor, activeRenderState->depthBiasClamp);
+            }
+
+            dirtyGraphicsState.depthBias = 0;
         }
 
         if (dirtyGraphicsState.scissors) {
