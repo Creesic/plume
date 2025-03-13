@@ -2057,8 +2057,7 @@ namespace plume {
         }
     }
 
-    // TODO: NEW - Incorporate offset and size (new)
-    void MetalCommandList::setComputePushConstants(uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
+    void MetalCommandList::setComputePushConstants(uint32_t rangeIndex, const void *data, const uint32_t offset, const uint32_t size) {
         assert(activeComputePipelineLayout != nullptr);
         assert(rangeIndex < activeComputePipelineLayout->pushConstantRanges.size());
 
@@ -2068,8 +2067,8 @@ namespace plume {
         memcpy(pushConstants[rangeIndex].data.data(), data, range.size);
         pushConstants[rangeIndex].binding = range.binding;
         pushConstants[rangeIndex].set = range.set;
-        pushConstants[rangeIndex].offset = range.offset;
-        pushConstants[rangeIndex].size = alignUp(range.size);
+        pushConstants[rangeIndex].offset = range.offset + offset;
+        pushConstants[rangeIndex].size = alignUp(size == 0 ? range.size : size);
         pushConstants[rangeIndex].stageFlags = range.stageFlags;
 
         dirtyComputeState.pushConstants = 1;
@@ -2109,8 +2108,7 @@ namespace plume {
         }
     }
 
-    // TODO: NEW - Incorporate offset and size (new)
-    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
+    void MetalCommandList::setGraphicsPushConstants(const uint32_t rangeIndex, const void *data, const uint32_t offset, const uint32_t size) {
         assert(activeGraphicsPipelineLayout != nullptr);
         assert(rangeIndex < activeGraphicsPipelineLayout->pushConstantRanges.size());
 
@@ -2120,8 +2118,8 @@ namespace plume {
         memcpy(pushConstants[rangeIndex].data.data(), data, range.size);
         pushConstants[rangeIndex].binding = range.binding;
         pushConstants[rangeIndex].set = range.set;
-        pushConstants[rangeIndex].offset = range.offset;
-        pushConstants[rangeIndex].size = alignUp(range.size);
+        pushConstants[rangeIndex].offset = range.offset + offset;
+        pushConstants[rangeIndex].size = alignUp(size == 0 ? range.size : size);
         pushConstants[rangeIndex].stageFlags = range.stageFlags;
 
         dirtyGraphicsState.pushConstants = 1;
