@@ -2212,7 +2212,8 @@ namespace plume {
     }
 
     void MetalCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
-        // TODO: New - implement this in Metal
+        checkActiveRenderEncoder();
+        activeRenderEncoder->setDepthBias(depthBias, slopeScaledDepthBias, depthBiasClamp);
     }
 
     void MetalCommandList::setCommonClearState() const {
@@ -3018,6 +3019,7 @@ namespace plume {
         capabilities.scalarBlockLayout = true;
         capabilities.presentWait = true;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);
+        capabilities.dynamicDepthBias = true;
         description.name = "Metal";
     }
 
