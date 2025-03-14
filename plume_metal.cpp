@@ -2568,10 +2568,10 @@ namespace plume {
         pool->release();
     }
 
-    // TODO: NEW - Incorporate resolveMode
     void MetalCommandList::resolveTextureRegion(const RenderTexture *dstTexture, const uint32_t dstX, const uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
+        assert(resolveMode == RenderResolveMode::AVERAGE && "Metal currently only supports AVERAGE resolve mode.");
 
         const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
         const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
@@ -3087,6 +3087,7 @@ namespace plume {
         // capabilities.raytracing = mtl->supportsRaytracing();
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
+        capabilities.resolveModes = false;
 #if PLUME_IOS
         capabilities.descriptorIndexing = mtl->supportsFamily(MTL::GPUFamilyApple3);
 #else

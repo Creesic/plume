@@ -3963,6 +3963,7 @@ namespace plume {
         capabilities.raytracing = rtSupported;
         capabilities.raytracingStateUpdate = false;
         capabilities.sampleLocations = sampleLocationsSupported;
+        capabilities.resolveModes = false;
         capabilities.descriptorIndexing = descriptorIndexing;
         capabilities.scalarBlockLayout = scalarBlockLayout;
         capabilities.bufferDeviceAddress = bufferDeviceAddress;

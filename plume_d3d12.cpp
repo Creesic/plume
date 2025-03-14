@@ -3450,6 +3450,8 @@ namespace plume {
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
                 capabilities.sampleLocations = samplePositionsOption;
+                // Resolve modes require sample positions support.
+                capabilities.resolveModes = samplePositionsOption;
                 capabilities.triangleFan = triangleFanSupportOption;
                 capabilities.dynamicDepthBias = dynamicDepthBiasOption;
                 capabilities.uma = uma;
