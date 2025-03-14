@@ -3058,27 +3058,6 @@ namespace plume {
         this->renderInterface = renderInterface;
 
         // Device Selection
-        auto deviceVendor = [](const MTL::Device *device) -> RenderDeviceVendor {
-            switch (device->location()) {
-            case MTL::DeviceLocationBuiltIn:
-                if (device->locationNumber() == 0) {
-                    // low power
-                    return RenderDeviceVendor::INTEL;
-                }
-#ifdef __aarch64__
-                return RenderDeviceVendor::APPLE;
-#endif
-                return RenderDeviceVendor::AMD;
-                break;
-            case MTL::DeviceLocationSlot: // Discrete GPU
-            case MTL::DeviceLocationExternal: // Discrete eGPU
-                return RenderDeviceVendor::AMD;
-                break;
-            default: // Unknown
-                return RenderDeviceVendor::UNKNOWN;
-            }
-        };
-
         const NS::Array* devices = MTL::CopyAllDevices();
         MTL::Device *preferredDevice = nullptr;
         for (NS::UInteger i = 0; i < devices->count(); i++) {
