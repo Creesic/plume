@@ -1123,7 +1123,7 @@ namespace plume {
         descriptor->setHeight(desc.height);
         descriptor->setDepth(desc.depth);
         descriptor->setMipmapLevelCount(desc.mipLevels);
-        descriptor->setArrayLength(1);
+        descriptor->setArrayLength(desc.arraySize);
         descriptor->setSampleCount(desc.multisampling.sampleCount);
 
         const MTL::TextureUsage usage = mapTextureUsage(desc.flags);
@@ -1160,8 +1160,8 @@ namespace plume {
         this->texture = texture->mtl->newTextureView(
             mapPixelFormat(desc.format),
             texture->mtl->textureType(),
-            { desc.mipSlice, desc.mipLevels },
-            { 0, texture->arrayCount },
+            { desc.mipSlice, std::min(desc.mipLevels, texture->desc.mipLevels - desc.mipSlice) },
+            { desc.arrayIndex, std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex) },
             mapTextureSwizzleChannels(desc.componentMapping)
         );
     }
@@ -2473,8 +2473,8 @@ namespace plume {
                 bytesPerImage,
                 size,
                 dstTexture->mtl,
-                0, // slice
-                dstLocation.subresource.index,
+                dstLocation.subresource.arrayIndex,
+                dstLocation.subresource.mipLevel,
                 dstOrigin
             );
             activeBlitEncoder->popDebugGroup();
@@ -2496,15 +2496,15 @@ namespace plume {
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->copyFromTexture(
-                srcTexture->mtl,                  // source texture
-                0,                                // source slice (baseArrayLayer)
-                srcLocation.subresource.index,    // source mipmap level
-                srcOrigin,                        // source origin
-                size,                             // copy size
-                dstTexture->mtl,                 // destination texture
-                0,                               // destination slice (baseArrayLayer)
-                dstLocation.subresource.index,   // destination mipmap level
-                dstOrigin                        // destination origin
+                srcTexture->mtl,                    // source texture
+                srcLocation.subresource.arrayIndex, // source slice (baseArrayLayer)
+                srcLocation.subresource.mipLevel,   // source mipmap level
+                srcOrigin,                          // source origin
+                size,                               // copy size
+                dstTexture->mtl,                    // destination texture
+                dstLocation.subresource.arrayIndex, // destination slice (baseArrayLayer)
+                dstLocation.subresource.mipLevel,   // destination mipmap level
+                dstOrigin                           // destination origin
             );
           }
     }

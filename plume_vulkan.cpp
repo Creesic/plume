@@ -1027,6 +1027,8 @@ namespace plume {
 
     VulkanTextureView::VulkanTextureView(VulkanTexture *texture, const RenderTextureViewDesc &desc) {
         assert(texture != nullptr);
+        assert(desc.mipSlice < texture->desc.mipLevels);
+        assert(desc.arrayIndex < texture->desc.arraySize);
 
         this->texture = texture;
 
@@ -1041,9 +1043,9 @@ namespace plume {
         viewInfo.components.a = toVk(desc.componentMapping.a);
         viewInfo.subresourceRange.aspectMask = (texture->desc.flags & RenderTextureFlag::DEPTH_TARGET) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.baseMipLevel = desc.mipSlice;
-        viewInfo.subresourceRange.levelCount = desc.mipLevels;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = texture->desc.arraySize;
+        viewInfo.subresourceRange.levelCount = std::min(desc.mipLevels, texture->desc.mipLevels - desc.mipSlice);
+        viewInfo.subresourceRange.baseArrayLayer = desc.arrayIndex;
+        viewInfo.subresourceRange.layerCount = std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex);
 
         VkResult res = vkCreateImageView(texture->device->vk, &viewInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
@@ -3092,9 +3094,9 @@ namespace plume {
             imageCopy.bufferRowLength = ((srcLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
             imageCopy.bufferImageHeight = ((srcLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
             imageCopy.imageSubresource.aspectMask = (dstTexture->desc.flags & RenderTextureFlag::DEPTH_TARGET) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-            imageCopy.imageSubresource.baseArrayLayer = dstLocation.subresource.index / dstTexture->desc.mipLevels;
+            imageCopy.imageSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
-            imageCopy.imageSubresource.mipLevel = dstLocation.subresource.index % dstTexture->desc.mipLevels;
+            imageCopy.imageSubresource.mipLevel = dstLocation.subresource.mipLevel;
             imageCopy.imageOffset.x = dstX;
             imageCopy.imageOffset.y = dstY;
             imageCopy.imageOffset.z = dstZ;
@@ -3106,13 +3108,13 @@ namespace plume {
         else {
             VkImageCopy imageCopy = {};
             imageCopy.srcSubresource.aspectMask = (srcTexture->desc.flags & RenderTextureFlag::DEPTH_TARGET) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-            imageCopy.srcSubresource.baseArrayLayer = 0;
+            imageCopy.srcSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
             imageCopy.srcSubresource.layerCount = 1;
-            imageCopy.srcSubresource.mipLevel = srcLocation.subresource.index;
+            imageCopy.srcSubresource.mipLevel = srcLocation.subresource.mipLevel;
             imageCopy.dstSubresource.aspectMask = (dstTexture->desc.flags & RenderTextureFlag::DEPTH_TARGET) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-            imageCopy.dstSubresource.baseArrayLayer = 0;
+            imageCopy.dstSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
             imageCopy.dstSubresource.layerCount = 1;
-            imageCopy.dstSubresource.mipLevel = dstLocation.subresource.index;
+            imageCopy.dstSubresource.mipLevel = dstLocation.subresource.mipLevel;
             imageCopy.dstOffset.x = dstX;
             imageCopy.dstOffset.y = dstY;
             imageCopy.dstOffset.z = dstZ;

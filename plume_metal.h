@@ -487,7 +487,6 @@ namespace plume {
         MTL::Texture *mtl = nullptr;
         RenderTextureLayout layout = RenderTextureLayout::UNKNOWN;
         MetalPool *pool = nullptr;
-        uint32_t arrayCount = 1;
         MTL::Drawable *drawable = nullptr;
 
         MetalTexture() = default;

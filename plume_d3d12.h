@@ -315,6 +315,8 @@ namespace plume {
         RenderTextureViewDimension dimension = RenderTextureViewDimension::UNKNOWN;
         uint32_t mipLevels = 0;
         uint32_t mipSlice = 0;
+        uint32_t arraySize = 0;
+        uint32_t arrayIndex = 0;
         uint32_t shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 
         D3D12TextureView(D3D12Texture *texture, const RenderTextureViewDesc &desc);

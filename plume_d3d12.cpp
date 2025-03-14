@@ -626,9 +626,11 @@ namespace plume {
         switch (location.type) {
         case RenderTextureCopyType::SUBRESOURCE: {
             const D3D12Texture *interfaceTexture = static_cast<const D3D12Texture *>(location.texture);
+            uint32_t mipLevels = interfaceTexture->desc.mipLevels;
+            uint32_t arraySize = interfaceTexture->desc.arraySize;
             loc.pResource = (interfaceTexture != nullptr) ? interfaceTexture->d3d : nullptr;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            loc.SubresourceIndex = location.subresource.index;
+            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels + mipLevels * arraySize;
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
@@ -1056,6 +1058,7 @@ namespace plume {
                 case RenderTextureViewDimension::TEXTURE_1D:
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
                     srvDesc.Texture1D.MipLevels = interfaceTextureView->mipLevels;
+                    srvDesc.Texture1D.MostDetailedMip = interfaceTextureView->mipSlice;
                     break;
                 case RenderTextureViewDimension::TEXTURE_2D:
                     if (isMSAA) {
@@ -1064,16 +1067,19 @@ namespace plume {
                     else {
                         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                         srvDesc.Texture2D.MipLevels = interfaceTextureView->mipLevels;
+                        srvDesc.Texture2D.MostDetailedMip = interfaceTextureView->mipSlice;
                     }
 
                     break;
                 case RenderTextureViewDimension::TEXTURE_3D:
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
                     srvDesc.Texture3D.MipLevels = interfaceTextureView->mipLevels;
+                    srvDesc.Texture3D.MostDetailedMip = interfaceTextureView->mipSlice;
                     break;
                 case RenderTextureViewDimension::TEXTURE_CUBE:
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
                     srvDesc.TextureCube.MipLevels = interfaceTextureView->mipLevels;
+                    srvDesc.TextureCube.MostDetailedMip = interfaceTextureView->mipSlice;
                     break;
                 default:
                     assert(false && "Unknown texture dimension.");
@@ -2440,12 +2446,16 @@ namespace plume {
 
     D3D12TextureView::D3D12TextureView(D3D12Texture *texture, const RenderTextureViewDesc &desc) {
         assert(texture != nullptr);
+        assert(desc.mipSlice < texture->desc.mipLevels);
+        assert(desc.arrayIndex < texture->desc.arraySize);
 
         this->texture = texture;
         this->format = toDXGI(desc.format);
         this->dimension = desc.dimension;
-        this->mipLevels = desc.mipLevels;
+        this->mipLevels = std::min(desc.mipLevels, texture->desc.mipLevels - desc.mipSlice);
         this->mipSlice = desc.mipSlice;
+        this->arraySize = std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex);
+        this->arrayIndex = desc.arrayIndex;
         this->shader4ComponentMapping = toD3D12(desc.componentMapping);
         
         // D3D12 and Vulkan disagree on whether D32 is usable as a texture view format. We just make D3D12 use R32 instead.

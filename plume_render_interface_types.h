@@ -897,9 +897,9 @@ namespace plume {
         RenderTextureDimension dimension = RenderTextureDimension::UNKNOWN;
         uint32_t width = 0;
         uint32_t height = 0;
-        uint16_t depth = 0;
-        uint16_t mipLevels = 0;
-        uint16_t arraySize = 0;
+        uint32_t depth = 0;
+        uint32_t mipLevels = 0;
+        uint32_t arraySize = 0;
         RenderMultisampling multisampling;
         RenderFormat format = RenderFormat::UNKNOWN;
         RenderTextureArrangement textureArrangement = RenderTextureArrangement::UNKNOWN;
@@ -909,7 +909,7 @@ namespace plume {
 
         RenderTextureDesc() = default;
 
-        static RenderTextureDesc Texture(RenderTextureDimension dimension, uint32_t width, uint32_t height, uint16_t depth, uint16_t mipLevels, uint16_t arraySize, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
+        static RenderTextureDesc Texture(RenderTextureDimension dimension, uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevels, uint32_t arraySize, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
             RenderTextureDesc desc;
             desc.dimension = dimension;
             desc.width = width;
@@ -922,15 +922,15 @@ namespace plume {
             return desc;
         }
 
-        static RenderTextureDesc Texture1D(uint32_t width, uint16_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
+        static RenderTextureDesc Texture1D(uint32_t width, uint32_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
             return Texture(RenderTextureDimension::TEXTURE_1D, width, 1, 1, mipLevels, 1, format, flags);
         }
 
-        static RenderTextureDesc Texture2D(uint32_t width, uint32_t height, uint16_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
+        static RenderTextureDesc Texture2D(uint32_t width, uint32_t height, uint32_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
             return Texture(RenderTextureDimension::TEXTURE_2D, width, height, 1, mipLevels, 1, format, flags);
         }
 
-        static RenderTextureDesc Texture3D(uint32_t width, uint32_t height, uint32_t depth, uint16_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
+        static RenderTextureDesc Texture3D(uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevels, RenderFormat format, RenderTextureFlags flags = RenderTextureFlag::NONE) {
             return Texture(RenderTextureDimension::TEXTURE_3D, width, height, depth, mipLevels, 1, format, flags);
         }
 
@@ -992,41 +992,39 @@ namespace plume {
     struct RenderTextureViewDesc {
         RenderFormat format = RenderFormat::UNKNOWN;
         RenderTextureViewDimension dimension = RenderTextureViewDimension::UNKNOWN;
-        uint32_t mipLevels = 0;
+        uint32_t mipLevels = UINT32_MAX;
         uint32_t mipSlice = 0;
+        uint32_t arraySize = UINT32_MAX;
+        uint32_t arrayIndex = 0;
         RenderComponentMapping componentMapping;
 
         RenderTextureViewDesc() = default;
 
-        static RenderTextureViewDesc Texture1D(RenderFormat format, uint32_t mipLevels = 1) {
+        static RenderTextureViewDesc Texture1D(RenderFormat format) {
             RenderTextureViewDesc viewDesc;
             viewDesc.format = format;
             viewDesc.dimension = RenderTextureViewDimension::TEXTURE_1D;
-            viewDesc.mipLevels = mipLevels;
             return viewDesc;
         }
 
-        static RenderTextureViewDesc Texture2D(RenderFormat format, uint32_t mipLevels = 1) {
+        static RenderTextureViewDesc Texture2D(RenderFormat format) {
             RenderTextureViewDesc viewDesc;
             viewDesc.format = format;
             viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
-            viewDesc.mipLevels = mipLevels;
             return viewDesc;
         }
 
-        static RenderTextureViewDesc Texture3D(RenderFormat format, uint32_t mipLevels = 1) {
+        static RenderTextureViewDesc Texture3D(RenderFormat format) {
             RenderTextureViewDesc viewDesc;
             viewDesc.format = format;
             viewDesc.dimension = RenderTextureViewDimension::TEXTURE_3D;
-            viewDesc.mipLevels = mipLevels;
             return viewDesc;
         }      
         
-        static RenderTextureViewDesc TextureCube(RenderFormat format, uint32_t mipLevels = 1) {
+        static RenderTextureViewDesc TextureCube(RenderFormat format) {
             RenderTextureViewDesc viewDesc;
             viewDesc.format = format;
             viewDesc.dimension = RenderTextureViewDimension::TEXTURE_CUBE;
-            viewDesc.mipLevels = mipLevels;
             return viewDesc;
         }
     };
@@ -1067,7 +1065,8 @@ namespace plume {
             } placedFootprint;
 
             struct {
-                uint32_t index;
+                uint32_t mipLevel;
+                uint32_t arrayIndex;
             } subresource;
         };
 
@@ -1084,11 +1083,12 @@ namespace plume {
             return loc;
         }
 
-        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t index = 0) {
+        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0) {
             RenderTextureCopyLocation loc;
             loc.texture = texture;
             loc.type = RenderTextureCopyType::SUBRESOURCE;
-            loc.subresource.index = index;
+            loc.subresource.mipLevel = mipLevel;
+            loc.subresource.arrayIndex = arrayIndex;
             return loc;
         }
     };
