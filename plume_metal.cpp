@@ -3075,6 +3075,7 @@ namespace plume {
         description.type = mapDeviceType(mtl->location());
         description.driverVersion = 1; // Unavailable
         description.vendor = mtl->supportsFamily(MTL::GPUFamilyApple1) ? RenderDeviceVendor::APPLE : getRenderDeviceVendor(mtl->registryID());
+        description.dedicatedVideoMemory = mtl->recommendedMaxWorkingSetSize();
 
         // Setup blit, clear and resolve shaders / pipelines
         createClearShaderLibrary();
