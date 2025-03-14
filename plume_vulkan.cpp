@@ -2058,9 +2058,11 @@ namespace plume {
             return;
         }
 #   elif defined(__APPLE__)
-        static_assert(false, "Needs to be reviewed.");
         assert(renderWindow.window != 0);
         assert(renderWindow.view != 0);
+        // Creates a wrapper around the window for storing and fetching sizes.
+        this->windowWrapper = std::make_unique<CocoaWindow>(renderWindow.window);
+        
         VkMetalSurfaceCreateInfoEXT surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
         surfaceCreateInfo.pLayer = renderWindow.view;
@@ -2387,7 +2389,10 @@ namespace plume {
         dstWidth = attributes.width;
         dstHeight = attributes.height;
 #   elif defined(__APPLE__)
-        static_assert(false, "Not implemented.");
+        CocoaWindowAttributes attributes;
+        windowWrapper->getWindowAttributes(&attributes);
+        dstWidth = attributes.width;
+        dstHeight = attributes.height;
 #   endif
     }
 
