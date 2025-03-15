@@ -1628,6 +1628,10 @@ namespace plume {
             }
         }
 
+        if (argumentBuffer.mtl->storageMode() == MTL::StorageModeManaged) {
+            argumentBuffer.mtl->didModifyRange(NS::Range(argumentBuffer.offset, argumentBuffer.mtl->length() - argumentBuffer.offset));
+        }
+
         resourceEntries[descriptorIndex].resource = nativeResource;
         resourceEntries[descriptorIndex].type = descriptorType;
     }
