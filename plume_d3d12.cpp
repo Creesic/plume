@@ -627,10 +627,9 @@ namespace plume {
         case RenderTextureCopyType::SUBRESOURCE: {
             const D3D12Texture *interfaceTexture = static_cast<const D3D12Texture *>(location.texture);
             uint32_t mipLevels = interfaceTexture->desc.mipLevels;
-            uint32_t arraySize = interfaceTexture->desc.arraySize;
             loc.pResource = (interfaceTexture != nullptr) ? interfaceTexture->d3d : nullptr;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels + mipLevels * arraySize;
+            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels;
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
