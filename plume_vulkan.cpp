@@ -3973,8 +3973,16 @@ namespace plume {
         capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();
         capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
         capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
-        capabilities.triangleFan = true;
         capabilities.dynamicDepthBias = true;
+
+#   if defined(__APPLE__)
+        // MoltenVK supports triangle fans but does so via compute shaders to translate to lists, since it has to
+        // support all cases including indirect draw. This results in renderpass restarts that can harm performance,
+        // so force disable native triangle fan support and rely on the game to emulate fans if needed.
+        capabilities.triangleFan = false;
+#   else
+        capabilities.triangleFan = true;
+#   endif
 
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
