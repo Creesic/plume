@@ -1126,7 +1126,11 @@ namespace plume {
         descriptor->setArrayLength(desc.arraySize);
         descriptor->setSampleCount(desc.multisampling.sampleCount);
 
-        const MTL::TextureUsage usage = mapTextureUsage(desc.flags);
+        MTL::TextureUsage usage = mapTextureUsage(desc.flags);
+        // Add shader write usage if this texture might be used as a resolve target
+        if (desc.multisampling.sampleCount == 1 && (usage & MTL::TextureUsageRenderTarget)) {
+            usage |= MTL::TextureUsageShaderWrite;
+        }
         descriptor->setUsage(usage);
 
         this->mtl = device->mtl->newTexture(descriptor);
@@ -2579,6 +2583,8 @@ namespace plume {
 
         const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
         const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
+
+        assert(dst->mtl->usage() & MTL::TextureUsageShaderWrite);
 
         // Check if we can use full texture resolve
         const bool canUseFullResolve =
