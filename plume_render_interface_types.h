@@ -898,8 +898,8 @@ namespace plume {
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t depth = 0;
-        uint32_t mipLevels = 1;
-        uint32_t arraySize = 1;
+        uint32_t mipLevels = 0;
+        uint32_t arraySize = 0;
         RenderMultisampling multisampling;
         RenderFormat format = RenderFormat::UNKNOWN;
         RenderTextureArrangement textureArrangement = RenderTextureArrangement::UNKNOWN;
