@@ -3106,7 +3106,7 @@ namespace plume {
 #endif
         capabilities.scalarBlockLayout = true;
         capabilities.bufferDeviceAddress = mtl->supportsFamily(MTL::GPUFamilyApple3);
-        capabilities.presentWait = true;
+        capabilities.presentWait = false;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);
         capabilities.dynamicDepthBias = true;
         capabilities.uma = mtl->hasUnifiedMemory();
