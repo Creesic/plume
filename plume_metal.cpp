@@ -3099,6 +3099,7 @@ namespace plume {
         capabilities.presentWait = true;
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);
         capabilities.dynamicDepthBias = true;
+        capabilities.uma = mtl->hasUnifiedMemory();
     }
 
     MetalDevice::~MetalDevice() {
