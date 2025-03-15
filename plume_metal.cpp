@@ -1123,8 +1123,7 @@ namespace plume {
         descriptor->setHeight(desc.height);
         descriptor->setDepth(desc.depth);
         descriptor->setMipmapLevelCount(desc.mipLevels);
-        // Metal requires >= 1 array length for textures
-        descriptor->setArrayLength(std::max(1u, desc.arraySize));
+        descriptor->setArrayLength(desc.arraySize);
         descriptor->setSampleCount(desc.multisampling.sampleCount);
 
         const MTL::TextureUsage usage = mapTextureUsage(desc.flags);
