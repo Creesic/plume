@@ -3465,7 +3465,6 @@ namespace plume {
                 capabilities.triangleFan = triangleFanSupportOption;
                 capabilities.dynamicDepthBias = dynamicDepthBiasOption;
                 capabilities.uma = uma;
-                capabilities.queryPools = true;
                 description.name = deviceName;
                 description.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
                 description.vendor = RenderDeviceVendor(adapterDesc.VendorId);
@@ -3556,6 +3555,7 @@ namespace plume {
         capabilities.scalarBlockLayout = true;
         capabilities.bufferDeviceAddress = true;
         capabilities.presentWait = true;
+        capabilities.queryPools = true;
         capabilities.maxTextureSize = 16384;
         capabilities.preferHDR = description.dedicatedVideoMemory > (512 * 1024 * 1024);
 
