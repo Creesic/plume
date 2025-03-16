@@ -3974,6 +3974,7 @@ namespace plume {
         capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
         capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
         capabilities.dynamicDepthBias = true;
+        capabilities.queryPools = true;
 
 #   if defined(__APPLE__)
         // MoltenVK supports triangle fans but does so via compute shaders to translate to lists, since it has to

@@ -1905,25 +1905,23 @@ namespace plume {
 
         this->device = device;
         
-        // TODO: New - implement this in Metal if required
+        // TODO: Unimplemented
+        // Dummy values, to be replaced with actual query results
+        results.resize(queryCount, 0);
     }
 
-    MetalQueryPool::~MetalQueryPool() {
-        // TODO: New - implement this in Metal if required
-    }
+    MetalQueryPool::~MetalQueryPool() { }
 
     void MetalQueryPool::queryResults() {
-        // TODO: New - implement this in Metal if required
+        // TODO: Unimplemented
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
-        // TODO: New - implement this in Metal if required
-        return nullptr;
+        return results.data();
     }
 
     uint32_t MetalQueryPool::getCount() const {
-        // TODO: New - implement this in Metal if required
-        return 0;
+        return uint32_t(results.size());
     }
 
     // MetalCommandList
@@ -2658,12 +2656,12 @@ namespace plume {
 
     void MetalCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
         assert(queryPool != nullptr);
-        // TODO: New - check if this is required in Metal
+        // TODO: Unimplemented
     }
 
     void MetalCommandList::writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) {
         assert(queryPool != nullptr);
-        // TODO: New - check if this is required in Metal
+        // TODO: Unimplemented
     }
 
     void MetalCommandList::endOtherEncoders(EncoderType type) {
@@ -3110,6 +3108,7 @@ namespace plume {
         capabilities.preferHDR = mtl->recommendedMaxWorkingSetSize() > (512 * 1024 * 1024);
         capabilities.dynamicDepthBias = true;
         capabilities.uma = mtl->hasUnifiedMemory();
+        capabilities.queryPools = false;
     }
 
     MetalDevice::~MetalDevice() {

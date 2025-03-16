@@ -286,6 +286,7 @@ namespace plume {
 
     struct MetalQueryPool : RenderQueryPool {
         MetalDevice *device = nullptr;
+        std::vector<uint64_t> results;
 
         MetalQueryPool(MetalDevice *device, uint32_t queryCount);
         virtual ~MetalQueryPool() override;

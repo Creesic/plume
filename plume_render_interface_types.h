@@ -1840,6 +1840,9 @@ namespace plume {
 
         // UMA.
         bool uma = false;
+
+        // Query Pools.
+        bool queryPools = false;
     };
 
     struct RenderInterfaceCapabilities {
