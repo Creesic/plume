@@ -159,7 +159,8 @@ namespace plume {
         BC6H_SF16,
         BC7_TYPELESS,
         BC7_UNORM,
-        BC7_UNORM_SRGB
+        BC7_UNORM_SRGB,
+        MAX
     };
 
     enum class RenderTextureDimension {
