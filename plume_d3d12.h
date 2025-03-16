@@ -346,8 +346,7 @@ namespace plume {
     };
 
     struct D3D12Shader : RenderShader {
-        const void* data = nullptr;
-        uint64_t size = 0;
+        std::vector<uint8_t> d3d;
         std::string entryPointName;
         D3D12Device *device = nullptr;
         RenderShaderFormat format = RenderShaderFormat::UNKNOWN;
