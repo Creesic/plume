@@ -56,6 +56,7 @@ namespace plume {
         VmaAllocationInfo allocationInfo = {};
         RenderBufferDesc desc;
         RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
+
         VulkanBuffer() = default;
         VulkanBuffer(VulkanDevice *device, VulkanPool *pool, const RenderBufferDesc &desc);
         ~VulkanBuffer() override;
