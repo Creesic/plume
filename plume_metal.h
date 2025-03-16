@@ -140,14 +140,12 @@ namespace plume {
         std::vector<int32_t> bindingToIndex;
         MTL::ArgumentEncoder *argumentEncoder = nullptr;
         std::vector<MTL::ArgumentDescriptor *> argumentDescriptors;
-
         std::vector<uint32_t> descriptorIndexBases;
         std::vector<uint32_t> descriptorBindingIndices;
         uint32_t descriptorTypeMaxIndex = 0;
 
         MetalDescriptorSetLayout(MetalDevice *device, const RenderDescriptorSetDesc &desc);
         ~MetalDescriptorSetLayout();
-
         DescriptorSetLayoutBinding* getBinding(uint32_t binding, uint32_t bindingIndexOffset = 0);
     };
 
@@ -165,11 +163,10 @@ namespace plume {
         MTL::DepthClipMode depthClipMode = MTL::DepthClipModeClip;
         MTL::Winding winding = MTL::WindingClockwise;
         MTL::PrimitiveType primitiveType = MTL::PrimitiveTypeTriangle;
-
-        bool dynamicDepthBiasEnabled;
         float depthBiasConstantFactor;
         float depthBiasClamp;
         float depthBiasSlopeFactor;
+        bool dynamicDepthBiasEnabled;
     };
 
     struct ExtendedRenderTexture: RenderTexture {
@@ -186,9 +183,7 @@ namespace plume {
         MetalDevice *device = nullptr;
         std::unique_ptr<MetalDescriptorSetLayout> setLayout;
         std::vector<Descriptor> descriptors;
-
         MetalArgumentBuffer argumentBuffer;
-
         std::vector<ResourceEntry> resourceEntries;
 
         MetalDescriptorSet(MetalDevice *device, const RenderDescriptorSetDesc &desc);
@@ -198,7 +193,6 @@ namespace plume {
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
-
         void setDescriptor(uint32_t descriptorIndex, const Descriptor *descriptor);
         void bindImmutableSamplers() const;
         RenderDescriptorRangeType getDescriptorType(uint32_t binding) const;
@@ -213,7 +207,6 @@ namespace plume {
         uint32_t refreshRate = 0;
         std::vector<MetalDrawable> drawables;
         uint32_t currentAvailableDrawableIndex = 0;
-
         RenderWindow renderWindow = {};
         std::unique_ptr<CocoaWindow> windowWrapper;
 
@@ -332,15 +325,13 @@ namespace plume {
         MTL::IndexType currentIndexType = MTL::IndexTypeUInt32;
         MTL::Buffer *indexBuffer = nullptr;
         uint32_t indexBufferOffset = 0;
-
         uint32_t viewCount = 0;
+
         std::vector<MTL::Buffer *> vertexBuffers;
         std::vector<uint32_t> vertexBufferOffsets;
         std::vector<uint32_t> vertexBufferIndices;
-
         std::vector<MTL::Viewport> viewportVector;
         std::vector<MTL::ScissorRect> scissorVector;
-
         std::vector<PushConstantData> pushConstants;
 
         struct {
@@ -357,7 +348,6 @@ namespace plume {
         const MetalGraphicsPipeline *activeGraphicsPipeline = nullptr;
         const MetalRenderState *activeRenderState = nullptr;
         const MetalComputeState *activeComputeState = nullptr;
-
         const MetalDescriptorSet* renderDescriptorSets[DESCRIPTOR_SET_MAX_INDEX + 1] = {};
         const MetalDescriptorSet* computeDescriptorSets[DESCRIPTOR_SET_MAX_INDEX + 1] = {};
 
@@ -405,7 +395,6 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
-
         void endOtherEncoders(EncoderType type);
         void checkActiveComputeEncoder();
         void endActiveComputeEncoder();
@@ -480,7 +469,6 @@ namespace plume {
         ~MetalDrawable() override;
         std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) override;
         void setName(const std::string &name) override;
-
         MTL::Texture* getTexture() const override { return mtl->texture(); }
     };
 
@@ -495,7 +483,6 @@ namespace plume {
         ~MetalTexture() override;
         std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) override;
         void setName(const std::string &name) override;
-
         MTL::Texture* getTexture() const override { return mtl; }
     };
 
@@ -584,7 +571,6 @@ namespace plume {
 
         MetalPipelineLayout(MetalDevice *device, const RenderPipelineLayoutDesc &desc);
         ~MetalPipelineLayout() override;
-
         void bindDescriptorSets(MTL::CommandEncoder* encoder, const MetalDescriptorSet* const* descriptorSets, uint32_t descriptorSetCount, bool isCompute, uint32_t startIndex) const;
     };
 
