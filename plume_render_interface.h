@@ -31,6 +31,7 @@ namespace plume {
             return RenderBufferReference(this, offset);
         }
     };
+
     struct RenderTextureView {
         virtual ~RenderTextureView() { }
     };
