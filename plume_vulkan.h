@@ -70,7 +70,8 @@ namespace plume {
         VkBufferView vk = VK_NULL_HANDLE;
         VulkanBuffer *buffer = nullptr;
 
-        VulkanBufferFormattedView(VulkanBuffer *buffer, RenderFormat format);        ~VulkanBufferFormattedView() override;
+        VulkanBufferFormattedView(VulkanBuffer *buffer, RenderFormat format);
+        ~VulkanBufferFormattedView() override;
     };
 
     struct VulkanTexture : RenderTexture {
