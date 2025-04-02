@@ -65,6 +65,7 @@ endif()
 set(DXC_COMMON_OPTS "-I${CMAKE_SOURCE_DIR}")
 set(DXC_DXIL_OPTS "-Wno-ignored-attributes")
 set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
+set(DXC_RT_OPTS "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
 
 # Function to compile HLSL using DXC with common parameters
 function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME OUTPUT_FORMAT ENTRY_POINT)
@@ -100,7 +101,7 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
         set(DXC_EXTRA_ARGS "")
     elseif(SHADER_TYPE STREQUAL "ray")
         set(SHADER_PROFILE "lib_6_3")
-        set(DXC_EXTRA_ARGS "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
+        set(DXC_EXTRA_ARGS ${DXC_RT_OPTS})
     else()
         message(FATAL_ERROR "Unknown shader type: ${SHADER_TYPE}")
     endif()
@@ -205,23 +206,6 @@ function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_
     else()
         message(WARNING "Unsupported shader extension ${SHADER_EXT} for ${SHADER_SOURCE} - only .hlsl and .metal files are supported")
     endif()
-endfunction()
-
-# Shorthand functions for common shader types
-function(compile_vertex_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "vertex" ${OUTPUT_NAME} ${ENTRY_POINT})
-endfunction()
-
-function(compile_fragment_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "fragment" ${OUTPUT_NAME} ${ENTRY_POINT})
-endfunction()
-
-function(compile_compute_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "compute" ${OUTPUT_NAME} ${ENTRY_POINT})
-endfunction()
-
-function(compile_ray_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "ray" ${OUTPUT_NAME} ${ENTRY_POINT})
 endfunction()
 
 function(file_to_c_header INPUT_FILE OUTPUT_FILE VARIABLE_NAME)
