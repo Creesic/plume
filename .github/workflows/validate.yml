@@ -71,8 +71,8 @@ jobs:
           export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
 
           cmake -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DPLUME_BUILD_EXAMPLES=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_MAKE_PROGRAM=ninja -G Ninja -S . -B cmake-build
-          cmake --build cmake-build --config ${{ matrix.type }} --target plume -j $(nproc)
-          cmake --build cmake-build --config ${{ matrix.type }} --target triangle
+          cmake --build cmake-build --config ${{ matrix.type }} --target plume
+          cmake --build cmake-build --config ${{ matrix.type }} --target plume_example
 
       - name: Build Plume (Windows)
         if: runner.os == 'Windows'
@@ -86,7 +86,7 @@ jobs:
           
           cmake -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DPLUME_BUILD_EXAMPLES=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER=clang-cl -DCMAKE_MAKE_PROGRAM=ninja -G Ninja -S . -B cmake-build
           cmake --build cmake-build --config ${{ matrix.type }} --target plume -j $cpuCores
-          cmake --build cmake-build --config ${{ matrix.type }} --target triangle -j $cpuCores
+          cmake --build cmake-build --config ${{ matrix.type }} --target plume_example -j $cpuCores
 
       - name: Upload Windows Build
         if: runner.os == 'Windows'
