@@ -61,24 +61,29 @@ else()
     endif()
 endif()
 
+# Common DXC options
+set(DXC_COMMON_OPTS "-I${CMAKE_SOURCE_DIR}")
+set(DXC_DXIL_OPTS "-Wno-ignored-attributes")
+set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
+
 # Function to compile HLSL using DXC with common parameters
-function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME OUTPUT_FORMAT)
+function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME OUTPUT_FORMAT ENTRY_POINT)
     # Create unique output names based on format
     if(OUTPUT_FORMAT STREQUAL "spirv")
         set(OUTPUT_EXT "spv")
         set(BLOB_SUFFIX "SPIRV")
-        set(FORMAT_FLAGS "-spirv")
+        set(FORMAT_FLAGS ${DXC_SPV_OPTS})
     elseif(OUTPUT_FORMAT STREQUAL "dxil")
         set(OUTPUT_EXT "dxil")
         set(BLOB_SUFFIX "DXIL")
-        set(FORMAT_FLAGS "-Wno-ignored-attributes")
+        set(FORMAT_FLAGS ${DXC_DXIL_OPTS})
     else()
         message(FATAL_ERROR "Unknown output format: ${OUTPUT_FORMAT}")
     endif()
 
-    set(SHADER_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.${OUTPUT_EXT}")
-    set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.${OUTPUT_FORMAT}.c")
-    set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.${OUTPUT_FORMAT}.h")
+    set(SHADER_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_EXT}")
+    set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.c")
+    set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.h")
     
     # Create output directory
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -93,6 +98,9 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
     elseif(SHADER_TYPE STREQUAL "compute")
         set(SHADER_PROFILE "cs_6_0")
         set(DXC_EXTRA_ARGS "")
+    elseif(SHADER_TYPE STREQUAL "ray")
+        set(SHADER_PROFILE "lib_6_3")
+        set(DXC_EXTRA_ARGS "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
     else()
         message(FATAL_ERROR "Unknown shader type: ${SHADER_TYPE}")
     endif()
@@ -102,7 +110,7 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
     # Compile using DXC
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${DXC} -E main -T ${SHADER_PROFILE} ${FORMAT_FLAGS} -fspv-target-env=vulkan1.0 -fvk-use-dx-layout ${DXC_EXTRA_ARGS}
+        COMMAND ${DXC} ${DXC_COMMON_OPTS} -E ${ENTRY_POINT} -T ${SHADER_PROFILE} ${FORMAT_FLAGS} ${DXC_EXTRA_ARGS}
                 -Fo ${SHADER_OUTPUT} ${SHADER_SOURCE}
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling ${SHADER_TYPE} shader ${SHADER_SOURCE} to ${OUTPUT_FORMAT} using DXC"
@@ -120,26 +128,26 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
     target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
     
     # Make sure the target can find the generated header
-    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}/shaders")
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
 
 # Function to compile HLSL to SPIR-V using DXC
-function(build_shader_spirv_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME)
-    build_shader_dxc_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} "spirv")
+function(build_shader_spirv_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_POINT)
+    build_shader_dxc_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} "spirv" ${ENTRY_POINT})
 endfunction()
 
 # Function to compile HLSL to DXIL using DXC
-function(build_shader_dxil_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME)
-    build_shader_dxc_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} "dxil")
+function(build_shader_dxil_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_POINT)
+    build_shader_dxc_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} "dxil" ${ENTRY_POINT})
 endfunction()
 
 # Function to compile Metal shaders
 function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     # Create unique output names
-    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
-    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
-    set(METAL_C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
-    set(METAL_H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
+    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metallib")
+    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.ir")
+    set(METAL_C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metal.c")
+    set(METAL_H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metal.h")
     
     # Create output directory
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -172,11 +180,11 @@ function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     target_sources(${TARGET_NAME} PRIVATE "${METAL_C_OUTPUT}")
     
     # Make sure the target can find the generated header
-    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}/shaders")
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
 
 # Compile a shader based on its type
-function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME)
+function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_POINT)
     # Get the file extension to determine the shader language
     get_filename_component(SHADER_EXT ${SHADER_SOURCE} EXT)
     
@@ -188,21 +196,40 @@ function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME)
         endif()
     elseif(SHADER_SOURCE MATCHES ".*\\.hlsl$")
         # Compile HLSL shader to SPIR-V using DXC
-        build_shader_spirv_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME})
+        build_shader_spirv_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} ${ENTRY_POINT})
+        
+        # Also compile to DXIL on Windows
+        if(WIN32)
+            build_shader_dxil_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} ${ENTRY_POINT})
+        endif()
     else()
         message(WARNING "Unsupported shader extension ${SHADER_EXT} for ${SHADER_SOURCE} - only .hlsl and .metal files are supported")
     endif()
 endfunction()
 
 # Shorthand functions for common shader types
-function(compile_vertex_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "vertex" ${OUTPUT_NAME})
+function(compile_vertex_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
+    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "vertex" ${OUTPUT_NAME} ${ENTRY_POINT})
 endfunction()
 
-function(compile_fragment_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "fragment" ${OUTPUT_NAME})
+function(compile_fragment_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
+    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "fragment" ${OUTPUT_NAME} ${ENTRY_POINT})
 endfunction()
 
-function(compile_compute_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "compute" ${OUTPUT_NAME})
+function(compile_compute_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
+    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "compute" ${OUTPUT_NAME} ${ENTRY_POINT})
+endfunction()
+
+function(compile_ray_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
+    compile_shader(${TARGET_NAME} ${SHADER_SOURCE} "ray" ${OUTPUT_NAME} ${ENTRY_POINT})
+endfunction()
+
+function(file_to_c_header INPUT_FILE OUTPUT_FILE VARIABLE_NAME)
+    add_custom_command(
+        OUTPUT ${OUTPUT_FILE}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+        COMMAND ${CMAKE_BINARY_DIR}/bin/file_to_c ${INPUT_FILE} ${OUTPUT_FILE} ${VARIABLE_NAME} ${VARIABLE_NAME}Size
+        DEPENDS ${INPUT_FILE} file_to_c
+        COMMENT "Converting ${INPUT_FILE} to C header"
+    )
 endfunction() 
