@@ -11,4 +11,4 @@ if (APPLE)
     )
 endif()
 
-target_link_libraries(file_to_c PRIVATE c++)
+target_link_libraries(file_to_c PRIVATE)
