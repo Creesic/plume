@@ -3,7 +3,6 @@
 //
 
 #include "plume_render_interface.h"
-#include "plume_vulkan.h"
 
 #include <cassert>
 #include <cstring>
@@ -15,43 +14,43 @@
 #include <random>
 
 #ifdef _WIN64
-#include "RenderInterfaceTestAsyncCS.hlsl.dxil.h"
-#include "RenderInterfaceTestColorPS.hlsl.dxil.h"
-#include "RenderInterfaceTestDecalPS.hlsl.dxil.h"
-#include "RenderInterfaceTestTextureBindfulPS.hlsl.dxil.h"
-#include "RenderInterfaceTestTextureBindlessPS.hlsl.dxil.h"
-#include "RenderInterfaceTestRT.hlsl.dxil.h"
-#include "RenderInterfaceTestVS.hlsl.dxil.h"
-#include "RenderInterfaceTestCS.hlsl.dxil.h"
-#include "RenderInterfaceTestPostPS.hlsl.dxil.h"
-#include "RenderInterfaceTestPostVS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestAsyncCS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestColorPS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestDecalPS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestTextureBindfulPS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestTextureBindlessPS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestRT.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestVS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestCS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestPostPS.hlsl.dxil.h"
+#include "shaders/RenderInterfaceTestPostVS.hlsl.dxil.h"
 #endif
-#include "RenderInterfaceTestAsyncCS.hlsl.spirv.h"
-#include "RenderInterfaceTestColorPS.hlsl.spirv.h"
-#include "RenderInterfaceTestDecalPS.hlsl.spirv.h"
-#include "RenderInterfaceTestTextureBindfulPS.hlsl.spirv.h"
-#include "RenderInterfaceTestTextureBindlessPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestAsyncCS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestColorPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestDecalPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestTextureBindfulPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestTextureBindlessPS.hlsl.spirv.h"
 #ifndef __APPLE__
-#include "RenderInterfaceTestRT.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestRT.hlsl.spirv.h"
 #endif
-#include "RenderInterfaceTestVS.hlsl.spirv.h"
-#include "RenderInterfaceTestCS.hlsl.spirv.h"
-#include "RenderInterfaceTestPostPS.hlsl.spirv.h"
-#include "RenderInterfaceTestPostVS.hlsl.spirv.h"
-#include "RenderInterfaceTestSpecPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestVS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestCS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestPostPS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestPostVS.hlsl.spirv.h"
+#include "shaders/RenderInterfaceTestSpecPS.hlsl.spirv.h"
 #ifdef __APPLE__
-#include "RenderInterfaceTestAsyncCS.hlsl.metal.h"
-#include "RenderInterfaceTestColorPS.hlsl.metal.h"
-#include "RenderInterfaceTestDecalPS.hlsl.metal.h"
-#include "RenderInterfaceTestTextureBindfulPS.hlsl.metal.h"
-#include "RenderInterfaceTestTextureBindlessPS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestAsyncCS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestColorPS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestDecalPS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestTextureBindfulPS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestTextureBindlessPS.hlsl.metal.h"
 // TODO: Enable when RT is added to Metal.
-//#include "RenderInterfaceTestRT.hlsl.metal.h"
-#include "RenderInterfaceTestVS.hlsl.metal.h"
-#include "RenderInterfaceTestCS.hlsl.metal.h"
-#include "RenderInterfaceTestPostPS.hlsl.metal.h"
-#include "RenderInterfaceTestPostVS.hlsl.metal.h"
-#include "RenderInterfaceTestSpecPS.hlsl.metal.h"
+//#include "shaders/RenderInterfaceTestRT.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestVS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestCS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestPostPS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestPostVS.hlsl.metal.h"
+#include "shaders/RenderInterfaceTestSpecPS.hlsl.metal.h"
 #endif
 
 namespace plume {
@@ -1417,7 +1416,7 @@ namespace plume {
     using TestSetupFunc = std::function<std::unique_ptr<TestBase>()>;
     static std::vector<TestSetupFunc> g_Tests;
     static std::unique_ptr<TestBase> g_CurrentTest;
-    static uint32_t g_CurrentTestIndex = 5;
+    static uint32_t g_CurrentTestIndex = 1;
 
     void RegisterTests() {
         g_Tests.push_back([]() { return std::make_unique<ClearTest>(); });
