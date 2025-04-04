@@ -23,7 +23,7 @@ if(APPLE)
 
     set_target_properties(plume_example PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "-"
-        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS ${CMAKE_CURRENT_SOURCE_DIR}/../../../rt64.entitlements
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS ${CMAKE_CURRENT_SOURCE_DIR}/plume.entitlements
     )
 elseif(WIN32)
     target_link_libraries(plume_example PRIVATE d3d12 dxgi)
