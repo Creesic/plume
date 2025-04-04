@@ -3,25 +3,30 @@
 
 using namespace metal;
 
-struct VertexOutput
-{
+struct VertexOutput {
     float2 texCoord [[user(locn0)]];
     float4 position [[position]];
 };
 
-struct VertexInput
-{
+struct VertexInput {
     float2 position [[attribute(0)]];
     float2 texCoord [[attribute(1)]];
 };
 
-vertex VertexOutput VSMain(VertexInput in [[stage_in]])
-{
-    VertexOutput out = {};
-    float4 _21 = float4(in.position, 0.5, 1.0);
-    _21.y = -in.position.y;
-    out.position = _21;
-    out.texCoord = in.texCoord;
-    out.position.y = -(out.position.y);    // Invert Y-axis for Metal
-    return out;
-} 
+vertex VertexOutput VSMain(VertexInput input [[stage_in]]) {
+    VertexOutput output;
+    
+    // Transform 2D position to clip space
+    float4 clipPosition = float4(input.position, 0.5, 1.0);
+    clipPosition.y = -input.position.y;  // Initial Y-flip for coordinate system
+    
+    // Pass through texture coordinates
+    output.texCoord = input.texCoord;
+    output.position = clipPosition;
+    
+    // Final Y-flip for Metal's coordinate system
+    output.position.y = -output.position.y;
+    
+    return output;
+}
+

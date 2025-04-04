@@ -3,36 +3,38 @@
 
 using namespace metal;
 
-struct PushConstants
-{
+struct ColorConstants {
     float4 colorAdd;
     uint textureIndex;
 };
 
-struct FragmentOutput
-{
+struct PixelOutput {
     float4 color [[color(0)]];
 };
 
-struct FragmentInput
-{
+struct PixelInput {
     float2 texCoord [[user(locn0)]];
 };
 
-fragment FragmentOutput PSMain(FragmentInput in [[stage_in]], constant PushConstants& constants [[buffer(8)]])
-{
-    FragmentOutput out = {};
-    float4 _37;
-    do
-    {
-        if (length(constants.colorAdd) > 0.001000000047497451305389404296875)
-        {
-            _37 = constants.colorAdd;
-            break;
-        }
-        _37 = float4(in.texCoord, 1.0, 0.5);
-        break;
-    } while(false);
-    out.color = _37;
-    return out;
-} 
+fragment PixelOutput PSMain(
+    PixelInput input [[stage_in]],
+    constant ColorConstants& constants [[buffer(8)]]
+) {
+    PixelOutput output;
+    
+    // Check if we should use the provided color or generate one from UV coordinates
+    const float COLOR_THRESHOLD = 0.001;
+    float4 finalColor;
+    
+    if (length(constants.colorAdd) > COLOR_THRESHOLD) {
+        // Use the provided color if it's not close to zero
+        finalColor = constants.colorAdd;
+    } else {
+        // Generate a color from UV coordinates
+        finalColor = float4(input.texCoord, 1.0, 0.5);
+    }
+    
+    output.color = finalColor;
+    return output;
+}
+

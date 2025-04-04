@@ -3,33 +3,72 @@
 
 using namespace metal;
 
-struct PushConstants
-{
+struct ComputeConstants {
     float value;
 };
 
-struct CustomStruct
-{
-    packed_float3 point3D;
-    packed_float2 size2D;
+struct CustomStruct {
+    packed_float3 position;  // 3D point
+    packed_float2 size;      // 2D size
 };
 
-struct FragmentOutput
-{
-    float4 color [[color(0)]];
+struct StructuredBuffer {
+    CustomStruct elements[1];
 };
 
-kernel void CSMain(texture_buffer<float, access::write> output [[texture(1)]], device CustomStruct* structuredBase [[buffer(2)]], device CustomStruct* structuredOffset [[buffer(3)]], device uint* byteAddress [[buffer(4)]], constant PushConstants& constants [[buffer(8)]])
-{
-    output.write(float4(sqrt(constants.value)), uint(0u));
-    CustomStruct baseData = structuredBase[0];
-    output.write(float4((((baseData.point3D[0] + baseData.point3D[1]) + baseData.point3D[2]) + baseData.size2D[0]) + baseData.size2D[1]), uint(1u));
-    structuredBase[0] = CustomStruct{ float3(baseData.point3D) + float3(1.0), float2(baseData.size2D) + float2(1.0) };
-    CustomStruct offsetData = structuredOffset[0];
-    output.write(float4((((offsetData.point3D[0] + offsetData.point3D[1]) + offsetData.point3D[2]) + offsetData.size2D[0]) + offsetData.size2D[1]), uint(2u));
-    structuredOffset[0] = CustomStruct{ float3(offsetData.point3D) + float3(1.0), float2(offsetData.size2D) + float2(1.0) };
-    uint rawValue = byteAddress[4];
+struct ByteAddressBuffer {
+    uint elements[1];
+};
+
+struct ComputeResources {
+    constant float* _padding0 [[id(0)]];  // Maintain padding/alignment
+    texture_buffer<float, access::write> outputBuffer [[id(1)]];
+    device StructuredBuffer* structuredBufferBase [[id(2)]];
+    device StructuredBuffer* structuredBufferOffset [[id(3)]];
+    device ByteAddressBuffer* byteAddressBuffer [[id(4)]];
+};
+
+kernel void CSMain(
+    constant ComputeResources& resources [[buffer(0)]],
+    constant ComputeConstants& constants [[buffer(8)]]
+) {
+    // Write square root of input value to first output slot
+    resources.outputBuffer.write(float4(sqrt(constants.value)), uint(0));
+    
+    // Process base structured buffer
+    CustomStruct baseStruct = resources.structuredBufferBase->elements[0];
+    
+    // Sum all components and write to second output slot
+    float baseSum = dot(float3(baseStruct.position), float3(1.0)) + 
+                   dot(float2(baseStruct.size), float2(1.0));
+    resources.outputBuffer.write(float4(baseSum), uint(1));
+    
+    // Update base structured buffer by adding 1 to all components
+    resources.structuredBufferBase->elements[0] = CustomStruct{
+        float3(baseStruct.position) + float3(1.0),
+        float2(baseStruct.size) + float2(1.0)
+    };
+    
+    // Process offset structured buffer
+    CustomStruct offsetStruct = resources.structuredBufferOffset->elements[0];
+    
+    // Sum all components and write to third output slot
+    float offsetSum = dot(float3(offsetStruct.position), float3(1.0)) + 
+                     dot(float2(offsetStruct.size), float2(1.0));
+    resources.outputBuffer.write(float4(offsetSum), uint(2));
+    
+    // Update offset structured buffer by adding 1 to all components
+    resources.structuredBufferOffset->elements[0] = CustomStruct{
+        float3(offsetStruct.position) + float3(1.0),
+        float2(offsetStruct.size) + float2(1.0)
+    };
+    
+    // Process byte address buffer
+    uint rawValue = resources.byteAddressBuffer->elements[4];
     float floatValue = as_type<float>(rawValue);
-    output.write(float4(floatValue), uint(3u));
-    byteAddress[4] = as_type<uint>(floatValue + 1.0);
-} 
+    
+    // Write to fourth output slot and increment
+    resources.outputBuffer.write(float4(floatValue), uint(3));
+    resources.byteAddressBuffer->elements[4] = as_type<uint>(floatValue + 1.0);
+}
+

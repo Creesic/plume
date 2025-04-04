@@ -3,27 +3,32 @@
 
 using namespace metal;
 
-struct spvDescriptorSetBuffer0
-{
-    constant float* _PadResource0 [[id(0)]];
-    texture2d<float> gTexture [[id(1)]];
-    sampler gSampler [[id(2)]];
+struct TextureResources {
+    constant float* _padding0 [[id(0)]];  // Maintain padding/alignment
+    texture2d<float> sourceTexture [[id(1)]];
+    sampler textureSampler [[id(2)]];
 };
 
-struct FragmentOutput
-{
+struct PixelOutput {
     float4 color [[color(0)]];
 };
 
-struct FragmentInput
-{
+struct PixelInput {
     float2 texCoord [[user(locn0)]];
 };
 
-fragment FragmentOutput PSMain(FragmentInput in [[stage_in]], 
-                             constant spvDescriptorSetBuffer0& spvDescriptorSet0 [[buffer(0)]])
-{
-    FragmentOutput out = {};
-    out.color = float4(spvDescriptorSet0.gTexture.sample(spvDescriptorSet0.gSampler, in.texCoord).xyz, 1.0);
-    return out;
-} 
+fragment PixelOutput PSMain(
+    PixelInput input [[stage_in]],
+    constant TextureResources& resources [[buffer(0)]]
+) {
+    PixelOutput output;
+    
+    // Sample from source texture and output with alpha = 1
+    float3 sampledColor = resources.sourceTexture
+        .sample(resources.textureSampler, input.texCoord, level(0.0))
+        .xyz;
+    
+    output.color = float4(sampledColor, 1.0);
+    return output;
+}
+
