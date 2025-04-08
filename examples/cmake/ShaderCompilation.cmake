@@ -145,10 +145,10 @@ endfunction()
 # Function to compile Metal shaders
 function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     # Create unique output names
-    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metallib")
-    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.ir")
-    set(METAL_C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metal.c")
-    set(METAL_H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.metal.h")
+    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
+    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
+    set(METAL_C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
+    set(METAL_H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
     
     # Create output directory
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
@@ -190,7 +190,7 @@ function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_
     get_filename_component(SHADER_EXT ${SHADER_SOURCE} EXT)
     
     # Compile based on extension
-    if(SHADER_EXT STREQUAL ".metal")
+    if(SHADER_EXT MATCHES ".*\\.metal$")
         # Compile Metal shader
         if(APPLE)
             build_shader_metal_impl(${TARGET_NAME} ${SHADER_SOURCE} ${OUTPUT_NAME})

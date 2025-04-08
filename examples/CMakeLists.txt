@@ -60,33 +60,13 @@ set_target_properties(plume_example PROPERTIES
 # Compile shaders
 if(APPLE)
     # Metal shaders
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestAsyncCS.metal" "compute" "RenderInterfaceTestAsyncCS" "CSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestCS.metal" "compute" "RenderInterfaceTestCS" "CSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestVS.metal" "vertex" "RenderInterfaceTestVS" "VSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestColorPS.metal" "fragment" "RenderInterfaceTestColorPS" "PSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestDecalPS.metal" "fragment" "RenderInterfaceTestDecalPS" "PSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestPostPS.metal" "fragment" "RenderInterfaceTestPostPS" "PSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestPostVS.metal" "vertex" "RenderInterfaceTestPostVS" "VSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestSpecPS.metal" "fragment" "RenderInterfaceTestSpecPS" "PSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestTextureBindlessPS.metal" "fragment" "RenderInterfaceTestTextureBindlessPS" "PSMain")
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestTextureBindfulPS.metal" "fragment" "RenderInterfaceTestTextureBindfulPS" "PSMain")
+    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.metal" "vertex" "triangleVert" "VSMain")
+    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.metal" "fragment" "triangleFrag" "PSMain")
 endif()
 
 # Compile HLSL shaders for Vulkan/SPIR-V
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestAsyncCS.hlsl" "compute" "RenderInterfaceTestAsyncCS" "CSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestCS.hlsl" "compute" "RenderInterfaceTestCS" "CSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestVS.hlsl" "vertex" "RenderInterfaceTestVS" "VSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestColorPS.hlsl" "fragment" "RenderInterfaceTestColorPS" "PSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestDecalPS.hlsl" "fragment" "RenderInterfaceTestDecalPS" "PSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestPostPS.hlsl" "fragment" "RenderInterfaceTestPostPS" "PSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestPostVS.hlsl" "vertex" "RenderInterfaceTestPostVS" "VSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestSpecPS.hlsl" "fragment" "RenderInterfaceTestSpecPS" "PSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestTextureBindlessPS.hlsl" "fragment" "RenderInterfaceTestTextureBindlessPS" "PSMain")
-compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestTextureBindfulPS.hlsl" "fragment" "RenderInterfaceTestTextureBindfulPS" "PSMain")
-
-if (NOT APPLE)
-    compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/RenderInterfaceTestRT.hlsl" "ray" "RenderInterfaceTestRT" "ColorRayGen")
-endif()
+compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.hlsl" "vertex" "triangleVert" "VSMain")
+compile_shader(plume_example "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.hlsl" "fragment" "triangleFrag" "PSMain")
 
 # Set up a custom command to copy the shader files to the bin directory
 add_custom_target(copy_shaders ALL
