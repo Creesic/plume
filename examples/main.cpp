@@ -327,8 +327,25 @@ namespace plume {
 #if defined(__APPLE__)
         flags |= SDL_WINDOW_METAL;
 #endif
+        
+        std::string windowTitle = "Plume Example";
+        RenderShaderFormat shaderFormat = renderInterface->getCapabilities().shaderFormat;
+        switch (shaderFormat) {
+            case RenderShaderFormat::METAL:
+                windowTitle += " (Metal)";
+                break;
+            case RenderShaderFormat::SPIRV:
+                windowTitle += " (Vulkan)";
+                break;
+            case RenderShaderFormat::DXIL:
+                windowTitle += " (D3D12)";
+                break;
+            default:
+                windowTitle += " (Unknown)";
+                break;
+        }
 
-        SDL_Window* window = SDL_CreateWindow("Triangle Example", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
+        SDL_Window* window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
         if (!window) {
             fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
             SDL_Quit();
