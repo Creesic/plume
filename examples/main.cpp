@@ -182,7 +182,7 @@ namespace plume {
         ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(ctx.m_renderWindow, BufferCount, SwapchainFormat, 2);
         
         // Explicitly resize the swapchain to create the textures
-        bool resized = ctx.m_swapChain->resize();
+        ctx.m_swapChain->resize();
         
         // Create command list
         ctx.m_commandList = ctx.m_commandQueue->createCommandList();
