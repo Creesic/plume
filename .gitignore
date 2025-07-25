@@ -1,2 +1,6 @@
 .vscode
 .DS_Store
+
+# devenv
+.devenv/
+devenv.lock
