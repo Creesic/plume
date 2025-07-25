@@ -314,7 +314,7 @@ namespace plume {
         
         // Present the frame
         ctx.m_swapChain->present(imageIndex, &signalSemaphore, 1);
-        ctx.m_commandQueue->waitForCommandFence(ctx.m_commandFence.get());
+        ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
     }
 
     void RenderInterfaceTest(RenderInterface* renderInterface) {
