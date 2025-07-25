@@ -115,7 +115,6 @@ namespace plume {
             case RenderShaderFormat::DXIL:
                 vertexShader = ctx.m_device->createShader(triangleVertBlobDXIL, sizeof(triangleVertBlobDXIL), "VSMain", shaderFormat);
                 fragmentShader = ctx.m_device->createShader(triangleFragBlobDXIL, sizeof(triangleFragBlobDXIL), "PSMain", shaderFormat);
-                throw std::runtime_error("DXIL format is not supported on this platform");
                 break;
 #endif
             default:
