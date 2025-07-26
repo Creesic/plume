@@ -27,6 +27,11 @@ if(APPLE)
     )
 elseif(WIN32)
     target_link_libraries(plume_example PRIVATE d3d12 dxgi)
+
+    # Dependencies that must be next to the DLL if on Windows
+    if(EXISTS "${SDL2_BINDIR}/SDL2.dll")
+        configure_file("${SDL2_BINDIR}/SDL2.dll" "${CMAKE_BINARY_DIR}/bin/SDL2.dll" COPYONLY)
+    endif()
 elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
     find_package(X11 REQUIRED)
     target_include_directories(plume_example PUBLIC ${X11_INCLUDE_DIR} ${X11_Xrandr_INCLUDE_PATH})

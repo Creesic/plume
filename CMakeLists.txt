@@ -50,6 +50,7 @@ elseif(WIN32)
     list(APPEND PLUME_SOURCES
         plume_d3d12.cpp
         plume_d3d12.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/contrib/D3D12MemoryAllocator/src/D3D12MemAlloc.cpp
     )
 endif()
 

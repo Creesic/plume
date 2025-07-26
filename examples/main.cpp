@@ -51,7 +51,7 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> m_fence;
         std::unique_ptr<RenderSwapChain> m_swapChain;
         std::unique_ptr<RenderCommandSemaphore> m_acquireSemaphore;
-        std::unique_ptr<RenderCommandSemaphore> m_releaseSemaphore;
+        std::vector<std::unique_ptr<RenderCommandSemaphore>> m_releaseSemaphores;
         std::unique_ptr<RenderCommandFence> m_commandFence;
         std::vector<std::unique_ptr<RenderFramebuffer>> m_framebuffers;
         
@@ -89,6 +89,7 @@ namespace plume {
         layoutDesc.descriptorSetDescsCount = 0;
         layoutDesc.pushConstantRanges = nullptr;
         layoutDesc.pushConstantRangesCount = 0;
+        layoutDesc.allowInputLayout = true;
         
         ctx.m_pipelineLayout = ctx.m_device->createPipelineLayout(layoutDesc);
         
@@ -189,9 +190,6 @@ namespace plume {
         // Create acquire semaphore for swap chain synchronization
         ctx.m_acquireSemaphore = ctx.m_device->createCommandSemaphore();
         
-        // Create release semaphore for swap chain synchronization
-        ctx.m_releaseSemaphore = ctx.m_device->createCommandSemaphore();
-        
         // Create command fence for synchronization
         ctx.m_commandFence = ctx.m_device->createCommandFence();
         
@@ -219,11 +217,6 @@ namespace plume {
         
         // Simply resize the swapchain
         if (ctx.m_swapChain) {
-            // Wait for GPU to finish all work
-            if (ctx.m_commandQueue && ctx.m_fence) {
-                ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
-            }
-            
             // Clear old framebuffers
             ctx.m_framebuffers.clear();
             
@@ -269,6 +262,10 @@ namespace plume {
         
         // Begin command recording
         ctx.m_commandList->begin();
+
+        // Get the current swap chain texture and transition to render target
+        RenderTexture *swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
+        ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
         
         // Get the current swapchain framebuffer
         const RenderFramebuffer* framebuffer = ctx.m_framebuffers[imageIndex].get();
@@ -283,15 +280,12 @@ namespace plume {
         ctx.m_commandList->setViewports(viewport);
         ctx.m_commandList->setScissors(scissor);
         
-        // Get the current swap chain texture and transition to render target
-        RenderTexture* swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
-        ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
-        
         // Clear with a dark blue color
         RenderColor clearColor(0.0f, 0.0f, 0.2f, 1.0f);
         ctx.m_commandList->clearColor(0, clearColor);
         
         // Bind the pipeline and vertex buffer
+        ctx.m_commandList->setGraphicsPipelineLayout(ctx.m_pipelineLayout.get());
         ctx.m_commandList->setPipeline(ctx.m_pipeline.get());
         ctx.m_commandList->setVertexBuffers(0, &ctx.m_vertexBufferView, 1, &ctx.m_inputSlot);
         
@@ -303,11 +297,16 @@ namespace plume {
         
         // End command recording
         ctx.m_commandList->end();
+
+        // Create semaphores if needed
+        while (ctx.m_releaseSemaphores.size() < ctx.m_swapChain->getTextureCount()) {
+            ctx.m_releaseSemaphores.emplace_back(ctx.m_device->createCommandSemaphore());
+        }
         
         // Submit and present
         const RenderCommandList* cmdList = ctx.m_commandList.get();
         RenderCommandSemaphore* waitSemaphore = ctx.m_acquireSemaphore.get();
-        RenderCommandSemaphore* signalSemaphore = ctx.m_releaseSemaphore.get();
+        RenderCommandSemaphore* signalSemaphore = ctx.m_releaseSemaphores[imageIndex].get();
         
         ctx.m_commandQueue->executeCommandLists(&cmdList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ctx.m_fence.get());
         
@@ -361,6 +360,8 @@ namespace plume {
 #elif defined(__APPLE__)
         SDL_MetalView view = SDL_Metal_CreateView(window);
         createContext(ctx, renderInterface, { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) });
+#elif defined(WIN32)
+        createContext(ctx, renderInterface, { wmInfo.info.win.window });
 #endif
 
         bool running = true;
@@ -395,7 +396,7 @@ namespace plume {
 
 std::unique_ptr<plume::RenderInterface> CreateRenderInterface() {
 #if defined(_WIN32)
-    const bool useVulkan = true;
+    const bool useVulkan = false;
     if (!useVulkan) {
         return plume::CreateD3D12Interface();
     }
