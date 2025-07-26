@@ -325,10 +325,10 @@ namespace plume {
 
         TestContext ctx;
 #if defined(__linux__)
-        createContext(ctx, renderInterface, { wmInfo.info.x11.display, wmInfo.info.x11.window });
+        createContext(ctx, renderInterface, { wmInfo.info.x11.display, wmInfo.info.x11.window }, apiName);
 #elif defined(__APPLE__)
         SDL_MetalView view = SDL_Metal_CreateView(window);
-        createContext(ctx, renderInterface, { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) });
+        createContext(ctx, renderInterface, { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) }, apiName);
 #elif defined(WIN32)
         createContext(ctx, renderInterface, { wmInfo.info.win.window }, apiName);
 #endif
