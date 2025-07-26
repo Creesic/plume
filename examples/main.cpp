@@ -83,10 +83,6 @@ namespace plume {
     void createPipeline(TestContext& ctx) {
         // Create a pipeline layout (without any descriptor sets or push constants)
         RenderPipelineLayoutDesc layoutDesc;
-        layoutDesc.descriptorSetDescs = nullptr;
-        layoutDesc.descriptorSetDescsCount = 0;
-        layoutDesc.pushConstantRanges = nullptr;
-        layoutDesc.pushConstantRangesCount = 0;
         layoutDesc.allowInputLayout = true;
         
         ctx.m_pipelineLayout = ctx.m_device->createPipelineLayout(layoutDesc);
