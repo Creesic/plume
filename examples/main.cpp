@@ -38,9 +38,6 @@ namespace plume {
 
     static const uint32_t BufferCount = 2;
     static const RenderFormat SwapchainFormat = RenderFormat::B8G8R8A8_UNORM;
-    static const uint32_t MSAACount = 4;
-    static const RenderFormat ColorFormat = RenderFormat::R8G8B8A8_UNORM;
-    static const RenderFormat DepthFormat = RenderFormat::D32_FLOAT;
 
     struct TestContext {
         const RenderInterface *m_renderInterface = nullptr;
