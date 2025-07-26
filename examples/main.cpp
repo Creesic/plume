@@ -44,6 +44,7 @@ namespace plume {
 
     struct TestContext {
         const RenderInterface *m_renderInterface = nullptr;
+        std::string m_apiName;
         RenderWindow m_renderWindow = {};
         std::unique_ptr<RenderDevice> m_device;
         std::unique_ptr<RenderCommandQueue> m_commandQueue;
@@ -206,9 +207,11 @@ namespace plume {
 
     // MARK: - Lifecycle Methods
 
-    static void createContext(TestContext& ctx, RenderInterface* renderInterface, RenderWindow window) {
+    static void createContext(TestContext& ctx, RenderInterface* renderInterface, RenderWindow window, const std::string &apiName) {
         ctx.m_renderInterface = renderInterface;
         ctx.m_renderWindow = window;
+        ctx.m_apiName = apiName;
+
         initializeRenderResources(ctx, renderInterface);
     }
 
@@ -235,27 +238,9 @@ namespace plume {
     static void render(TestContext& ctx) {
         static int counter = 0;
         if (counter++ % 60 == 0) {
-            // Get the shader format from the render interface
-            RenderShaderFormat shaderFormat = ctx.m_renderInterface->getCapabilities().shaderFormat;
-            std::string backendName;
-            
-            switch (shaderFormat) {
-                case RenderShaderFormat::METAL:
-                    backendName = "Metal";
-                    break;
-                case RenderShaderFormat::SPIRV:
-                    backendName = "Vulkan";
-                    break;
-                case RenderShaderFormat::DXIL:
-                    backendName = "D3D12";
-                    break;
-                case RenderShaderFormat::UNKNOWN:
-                    assert(false && "Unknown shader format");
-            }
-            
-            std::cout << "Rendering frame " << counter << " using " << backendName << " backend" << std::endl;
+            std::cout << "Rendering frame " << counter << " using " << ctx.m_apiName << " backend" << std::endl;
         }
-        
+
         // Acquire the next swapchain image
         uint32_t imageIndex = 0;
         ctx.m_swapChain->acquireTexture(ctx.m_acquireSemaphore.get(), &imageIndex);
@@ -315,7 +300,7 @@ namespace plume {
         ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
     }
 
-    void RenderInterfaceTest(RenderInterface* renderInterface) {
+    void RenderInterfaceTest(RenderInterface* renderInterface, const std::string &apiName) {
         if (SDL_Init(SDL_INIT_VIDEO) != 0) {
             fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
             return;
@@ -326,23 +311,7 @@ namespace plume {
         flags |= SDL_WINDOW_METAL;
 #endif
         
-        std::string windowTitle = "Plume Example";
-        RenderShaderFormat shaderFormat = renderInterface->getCapabilities().shaderFormat;
-        switch (shaderFormat) {
-            case RenderShaderFormat::METAL:
-                windowTitle += " (Metal)";
-                break;
-            case RenderShaderFormat::SPIRV:
-                windowTitle += " (Vulkan)";
-                break;
-            case RenderShaderFormat::DXIL:
-                windowTitle += " (D3D12)";
-                break;
-            default:
-                windowTitle += " (Unknown)";
-                break;
-        }
-
+        std::string windowTitle = "Plume Example (" + apiName + ")";
         SDL_Window* window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
         if (!window) {
             fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
@@ -361,7 +330,7 @@ namespace plume {
         SDL_MetalView view = SDL_Metal_CreateView(window);
         createContext(ctx, renderInterface, { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) });
 #elif defined(WIN32)
-        createContext(ctx, renderInterface, { wmInfo.info.win.window });
+        createContext(ctx, renderInterface, { wmInfo.info.win.window }, apiName);
 #endif
 
         bool running = true;
@@ -386,6 +355,20 @@ namespace plume {
             render(ctx);
         }
 
+        // Transition the active swap chain render target out of the present state to avoid live references to the resource
+        uint32_t imageIndex = 0;
+        if (!ctx.m_swapChain->isEmpty() && ctx.m_swapChain->acquireTexture(ctx.m_acquireSemaphore.get(), &imageIndex)) {
+            RenderTexture *swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
+            ctx.m_commandList->begin();
+            ctx.m_commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+            ctx.m_commandList->end();
+
+            const RenderCommandList *cmdList = ctx.m_commandList.get();
+            RenderCommandSemaphore *waitSemaphore = ctx.m_acquireSemaphore.get();
+            ctx.m_commandQueue->executeCommandLists(&cmdList, 1, &waitSemaphore, 1, nullptr, 0, ctx.m_fence.get());
+            ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
+        }
+
 #if defined(__APPLE__)
         SDL_Metal_DestroyView(view);
 #endif
@@ -394,26 +377,35 @@ namespace plume {
     }
 }
 
-std::unique_ptr<plume::RenderInterface> CreateRenderInterface() {
+std::unique_ptr<plume::RenderInterface> CreateRenderInterface(std::string &apiName) {
+    const bool useVulkan = false;
 #if defined(_WIN32)
-    const bool useVulkan = false;
-    if (!useVulkan) {
-        return plume::CreateD3D12Interface();
-    }
-    return plume::CreateVulkanInterface();
-#elif defined(__APPLE__)
-    const bool useVulkan = false;
     if (useVulkan) {
+        apiName = "Vulkan";
         return plume::CreateVulkanInterface();
     }
-    return plume::CreateMetalInterface();
+    else {
+        apiName = "D3D12";
+        return plume::CreateD3D12Interface();
+    }
+#elif defined(__APPLE__)
+    if (useVulkan) {
+        apiName = "Vulkan";
+        return plume::CreateVulkanInterface();
+    }
+    else {
+        apiName = "Metal";
+        return plume::CreateMetalInterface();
+    }
 #else
+    apiName = "Vulkan";
     return plume::CreateVulkanInterface();
 #endif
 }
 
 int main(int argc, char* argv[]) {
-    auto renderInterface = CreateRenderInterface();
-    plume::RenderInterfaceTest(renderInterface.get());
+    std::string apiName = "Unknown";
+    auto renderInterface = CreateRenderInterface(apiName);
+    plume::RenderInterfaceTest(renderInterface.get(), apiName);
     return 0;
 }
