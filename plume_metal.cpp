@@ -2388,8 +2388,8 @@ namespace plume {
             pendingClears.clearValues.clear();
             pendingClears.active = false;
 
-            // Resize for color attachments
-            const size_t totalAttachments = interfaceFramebuffer->colorAttachments.size() + (interfaceFramebuffer->depthAttachment.getTexture() ? 1 : 0);
+            // Resize for color attachments (1 for depth, 1 for stencil)
+            const size_t totalAttachments = interfaceFramebuffer->colorAttachments.size() + 2;
             pendingClears.initialAction.resize(totalAttachments, MTL::LoadActionLoad);
             pendingClears.clearValues.resize(totalAttachments);
         } else {
@@ -2522,8 +2522,17 @@ namespace plume {
             // For full framebuffer clears, use the more efficient load action clear
             if (clearRectsCount == 0) {
                 const size_t depthIndex = targetFramebuffer->colorAttachments.size();
-                pendingClears.initialAction[depthIndex] = MTL::LoadActionClear;
-                pendingClears.clearValues[depthIndex].depth = depthValue;
+                
+                if (clearDepth) {
+                    pendingClears.initialAction[depthIndex] = MTL::LoadActionClear;
+                    pendingClears.clearValues[depthIndex].depth = depthValue;
+                }
+                
+                if (clearStencil) {
+                    pendingClears.initialAction[depthIndex + 1] = MTL::LoadActionClear;
+                    pendingClears.clearValues[depthIndex + 1].stencil = stencilValue;
+                }
+                
                 pendingClears.active = true;
                 return;
             }
@@ -2957,7 +2966,8 @@ namespace plume {
                 if (RenderFormatIsStencil(targetFramebuffer->depthAttachment.format)) {
                     MTL::RenderPassStencilAttachmentDescriptor *stencilAttachment = renderDescriptor->stencilAttachment();
                     stencilAttachment->setTexture(targetFramebuffer->depthAttachment.getTexture());
-                    stencilAttachment->setLoadAction(MTL::LoadActionLoad);
+                    stencilAttachment->setLoadAction(pendingClears.active ? pendingClears.initialAction[depthIndex + 1] : MTL::LoadActionLoad);
+                    stencilAttachment->setClearStencil(pendingClears.clearValues[depthIndex + 1].stencil);
                     stencilAttachment->setStoreAction(MTL::StoreActionStore);
                 }
             }

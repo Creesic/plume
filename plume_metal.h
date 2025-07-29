@@ -297,6 +297,7 @@ namespace plume {
         union ClearValue {
             RenderColor color;
             float depth;
+            float stencil;
 
             ClearValue() : depth(0.0f) {}
             ~ClearValue() {}
