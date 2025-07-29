@@ -1307,7 +1307,7 @@ namespace plume {
             for (uint32_t i = 0; i < specConstantsCount; i++) {
                 const RenderSpecConstant &specConstant = specConstants[i];
                 values->setConstantValue(&specConstant.value, MTL::DataTypeUInt, specConstant.index);
-            } 
+            }
         }
         NS::Error *error = nullptr;
         MTL::Function *function = library->newFunction(functionName, values, &error);
@@ -1641,25 +1641,25 @@ namespace plume {
             setDescriptor(descriptorIndex, nullptr);
             return;
         }
-        
+
         const MetalBuffer *interfaceBuffer = static_cast<const MetalBuffer *>(buffer);
-        
+
         if (bufferFormattedView != nullptr) {
             assert((bufferStructuredView == nullptr) && "Can't use structured views and formatted views at the same time.");
-            
+
             const MetalBufferFormattedView *interfaceBufferFormattedView = static_cast<const MetalBufferFormattedView *>(bufferFormattedView);
             const TextureDescriptor descriptor = { .texture = interfaceBufferFormattedView->texture };
             setDescriptor(descriptorIndex, &descriptor);
         } else {
             uint32_t offset = 0;
-            
+
             if (bufferStructuredView != nullptr) {
                 assert((bufferFormattedView == nullptr) && "Can't use structured views and formatted views at the same time.");
                 assert(bufferStructuredView->structureByteStride > 0);
-                
+
                 offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
             }
-            
+
             const BufferDescriptor descriptor = { .buffer = interfaceBuffer->mtl, .offset = offset };
             setDescriptor(descriptorIndex, &descriptor);
         }
@@ -1739,7 +1739,7 @@ namespace plume {
                     argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, descriptorIndex - indexBase + bindingIndex);
                     break;
                 }
-                    
+
                 default:
                     assert(false && "Unsupported descriptor type.");
             }
@@ -1954,7 +1954,7 @@ namespace plume {
     // MetalAttachment
 
     MTL::Texture* MetalAttachment::getTexture() const {
-        return textureView ? textureView->texture : texture->getTexture();
+        return textureView ? textureView->texture : texture ? texture->getTexture() : nullptr;
     }
 
     // MetalFramebuffer
@@ -2043,7 +2043,7 @@ namespace plume {
         assert(queryCount > 0);
 
         this->device = device;
-        
+
         // TODO: Unimplemented
         // Dummy values, to be replaced with actual query results
         results.resize(queryCount, 0);
@@ -2382,6 +2382,16 @@ namespace plume {
             const MetalFramebuffer *interfaceFramebuffer = static_cast<const MetalFramebuffer*>(framebuffer);
             targetFramebuffer = interfaceFramebuffer;
             dirtyGraphicsState.setAll();
+
+            // Initialize pending clears
+            pendingClears.initialAction.clear();
+            pendingClears.clearValues.clear();
+            pendingClears.active = false;
+
+            // Resize for color attachments
+            const size_t totalAttachments = interfaceFramebuffer->colorAttachments.size() + (interfaceFramebuffer->depthAttachment.getTexture() ? 1 : 0);
+            pendingClears.initialAction.resize(totalAttachments, MTL::LoadActionLoad);
+            pendingClears.clearValues.resize(totalAttachments);
         } else {
             targetFramebuffer = nullptr;
         }
@@ -2401,11 +2411,30 @@ namespace plume {
         activeRenderEncoder->setDepthBias(0.0f, 0.0f, 0.0f);
     }
 
+    void MetalCommandList::handlePendingClears() {
+        if (!pendingClears.active) {
+            return;
+        }
+        
+        checkActiveRenderEncoder();
+        endActiveRenderEncoder();
+        pendingClears.active = false;
+    }
+
     void MetalCommandList::clearColor(const uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, const uint32_t clearRectsCount) {
         assert(targetFramebuffer != nullptr);
         assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
         assert((!clearRects || clearRectsCount <= MAX_CLEAR_RECTS) && "Too many clear rects");
+        
+        // For full framebuffer clears, use the more efficient load action clear
+        if (clearRectsCount == 0) {
+            pendingClears.initialAction[attachmentIndex] = MTL::LoadActionClear;
+            pendingClears.clearValues[attachmentIndex].color = colorValue;
+            pendingClears.active = true;
+            return;
+        }
 
+        // For partial clears, do our own quad-based clear
         checkActiveRenderEncoder();
 
         NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
@@ -2490,6 +2519,16 @@ namespace plume {
         assert((!clearRects || clearRectsCount <= MAX_CLEAR_RECTS) && "Too many clear rects");
 
         if (clearDepth || clearStencil) {
+            // For full framebuffer clears, use the more efficient load action clear
+            if (clearRectsCount == 0) {
+                const size_t depthIndex = targetFramebuffer->colorAttachments.size();
+                pendingClears.initialAction[depthIndex] = MTL::LoadActionClear;
+                pendingClears.clearValues[depthIndex].depth = depthValue;
+                pendingClears.active = true;
+                return;
+            }
+
+            // For partial clears, do our own quad-based clear
             checkActiveRenderEncoder();
 
             NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
@@ -2902,14 +2941,17 @@ namespace plume {
             for (uint32_t i = 0; i < targetFramebuffer->colorAttachments.size(); i++) {
                 MTL::RenderPassColorAttachmentDescriptor *colorAttachment = renderDescriptor->colorAttachments()->object(i);
                 colorAttachment->setTexture(targetFramebuffer->colorAttachments[i].getTexture());
-                colorAttachment->setLoadAction(MTL::LoadActionLoad);
+                colorAttachment->setLoadAction(pendingClears.active ? pendingClears.initialAction[i] : MTL::LoadActionLoad);
+                colorAttachment->setClearColor(mapClearColor(pendingClears.clearValues[i].color));
                 colorAttachment->setStoreAction(MTL::StoreActionStore);
             }
 
             if (targetFramebuffer->depthAttachment.format != RenderFormat::UNKNOWN) {
+                const size_t depthIndex = targetFramebuffer->colorAttachments.size();
                 MTL::RenderPassDepthAttachmentDescriptor *depthAttachment = renderDescriptor->depthAttachment();
                 depthAttachment->setTexture(targetFramebuffer->depthAttachment.getTexture());
-                depthAttachment->setLoadAction(MTL::LoadActionLoad);
+                depthAttachment->setLoadAction(pendingClears.active ? pendingClears.initialAction[depthIndex] : MTL::LoadActionLoad);
+                depthAttachment->setClearDepth(pendingClears.clearValues[depthIndex].depth);
                 depthAttachment->setStoreAction(MTL::StoreActionStore);
 
                 if (RenderFormatIsStencil(targetFramebuffer->depthAttachment.format)) {
@@ -2929,6 +2971,14 @@ namespace plume {
 
             activeRenderEncoder->retain();
             releasePool->release();
+            
+            // Reset pending clears since we've now handled them
+            if (pendingClears.active) {
+                for (auto& action : pendingClears.initialAction) {
+                    action = MTL::LoadActionLoad;
+                }
+                pendingClears.active = false;
+            }
         }
     }
 
@@ -3041,6 +3091,8 @@ namespace plume {
             stateCache.lastVertexBufferIndices.clear();
             stateCache.lastPushConstants.clear();
         }
+        
+        handlePendingClears();
     }
 
     void MetalCommandList::checkActiveBlitEncoder() {
