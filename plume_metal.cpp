@@ -2418,7 +2418,6 @@ namespace plume {
         
         checkActiveRenderEncoder();
         endActiveRenderEncoder();
-        pendingClears.active = false;
     }
 
     void MetalCommandList::clearColor(const uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, const uint32_t clearRectsCount) {
