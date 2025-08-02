@@ -1954,7 +1954,7 @@ namespace plume {
     // MetalAttachment
 
     MTL::Texture* MetalAttachment::getTexture() const {
-        return textureView ? textureView->texture : texture ? texture->getTexture() : nullptr;
+        return textureView ? textureView->texture : texture->getTexture();
     }
 
     // MetalFramebuffer
