@@ -2082,6 +2082,8 @@ namespace plume {
 
     void MetalCommandList::end() {
         endActiveRenderEncoder();
+        handlePendingClears();
+
         endActiveResolveTextureComputeEncoder();
         endActiveBlitEncoder();
         endActiveComputeEncoder();
@@ -2105,6 +2107,7 @@ namespace plume {
 
         // End render passes on all barriers
         endActiveRenderEncoder();
+        handlePendingClears();
     }
 
     void MetalCommandList::dispatch(const uint32_t threadGroupCountX, const uint32_t threadGroupCountY, const uint32_t threadGroupCountZ) {
@@ -2376,6 +2379,7 @@ namespace plume {
     void MetalCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
         endOtherEncoders(EncoderType::Render);
         endActiveRenderEncoder();
+        handlePendingClears();
         activeType = EncoderType::Render;
 
         if (framebuffer != nullptr) {
@@ -2743,6 +2747,7 @@ namespace plume {
         // For full texture resolves, use the more efficient render pass resolve
         endOtherEncoders(EncoderType::Render);
         endActiveRenderEncoder();
+        handlePendingClears();
         activeType = EncoderType::Render;
 
         NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
@@ -2938,6 +2943,11 @@ namespace plume {
     void MetalCommandList::checkActiveRenderEncoder() {
         assert(targetFramebuffer != nullptr);
         endOtherEncoders(EncoderType::Render);
+        
+        if (pendingClears.active) {
+            endActiveRenderEncoder();
+        }
+        
         activeType = EncoderType::Render;
 
         if (activeRenderEncoder == nullptr) {
@@ -3100,8 +3110,6 @@ namespace plume {
             stateCache.lastVertexBufferIndices.clear();
             stateCache.lastPushConstants.clear();
         }
-        
-        handlePendingClears();
     }
 
     void MetalCommandList::checkActiveBlitEncoder() {
