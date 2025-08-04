@@ -3135,7 +3135,7 @@ namespace plume {
         activeType = EncoderType::Resolve;
 
         if (activeResolveComputeEncoder == nullptr) {
-            activeResolveComputeEncoder = mtl->computeCommandEncoder();
+            activeResolveComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
             activeResolveComputeEncoder->setLabel(MTLSTR("Resolve Texture Encoder"));
             activeResolveComputeEncoder->setComputePipelineState(device->resolveTexturePipelineState);
         }
