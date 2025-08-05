@@ -1886,6 +1886,9 @@ namespace plume {
 
         // Buffers.
         bool bufferDeviceAddress = false;
+        
+        // Samplers.
+        bool samplerMirrorClampToEdge = false;
 
         // Present.
         bool presentWait = false;
