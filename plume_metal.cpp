@@ -2905,10 +2905,14 @@ namespace plume {
         activeType = EncoderType::Compute;
 
         if (activeComputeEncoder == nullptr) {
+            NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+            
             activeComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
             activeComputeEncoder->setLabel(MTLSTR("Compute Encoder"));
 
             activeComputeEncoder->retain();
+            releasePool->release();
+
             dirtyComputeState.setAll();
         }
 
