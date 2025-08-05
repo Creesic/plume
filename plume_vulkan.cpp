@@ -542,7 +542,7 @@ namespace plume {
         }
     }
 
-    static VkSamplerAddressMode toVk(RenderTextureAddressMode mode, bool samplerMirrorClampToEdgeSupported = true) {
+    static VkSamplerAddressMode toVk(RenderTextureAddressMode mode, bool samplerMirrorClampToEdgeSupported) {
         switch (mode) {
         case RenderTextureAddressMode::WRAP:
             return VK_SAMPLER_ADDRESS_MODE_REPEAT;
