@@ -542,7 +542,7 @@ namespace plume {
         }
     }
 
-    static VkSamplerAddressMode toVk(RenderTextureAddressMode mode) {
+    static VkSamplerAddressMode toVk(RenderTextureAddressMode mode, bool samplerMirrorClampToEdgeSupported = true) {
         switch (mode) {
         case RenderTextureAddressMode::WRAP:
             return VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -553,7 +553,12 @@ namespace plume {
         case RenderTextureAddressMode::BORDER:
             return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         case RenderTextureAddressMode::MIRROR_ONCE:
-            return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+            if (samplerMirrorClampToEdgeSupported) {
+                return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+            } else {
+                // Fallback to regular clamp when MIRROR_CLAMP_TO_EDGE is not supported
+                return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            }
         default:
             assert(false && "Unknown texture address mode.");
             return VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
@@ -1309,9 +1314,9 @@ namespace plume {
         samplerInfo.minFilter = toVk(desc.minFilter);
         samplerInfo.magFilter = toVk(desc.magFilter);
         samplerInfo.mipmapMode = toVk(desc.mipmapMode);
-        samplerInfo.addressModeU = toVk(desc.addressU);
-        samplerInfo.addressModeV = toVk(desc.addressV);
-        samplerInfo.addressModeW = toVk(desc.addressW);
+        samplerInfo.addressModeU = toVk(desc.addressU, device->capabilities.samplerMirrorClampToEdge);
+        samplerInfo.addressModeV = toVk(desc.addressV, device->capabilities.samplerMirrorClampToEdge);
+        samplerInfo.addressModeW = toVk(desc.addressW, device->capabilities.samplerMirrorClampToEdge);
         samplerInfo.mipLodBias = desc.mipLODBias;
         samplerInfo.anisotropyEnable = desc.anisotropyEnabled;
         samplerInfo.maxAnisotropy = float(desc.maxAnisotropy);
