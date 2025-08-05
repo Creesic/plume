@@ -553,12 +553,8 @@ namespace plume {
         case RenderTextureAddressMode::BORDER:
             return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         case RenderTextureAddressMode::MIRROR_ONCE:
-            if (samplerMirrorClampToEdgeSupported) {
-                return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
-            } else {
-                // Fallback to regular clamp when MIRROR_CLAMP_TO_EDGE is not supported
-                return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-            }
+            assert(samplerMirrorClampToEdgeSupported && "MIRROR_ONCE is not supported when samplerMirrorClampToEdge is not supported.");
+            return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
         default:
             assert(false && "Unknown texture address mode.");
             return VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
