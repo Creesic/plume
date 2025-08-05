@@ -3817,6 +3817,7 @@ namespace plume {
         capabilities.queryPools = true;
         capabilities.maxTextureSize = 16384;
         capabilities.preferHDR = description.dedicatedVideoMemory > (512 * 1024 * 1024);
+        capabilities.samplerMirrorClampToEdge = true;
 
         // Create descriptor heaps allocator.
         viewHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, ShaderDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
