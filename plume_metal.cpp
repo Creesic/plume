@@ -1867,6 +1867,9 @@ namespace plume {
         this->windowWrapper = std::make_unique<CocoaWindow>(renderWindow.window);
         getWindowSize(width, height);
 
+        // Set the layer's drawable size to match the window size
+        layer->setDrawableSize(CGSizeMake(width, height));
+
         // set each of the drawable to have desc.flags = RenderTextureFlag::RENDER_TARGET;
         for (uint32_t i = 0; i < MAX_DRAWABLES; i++) {
             MetalDrawable &drawable = this->drawables[i];
