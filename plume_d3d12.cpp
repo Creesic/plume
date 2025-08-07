@@ -48,15 +48,15 @@ namespace plume {
 
     static std::wstring Utf8ToUtf16(const std::string_view& value) {
         std::wstring wideStr;
-        wideStr.resize(MultiByteToWideChar(CP_UTF8, 0, value.data(), value.size(), nullptr, 0));
-        MultiByteToWideChar(CP_UTF8, 0, value.data(), value.size(), wideStr.data(), wideStr.size());
+        wideStr.resize(MultiByteToWideChar(CP_UTF8, 0, value.data(), int(value.size()), nullptr, 0));
+        MultiByteToWideChar(CP_UTF8, 0, value.data(), int(value.size()), wideStr.data(), int(wideStr.size()));
         return wideStr;
     }
 
     static std::string Utf16ToUtf8(const std::wstring_view& value) {
         std::string multiByteStr;
-        multiByteStr.resize(WideCharToMultiByte(CP_UTF8, 0, value.data(), value.size(), nullptr, 0, nullptr, FALSE));
-        WideCharToMultiByte(CP_UTF8, 0, value.data(), value.size(), multiByteStr.data(), multiByteStr.size(), nullptr, FALSE);
+        multiByteStr.resize(WideCharToMultiByte(CP_UTF8, 0, value.data(), int(value.size()), nullptr, 0, nullptr, FALSE));
+        WideCharToMultiByte(CP_UTF8, 0, value.data(), int(value.size()), multiByteStr.data(), int(multiByteStr.size()), nullptr, FALSE);
         return multiByteStr;
     }
 
@@ -1797,7 +1797,7 @@ namespace plume {
         readbackBuffer->unmap();
 
         for (uint64_t &result : results) {
-            result = result / double(device->timestampFrequency) * 1000000000.0;
+            result = (result * 1000000000ULL) / device->timestampFrequency;
         }
     }
 
@@ -3562,7 +3562,7 @@ namespace plume {
         }
 
         // Store the total amount of root parameters.
-        rootCount = rootParameters.size();
+        rootCount = uint32_t(rootParameters.size());
 
         // Fill root signature desc.
         D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
@@ -4018,7 +4018,7 @@ namespace plume {
                 groupInfo.size = 0;
             }
             else {
-                groupInfo.stride = roundUp(D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT + sizeof(UINT64) * raytracingPipeline->pipelineLayout->rootCount, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+                groupInfo.stride = roundUp(D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT + uint32_t(sizeof(UINT64)) * raytracingPipeline->pipelineLayout->rootCount, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
                 groupInfo.offset = tableSize;
                 groupInfo.size = groupInfo.stride * renderGroup.pipelineProgramsCount;
                 tableSize += groupInfo.size;
