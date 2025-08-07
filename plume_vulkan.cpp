@@ -71,6 +71,7 @@ namespace plume {
     };
     
     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
         VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
         VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
@@ -3797,18 +3798,24 @@ namespace plume {
         // Check for supported features.
         void *featuresChain = nullptr;
         VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures = {};
-        indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-        featuresChain = &indexingFeatures;
+        const bool descriptorIndexingFound = supportedOptionalExtensions.find(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (descriptorIndexingFound) {
+            indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+            featuresChain = &indexingFeatures;
+        }
 
         VkPhysicalDeviceScalarBlockLayoutFeatures layoutFeatures = {};
-        layoutFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
-        layoutFeatures.pNext = featuresChain;
-        featuresChain = &layoutFeatures;
+        const bool scalarBlockLayoutFound = supportedOptionalExtensions.find(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (scalarBlockLayoutFound) {
+            layoutFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+            layoutFeatures.pNext = featuresChain;
+            featuresChain = &layoutFeatures;
+        }
 
         VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures = {};
         VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures = {};
-        const bool presentWaitSupported = supportedOptionalExtensions.find(VK_KHR_PRESENT_ID_EXTENSION_NAME) != supportedOptionalExtensions.end() && supportedOptionalExtensions.find(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        if (presentWaitSupported) {
+        const bool presentWaitFound = supportedOptionalExtensions.find(VK_KHR_PRESENT_ID_EXTENSION_NAME) != supportedOptionalExtensions.end() && supportedOptionalExtensions.find(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (presentWaitFound) {
             presentIdFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
             presentIdFeatures.pNext = featuresChain;
             featuresChain = &presentIdFeatures;
@@ -3819,49 +3826,59 @@ namespace plume {
         }
 
         VkPhysicalDeviceRobustness2FeaturesEXT robustnessFeatures = {};
-        robustnessFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-        robustnessFeatures.pNext = featuresChain;
-        featuresChain = &robustnessFeatures;
+        const bool robustnessFound = supportedOptionalExtensions.find(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (robustnessFound) {
+            robustnessFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+            robustnessFeatures.pNext = featuresChain;
+            featuresChain = &robustnessFeatures;
+        }
 
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = {};
-        bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
-        bufferDeviceAddressFeatures.pNext = featuresChain;
-        featuresChain = &bufferDeviceAddressFeatures;
+        const bool bufferDeviceAddressFound = supportedOptionalExtensions.find(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (bufferDeviceAddressFound) {
+            bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+            bufferDeviceAddressFeatures.pNext = featuresChain;
+            featuresChain = &bufferDeviceAddressFeatures;
+        }
 
         VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures = {};
-        portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
-        portabilityFeatures.pNext = featuresChain;
-        featuresChain = &portabilityFeatures;
+        const bool portabilityFound = supportedOptionalExtensions.find(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (portabilityFound) {
+            portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+            portabilityFeatures.pNext = featuresChain;
+            featuresChain = &portabilityFeatures;
+        }
+
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures = {};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
+        const bool rayTracingFound = (supportedOptionalExtensions.find(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != supportedOptionalExtensions.end()) && (supportedOptionalExtensions.find(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) != supportedOptionalExtensions.end());
+        if (rayTracingFound) {
+            rayTracingPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+            rayTracingPipelineFeatures.pNext = featuresChain;
+            featuresChain = &rayTracingPipelineFeatures;
+
+            accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+            accelerationStructureFeatures.pNext = featuresChain;
+            featuresChain = &accelerationStructureFeatures;
+        }
 
         VkPhysicalDeviceFeatures2 deviceFeatures = {};
         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         deviceFeatures.pNext = featuresChain;
         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
 
-        void *createDeviceChain = nullptr;
-        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures = {};
-        VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
-        const bool rtSupported = supportedOptionalExtensions.find(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        if (rtSupported) {
+        // Check for properties.
+        if (rayTracingFound) {
             rtPipelineProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
 
             VkPhysicalDeviceProperties2 deviceProperties2 = {};
             deviceProperties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
             deviceProperties2.pNext = &rtPipelineProperties;
             vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
-
-            rtPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-            rtPipelineFeatures.rayTracingPipeline = true;
-            createDeviceChain = &rtPipelineFeatures;
-
-            accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-            accelerationStructureFeatures.pNext = createDeviceChain;
-            accelerationStructureFeatures.accelerationStructure = true;
-            createDeviceChain = &accelerationStructureFeatures;
         }
-        
-        const bool sampleLocationsSupported = supportedOptionalExtensions.find(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        if (sampleLocationsSupported) {
+
+        const bool sampleLocationsFound = supportedOptionalExtensions.find(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        if (sampleLocationsFound) {
             sampleLocationProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT;
 
             VkPhysicalDeviceProperties2 deviceProperties2 = {};
@@ -3870,20 +3887,31 @@ namespace plume {
             vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
         }
 
-        const bool descriptorIndexing = indexingFeatures.descriptorBindingPartiallyBound && indexingFeatures.descriptorBindingVariableDescriptorCount && indexingFeatures.runtimeDescriptorArray;
-        if (descriptorIndexing) {
+        // Build the device creation chain.
+        void *createDeviceChain = nullptr;
+        const bool rayTracingSupported = rayTracingPipelineFeatures.rayTracingPipeline && accelerationStructureFeatures.accelerationStructure;
+        if (rayTracingSupported) {
+            rayTracingPipelineFeatures.pNext = createDeviceChain;
+            createDeviceChain = &rayTracingPipelineFeatures;
+
+            accelerationStructureFeatures.pNext = createDeviceChain;
+            createDeviceChain = &accelerationStructureFeatures;
+        }
+
+        const bool descriptorIndexingSupported = indexingFeatures.descriptorBindingPartiallyBound && indexingFeatures.descriptorBindingVariableDescriptorCount && indexingFeatures.runtimeDescriptorArray;
+        if (descriptorIndexingSupported) {
             indexingFeatures.pNext = createDeviceChain;
             createDeviceChain = &indexingFeatures;
         }
 
-        const bool scalarBlockLayout = layoutFeatures.scalarBlockLayout;
-        if (scalarBlockLayout) {
+        const bool scalarBlockLayoutSupported = layoutFeatures.scalarBlockLayout;
+        if (scalarBlockLayoutSupported) {
             layoutFeatures.pNext = createDeviceChain;
             createDeviceChain = &layoutFeatures;
         }
 
-        const bool presentWait = presentIdFeatures.presentId && presentWaitFeatures.presentWait;
-        if (presentWait) {
+        const bool presentWaitSupported = presentIdFeatures.presentId && presentWaitFeatures.presentWait;
+        if (presentWaitSupported) {
             presentIdFeatures.pNext = createDeviceChain;
             createDeviceChain = &presentIdFeatures;
 
@@ -3891,20 +3919,19 @@ namespace plume {
             createDeviceChain = &presentWaitFeatures;
         }
 
-        const bool nullDescriptor = robustnessFeatures.nullDescriptor;
-        if (nullDescriptor) {
+        nullDescriptorSupported = robustnessFeatures.nullDescriptor;
+        if (nullDescriptorSupported) {
             robustnessFeatures.pNext = createDeviceChain;
             createDeviceChain = &robustnessFeatures;
         }
 
-        const bool bufferDeviceAddress = bufferDeviceAddressFeatures.bufferDeviceAddress;
-        if (bufferDeviceAddress) {
+        const bool bufferDeviceAddressSupported = bufferDeviceAddressFeatures.bufferDeviceAddress;
+        if (bufferDeviceAddressSupported) {
             bufferDeviceAddressFeatures.pNext = createDeviceChain;
             createDeviceChain = &bufferDeviceAddressFeatures;
         }
-
-        const bool portabilitySubset = supportedOptionalExtensions.find(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        if (portabilitySubset) {
+        
+        if (portabilityFound) {
             portabilityFeatures.pNext = createDeviceChain;
             createDeviceChain = &portabilityFeatures;
         }
@@ -4022,7 +4049,7 @@ namespace plume {
         vmaFunctions.vkCmdCopyBuffer = vkCmdCopyBuffer;
 
         VmaAllocatorCreateInfo allocatorInfo = {};
-        allocatorInfo.flags |= bufferDeviceAddress ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0;
+        allocatorInfo.flags |= bufferDeviceAddressSupported ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0;
         allocatorInfo.physicalDevice = physicalDevice;
         allocatorInfo.device = vk;
         allocatorInfo.pVulkanFunctions = &vmaFunctions;
@@ -4060,15 +4087,15 @@ namespace plume {
 
         // Fill capabilities.
         capabilities.geometryShader = deviceFeatures.features.geometryShader;
-        capabilities.raytracing = rtSupported;
+        capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
-        capabilities.sampleLocations = sampleLocationsSupported;
+        capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
         capabilities.resolveModes = false;
-        capabilities.descriptorIndexing = descriptorIndexing;
-        capabilities.scalarBlockLayout = scalarBlockLayout;
-        capabilities.bufferDeviceAddress = bufferDeviceAddress;
+        capabilities.descriptorIndexing = descriptorIndexingSupported;
+        capabilities.scalarBlockLayout = scalarBlockLayoutSupported;
+        capabilities.bufferDeviceAddress = bufferDeviceAddressSupported;
         capabilities.samplerMirrorClampToEdge = supportedOptionalExtensions.find(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        capabilities.presentWait = presentWait;
+        capabilities.presentWait = presentWaitSupported;
         capabilities.displayTiming = supportedOptionalExtensions.find(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) != supportedOptionalExtensions.end();
         capabilities.maxTextureSize = physicalDeviceProperties.limits.maxImageDimension2D;
         capabilities.preferHDR = memoryHeapSize > (512 * 1024 * 1024);
@@ -4088,7 +4115,6 @@ namespace plume {
 
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
-        nullDescriptorSupported = nullDescriptor;
 
         if (!nullDescriptorSupported) {
             nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
