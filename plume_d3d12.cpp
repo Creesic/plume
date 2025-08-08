@@ -1797,7 +1797,7 @@ namespace plume {
         readbackBuffer->unmap();
 
         for (uint64_t &result : results) {
-            result = (result * 1000000000ULL) / device->timestampFrequency;
+            result = uint64_t(double(result) / double(device->timestampFrequency) * 1000000000.0);
         }
     }
 
