@@ -46,6 +46,14 @@ namespace plume {
         return RenderDeviceVendor::UNKNOWN;
     }
 
+    CGFloat getScaleFactor(NSWindow *nsWindow) {
+#ifdef APPLE_RETINA_ENABLED
+        return [nsWindow backingScaleFactor];
+#else
+        return 1.0f;
+#endif
+    }
+
     // MARK: - CocoaWindow
 
     CocoaWindow::CocoaWindow(void* window)
@@ -55,7 +63,7 @@ namespace plume {
         if ([NSThread isMainThread]) {
             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
             NSRect contentFrame = [[nsWindow contentView] frame];
-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
+            CGFloat scaleFactor = getScaleFactor(nsWindow);
 
             cachedAttributes.x = (int)round(contentFrame.origin.x);
             cachedAttributes.y = (int)round(contentFrame.origin.y);
@@ -78,7 +86,7 @@ namespace plume {
         auto updateBlock = ^{
             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
             NSRect contentFrame = [[nsWindow contentView] frame];
-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
+            CGFloat scaleFactor = getScaleFactor(nsWindow);
 
             std::lock_guard<std::mutex> lock(attributesMutex);
             cachedAttributes.x = (int)round(contentFrame.origin.x);
@@ -114,7 +122,7 @@ namespace plume {
         if ([NSThread isMainThread]) {
             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
             NSRect contentFrame = [[nsWindow contentView] frame];
-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
+            CGFloat scaleFactor = getScaleFactor(nsWindow);
 
             {
                 std::lock_guard<std::mutex> lock(attributesMutex);

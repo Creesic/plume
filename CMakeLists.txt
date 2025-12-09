@@ -13,6 +13,7 @@ string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
 include(CMakeDependentOption)
 cmake_dependent_option(SDL_VULKAN_ENABLED "Enable SDL Vulkan integration" OFF IS_LINUX OFF)
 cmake_dependent_option(D3D12_AGILITY_SDK_ENABLED "Enable D3D12 Agility SDK" OFF WIN32 OFF)
+cmake_dependent_option(APPLE_RETINA_ENABLED "Enable Apple Retina display support" ON APPLE ON)
 option(PLUME_BUILD_EXAMPLES "Build example applications" OFF)
 
 # Windows-specific definitions
@@ -95,6 +96,10 @@ endif()
 
 # Platform-specific includes
 if(APPLE)
+    if(APPLE_RETINA_ENABLED)
+        target_compile_definitions(plume PRIVATE APPLE_RETINA_ENABLED)
+    endif()
+
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
