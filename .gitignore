@@ -2,3 +2,10 @@
 .vscode
 .DS_Store
 out
+
+# devenv
+.devenv/
+devenv.lock
+
+# cmake
+build/
