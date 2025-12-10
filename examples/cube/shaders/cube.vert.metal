@@ -1,7 +1,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Skybox vertex shader
+// Cube texture vertex shader
 // Renders a fullscreen triangle and generates view directions for cubemap sampling
 
 struct VSOutput {
