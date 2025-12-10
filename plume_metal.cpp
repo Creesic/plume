@@ -2709,6 +2709,7 @@ namespace plume {
         dynamicDepthBias.depthBias = depthBias;
         dynamicDepthBias.depthBiasClamp = depthBiasClamp;
         dynamicDepthBias.slopeScaledDepthBias = slopeScaledDepthBias;
+        dirtyGraphicsState.depthBias = 1;
     }
 
     void MetalCommandList::setCommonClearState() const {
