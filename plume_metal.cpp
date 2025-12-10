@@ -547,14 +547,7 @@ namespace plume {
         }
     }
 
-    MTL::TextureType mapTextureType(RenderTextureDimension dimension, RenderSampleCounts sampleCount, uint32_t arraySize, RenderTextureFlags flags) {
-        // Check for cube texture flag
-        if (flags & RenderTextureFlag::CUBE) {
-            assert(dimension == RenderTextureDimension::TEXTURE_2D && "Cube textures must use TEXTURE_2D dimension");
-            assert(sampleCount <= 1 && "Multisampling not supported for cube textures");
-            return (arraySize > 6) ? MTL::TextureTypeCubeArray : MTL::TextureTypeCube;
-        }
-        
+    MTL::TextureType mapTextureType(RenderTextureDimension dimension, RenderSampleCounts sampleCount, uint32_t arraySize) {
         switch (dimension) {
             case RenderTextureDimension::TEXTURE_1D:
                 assert(sampleCount <= 1 && "Multisampling not supported for 1D textures");
@@ -1220,7 +1213,7 @@ namespace plume {
         this->desc = desc;
 
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::alloc()->init();
-        const MTL::TextureType textureType = mapTextureType(desc.dimension, desc.multisampling.sampleCount, desc.arraySize, desc.flags);
+        const MTL::TextureType textureType = mapTextureType(desc.dimension, desc.multisampling.sampleCount, desc.arraySize);
 
         descriptor->setTextureType(textureType);
         descriptor->setStorageMode(MTL::StorageModePrivate);
@@ -1229,14 +1222,7 @@ namespace plume {
         descriptor->setHeight(desc.height);
         descriptor->setDepth(desc.depth);
         descriptor->setMipmapLevelCount(desc.mipLevels);
-        
-        // For cube textures, arrayLength represents number of cubes (each cube has 6 implicit faces)
-        // arraySize=6 means 1 cube, arraySize=12 means 2 cubes, etc.
-        if (desc.flags & RenderTextureFlag::CUBE) {
-            descriptor->setArrayLength(desc.arraySize / 6);
-        } else {
-            descriptor->setArrayLength(desc.arraySize);
-        }
+        descriptor->setArrayLength(desc.arraySize);
         descriptor->setSampleCount(desc.multisampling.sampleCount);
 
         MTL::TextureUsage usage = mapTextureUsage(desc.flags);
