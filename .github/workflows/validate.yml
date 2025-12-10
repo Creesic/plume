@@ -13,8 +13,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        type: [ Debug, Release ]
-        os: [ ubuntu-22.04, ubuntu-22.04-arm, windows-latest, macos-15-intel, macos-15 ]
+        type: [Debug, Release]
+        os:
+          [
+            ubuntu-22.04,
+            ubuntu-22.04-arm,
+            windows-latest,
+            macos-15-intel,
+            macos-15,
+          ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,7 +79,7 @@ jobs:
 
           cmake -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DPLUME_BUILD_EXAMPLES=ON -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_MAKE_PROGRAM=ninja -G Ninja -S . -B cmake-build
           cmake --build cmake-build --config ${{ matrix.type }} --target plume
-          cmake --build cmake-build --config ${{ matrix.type }} --target plume_example
+          cmake --build cmake-build --config ${{ matrix.type }} --target plume_triangle
 
       - name: Build Plume (Windows)
         if: runner.os == 'Windows'
@@ -83,10 +90,10 @@ jobs:
 
           # remove LLVM from PATH so it doesn't overshadow the one provided by VS
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -ne 'C:\Program Files\LLVM\bin' }) -join ';'
-          
+
           cmake -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DPLUME_BUILD_EXAMPLES=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER=clang-cl -DCMAKE_MAKE_PROGRAM=ninja -G Ninja -S . -B cmake-build
           cmake --build cmake-build --config ${{ matrix.type }} --target plume -j $cpuCores
-          cmake --build cmake-build --config ${{ matrix.type }} --target plume_example -j $cpuCores
+          cmake --build cmake-build --config ${{ matrix.type }} --target plume_triangle -j $cpuCores
 
       - name: Upload Windows Build
         if: runner.os == 'Windows'
@@ -94,7 +101,7 @@ jobs:
         with:
           name: plume-windows-${{ matrix.type }}
           path: |
-            cmake-build/bin/plume_example.exe
+            cmake-build/bin/plume_triangle.exe
 
       - name: Upload Linux Build
         if: runner.os == 'Linux'
@@ -102,7 +109,7 @@ jobs:
         with:
           name: plume-linux-${{ matrix.type }}-${{ matrix.os }}
           path: |
-            cmake-build/bin/plume_example
+            cmake-build/bin/plume_triangle
 
       - name: Upload macOS Build
         if: runner.os == 'macOS'
@@ -110,4 +117,4 @@ jobs:
         with:
           name: plume-macos-${{ matrix.type }}-${{ matrix.os }}
           path: |
-            cmake-build/bin/plume_example
+            cmake-build/bin/plume_triangle
