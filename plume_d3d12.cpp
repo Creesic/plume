@@ -34,10 +34,12 @@
 #define D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
 #endif
 
+#ifdef D3D12_AGILITY_SDK_ENABLED
 extern "C" {
     __declspec(dllexport) extern const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
     __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
 }
+#endif
 
 namespace plume {
     static const uint32_t ShaderDescriptorHeapSize = 65536;
