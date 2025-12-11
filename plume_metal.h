@@ -104,11 +104,6 @@ namespace plume {
             value = 0x7; // All 3 bits set
             descriptorSetDirtyIndex = 0;
         }
-
-        void clear() {
-            value = 0;
-            descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
-        }
     };
 
     struct GraphicsStateFlags {
@@ -138,12 +133,6 @@ namespace plume {
             value = 0x3FF; // All 10 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
-        }
-
-        void clear() {
-            value = 0;
-            descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
-            vertexBufferSlots = 0;
         }
     };
 
