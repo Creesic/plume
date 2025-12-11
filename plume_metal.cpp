@@ -1659,8 +1659,7 @@ namespace plume {
             descriptor->release();
         }
 
-        uint64_t requiredSize = setLayout->argumentEncoder->encodedLength();
-        requiredSize = alignUp(requiredSize, 256);
+        uint64_t requiredSize = alignUp(setLayout->argumentEncoder->encodedLength(), 256);
 
         argumentBuffer = {
             .mtl = device->mtl->newBuffer(requiredSize, MTL::ResourceStorageModeShared),
@@ -1668,8 +1667,12 @@ namespace plume {
             .offset = 0,
         };
 
-        argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
-        bindImmutableSamplers();
+        if (device->useArgumentBuffersTier2) {
+            bindImmutableSamplers();
+        } else {
+            argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
+            bindImmutableSamplers();
+        }
 
         resourceEntries.resize(maxResources);
     }
@@ -1692,9 +1695,21 @@ namespace plume {
     }
 
     void MetalDescriptorSet::bindImmutableSamplers() const {
-        for (auto &binding: setLayout->setBindings) {
+        // For Tier 2, get pointer to argument buffer for direct writes
+        uint8_t *bufferPtr = nullptr;
+        if (device->useArgumentBuffersTier2) {
+            bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
+        }
+
+        for (const auto &binding : setLayout->setBindings) {
             for (uint32_t i = 0; i < binding.immutableSamplers.size(); i++) {
-                argumentBuffer.argumentEncoder->setSamplerState(binding.immutableSamplers[i], binding.binding + i);
+                uint32_t argumentIndex = binding.binding + i;
+                if (device->useArgumentBuffersTier2) {
+                    uint32_t offset = argumentIndex * sizeof(uint64_t);
+                    *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = binding.immutableSamplers[i]->gpuResourceID();
+                } else {
+                    argumentBuffer.argumentEncoder->setSamplerState(binding.immutableSamplers[i], argumentIndex);
+                }
             }
         }
     }
@@ -1794,6 +1809,14 @@ namespace plume {
         }
 
         if (descriptor != nullptr) {
+            const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
+
+            // For Tier 2, get pointer to argument buffer for direct writes
+            uint8_t *bufferPtr = nullptr;
+            if (device->useArgumentBuffersTier2) {
+                bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
+            }
+
             switch (dtype) {
                 case MTL::DataTypeTexture: {
                     const TextureDescriptor *textureDescriptor = static_cast<const TextureDescriptor *>(descriptor);
@@ -1804,7 +1827,12 @@ namespace plume {
                         residencySet->addAllocation(nativeTexture);
                         needsCommit = true;
                     }
-                    argumentBuffer.argumentEncoder->setTexture(nativeTexture, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useArgumentBuffersTier2) {
+                        uint32_t offset = argumentIndex * sizeof(uint64_t);
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = nativeTexture->gpuResourceID();
+                    } else {
+                        argumentBuffer.argumentEncoder->setTexture(nativeTexture, argumentIndex);
+                    }
                     nativeTexture->retain();
                     break;
                 }
@@ -1817,13 +1845,24 @@ namespace plume {
                         residencySet->addAllocation(nativeBuffer);
                         needsCommit = true;
                     }
-                    argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useArgumentBuffersTier2) {
+                        uint32_t offset = argumentIndex * sizeof(uint64_t);
+                        uint64_t gpuAddress = nativeBuffer->gpuAddress() + bufferDescriptor->offset;
+                        *reinterpret_cast<uint64_t*>(bufferPtr + offset) = gpuAddress;
+                    } else {
+                        argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, argumentIndex);
+                    }
                     nativeBuffer->retain();
                     break;
                 }
                 case MTL::DataTypeSampler: {
                     const SamplerDescriptor *samplerDescriptor = static_cast<const SamplerDescriptor *>(descriptor);
-                    argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, descriptorIndex - indexBase + bindingIndex);
+                    if (device->useArgumentBuffersTier2) {
+                        uint32_t offset = argumentIndex * sizeof(uint64_t);
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = samplerDescriptor->state->gpuResourceID();
+                    } else {
+                        argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, argumentIndex);
+                    }
                     break;
                 }
 
@@ -3738,6 +3777,9 @@ namespace plume {
         capabilities.bufferDeviceAddress = osVersion.majorVersion >= 13 && mtl->supportsFamily(MTL::GPUFamilyApple3);
         supportsResidencySets = osVersion.majorVersion >= 15 && mtl->supportsFamily(MTL::GPUFamilyApple6);
 #endif
+
+        useArgumentBuffersTier2 = mtl->supportsFamily(MTL::GPUFamilyMetal3) &&
+                                  mtl->argumentBuffersSupport() == MTL::ArgumentBuffersTier2;
 
         nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
 
