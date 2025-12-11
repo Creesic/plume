@@ -666,6 +666,7 @@ namespace plume {
         RenderDeviceDescription description;
         bool supportsResidencySets;
         bool useArgumentBuffersTier2 = false;
+        bool useDirectBufferAddresses = false;
 
         // Resolve functionality
         MTL::ComputePipelineState *resolveTexturePipelineState;
