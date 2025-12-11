@@ -2463,7 +2463,7 @@ namespace plume {
                 const MetalComputePipeline *computePipeline = static_cast<const MetalComputePipeline *>(interfacePipeline);
                 if (activeComputeState != &computePipeline->state) {
                     activeComputeState = &computePipeline->state;
-                    dirtyComputeState.markDirty(DirtyFlag::PIPELINE);
+                    dirtyComputeState.pipelineState = 1;
                 }
                 break;
             }
@@ -2473,10 +2473,10 @@ namespace plume {
                 if (activeRenderState != &graphicsPipeline->state) {
                     activeRenderState = &graphicsPipeline->state;
                     // Mark all pipeline-related state as dirty since they come from the pipeline
-                    dirtyGraphicsState.markDirty(DirtyFlag::PIPELINE);
-                    dirtyGraphicsState.markDirty(DirtyFlag::DEPTH_STENCIL);
-                    dirtyGraphicsState.markDirty(DirtyFlag::RASTERIZER);
-                    dirtyGraphicsState.markDirty(DirtyFlag::DEPTH_BIAS);
+                    dirtyGraphicsState.pipelineState = 1;
+                    dirtyGraphicsState.depthStencil = 1;
+                    dirtyGraphicsState.rasterizer = 1;
+                    dirtyGraphicsState.depthBias = 1;
                 }
                 break;
             }
@@ -2503,8 +2503,8 @@ namespace plume {
             stateCache.lastPushConstants.clear();
 
             // Mark compute states as dirty that need to be rebound
-            dirtyComputeState.markDirty(DirtyFlag::DESCRIPTOR_SETS);
-            dirtyComputeState.markDirty(DirtyFlag::PUSH_CONSTANTS);
+            dirtyComputeState.descriptorSets = 1;
+            dirtyComputeState.pushConstants = 1;
             dirtyComputeState.descriptorSetDirtyIndex = 0;
         }
     }
@@ -2525,7 +2525,7 @@ namespace plume {
         pushConstants[rangeIndex].size = alignUp(range.size);
         pushConstants[rangeIndex].stageFlags = range.stageFlags;
 
-        dirtyComputeState.markDirty(DirtyFlag::PUSH_CONSTANTS);
+        dirtyComputeState.pushConstants = 1;
     }
 
     void MetalCommandList::setComputeDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) {
@@ -2535,7 +2535,7 @@ namespace plume {
         MetalDescriptorSet *interfaceDescriptorSet = static_cast<MetalDescriptorSet*>(descriptorSet);
         if (computeDescriptorSets[setIndex] != interfaceDescriptorSet) {
             computeDescriptorSets[setIndex] = interfaceDescriptorSet;
-            dirtyComputeState.markDirty(DirtyFlag::DESCRIPTOR_SETS);
+            dirtyComputeState.descriptorSets = 1;
             dirtyComputeState.descriptorSetDirtyIndex = std::min(dirtyComputeState.descriptorSetDirtyIndex, setIndex);
         }
     }
@@ -2557,8 +2557,8 @@ namespace plume {
             stateCache.lastPushConstants.clear();
 
             // Mark graphics states as dirty that need to be rebound
-            dirtyGraphicsState.markDirty(DirtyFlag::DESCRIPTOR_SETS);
-            dirtyGraphicsState.markDirty(DirtyFlag::PUSH_CONSTANTS);
+            dirtyGraphicsState.descriptorSets = 1;
+            dirtyGraphicsState.pushConstants = 1;
             dirtyGraphicsState.descriptorSetDirtyIndex = 0;
         }
     }
@@ -2579,7 +2579,7 @@ namespace plume {
         pushConstants[rangeIndex].size = alignUp(range.size);
         pushConstants[rangeIndex].stageFlags = range.stageFlags;
 
-        dirtyGraphicsState.markDirty(DirtyFlag::PUSH_CONSTANTS);
+        dirtyGraphicsState.pushConstants = 1;
     }
 
     void MetalCommandList::setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) {
@@ -2589,7 +2589,7 @@ namespace plume {
         MetalDescriptorSet *interfaceDescriptorSet = static_cast<MetalDescriptorSet*>(descriptorSet);
         if (renderDescriptorSets[setIndex] != interfaceDescriptorSet) {
             renderDescriptorSets[setIndex] = interfaceDescriptorSet;
-            dirtyGraphicsState.markDirty(DirtyFlag::DESCRIPTOR_SETS);
+            dirtyGraphicsState.descriptorSets = 1;
             dirtyGraphicsState.descriptorSetDirtyIndex = std::min(dirtyGraphicsState.descriptorSetDirtyIndex, setIndex);
         }
     }
@@ -2640,7 +2640,7 @@ namespace plume {
                 vertexBufferOffsets[bufferIndex] = newOffset;
                 dirtyGraphicsState.vertexBufferSlots |= 1 << bufferIndex;
             }
-            dirtyGraphicsState.markDirty(DirtyFlag::VERTEX_BUFFERS);
+            dirtyGraphicsState.vertexBuffers = 1;
         }
     }
 
@@ -2654,7 +2654,7 @@ namespace plume {
 
         // Since viewports are set at the encoder level, we mark it as dirty so it'll be updated on next active encoder check
         if (viewportVector != stateCache.lastViewports) {
-            dirtyGraphicsState.markDirty(DirtyFlag::VIEWPORTS);
+            dirtyGraphicsState.viewports = 1;
         }
     }
 
@@ -2667,7 +2667,7 @@ namespace plume {
 
         // Since scissors are set at the encoder level, we mark it as dirty so it'll be updated on next active encoder check
         if (scissorVector != stateCache.lastScissors) {
-            dirtyGraphicsState.markDirty(DirtyFlag::SCISSORS);
+            dirtyGraphicsState.scissors = 1;
         }
     }
 
@@ -2700,7 +2700,7 @@ namespace plume {
         dynamicDepthBias.depthBias = depthBias;
         dynamicDepthBias.depthBiasClamp = depthBiasClamp;
         dynamicDepthBias.slopeScaledDepthBias = slopeScaledDepthBias;
-        dirtyGraphicsState.markDirty(DirtyFlag::DEPTH_BIAS);
+        dirtyGraphicsState.depthBias = 1;
     }
 
     void MetalCommandList::setCommonClearState() const {
@@ -3244,12 +3244,12 @@ namespace plume {
         }
 
         // Pipeline state
-        if (dirtyComputeState.isDirty(DirtyFlag::PIPELINE)) {
+        if (dirtyComputeState.pipelineState) {
             if (activeComputeState && activeComputeState->pipelineState != stateCache.lastComputePipelineState) {
                 activeComputeEncoder->setComputePipelineState(activeComputeState->pipelineState);
                 stateCache.lastComputePipelineState = activeComputeState->pipelineState;
             }
-            dirtyComputeState.clearDirty(DirtyFlag::PIPELINE);
+            dirtyComputeState.pipelineState = 0;
         }
 
         // Commit descriptor sets
@@ -3260,14 +3260,14 @@ namespace plume {
         }
 
         // Descriptor sets
-        if (dirtyComputeState.isDirty(DirtyFlag::DESCRIPTOR_SETS)) {
+        if (dirtyComputeState.descriptorSets) {
             activeComputePipelineLayout->bindDescriptorSets(activeComputeEncoder, computeDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, true, dirtyComputeState.descriptorSetDirtyIndex, currentEncoderDescriptorSets, mtl);
-            dirtyComputeState.clearDirty(DirtyFlag::DESCRIPTOR_SETS);
+            dirtyComputeState.descriptorSets = 0;
             dirtyComputeState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
         // Push constants
-        if (dirtyComputeState.isDirty(DirtyFlag::PUSH_CONSTANTS)) {
+        if (dirtyComputeState.pushConstants) {
             for (const PushConstantData &pushConstant : pushConstants) {
                 if (pushConstant.stageFlags & RenderShaderStageFlag::COMPUTE) {
                     const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
@@ -3275,7 +3275,7 @@ namespace plume {
                 }
             }
             stateCache.lastPushConstants = pushConstants;
-            dirtyComputeState.clearDirty(DirtyFlag::PUSH_CONSTANTS);
+            dirtyComputeState.pushConstants = 0;
         }
     }
 
@@ -3361,16 +3361,16 @@ namespace plume {
 
     void MetalCommandList::checkForUpdatesInGraphicsState() {
         // Pipeline state - only update if the actual pipeline object changed
-        if (dirtyGraphicsState.isDirty(DirtyFlag::PIPELINE)) {
+        if (dirtyGraphicsState.pipelineState) {
             if (activeRenderState && activeRenderState->renderPipelineState != stateCache.lastPipelineState) {
                 activeRenderEncoder->setRenderPipelineState(activeRenderState->renderPipelineState);
                 stateCache.lastPipelineState = activeRenderState->renderPipelineState;
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::PIPELINE);
+            dirtyGraphicsState.pipelineState = 0;
         }
 
         // Depth/stencil state
-        if (dirtyGraphicsState.isDirty(DirtyFlag::DEPTH_STENCIL)) {
+        if (dirtyGraphicsState.depthStencil) {
             if (activeRenderState) {
                 if (activeRenderState->depthStencilState != stateCache.lastDepthStencilState) {
                     activeRenderEncoder->setDepthStencilState(activeRenderState->depthStencilState);
@@ -3381,11 +3381,11 @@ namespace plume {
                     stateCache.lastStencilReference = activeRenderState->stencilReference;
                 }
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::DEPTH_STENCIL);
+            dirtyGraphicsState.depthStencil = 0;
         }
 
         // Rasterizer state - cull mode, winding, depth clip
-        if (dirtyGraphicsState.isDirty(DirtyFlag::RASTERIZER)) {
+        if (dirtyGraphicsState.rasterizer) {
             if (activeRenderState) {
                 if (activeRenderState->cullMode != stateCache.lastCullMode) {
                     activeRenderEncoder->setCullMode(activeRenderState->cullMode);
@@ -3400,11 +3400,11 @@ namespace plume {
                     stateCache.lastDepthClipMode = activeRenderState->depthClipMode;
                 }
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::RASTERIZER);
+            dirtyGraphicsState.rasterizer = 0;
         }
 
         // Depth bias
-        if (dirtyGraphicsState.isDirty(DirtyFlag::DEPTH_BIAS)) {
+        if (dirtyGraphicsState.depthBias) {
             float newDepthBias, newSlopeScale, newClamp;
             if (activeRenderState->dynamicDepthBiasEnabled) {
                 newDepthBias = dynamicDepthBias.depthBias;
@@ -3424,29 +3424,29 @@ namespace plume {
                 stateCache.lastSlopeScaledDepthBias = newSlopeScale;
                 stateCache.lastDepthBiasClamp = newClamp;
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::DEPTH_BIAS);
+            dirtyGraphicsState.depthBias = 0;
         }
 
         // Viewports
-        if (dirtyGraphicsState.isDirty(DirtyFlag::VIEWPORTS)) {
+        if (dirtyGraphicsState.viewports) {
             if (!viewportVector.empty() && viewportVector != stateCache.lastViewports) {
                 activeRenderEncoder->setViewports(viewportVector.data(), viewportVector.size());
                 stateCache.lastViewports = viewportVector;
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::VIEWPORTS);
+            dirtyGraphicsState.viewports = 0;
         }
 
         // Scissors
-        if (dirtyGraphicsState.isDirty(DirtyFlag::SCISSORS)) {
+        if (dirtyGraphicsState.scissors) {
             if (!scissorVector.empty() && scissorVector != stateCache.lastScissors) {
                 activeRenderEncoder->setScissorRects(scissorVector.data(), scissorVector.size());
                 stateCache.lastScissors = scissorVector;
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::SCISSORS);
+            dirtyGraphicsState.scissors = 0;
         }
 
         // Vertex buffers - use bitmask for per-slot tracking
-        if (dirtyGraphicsState.isDirty(DirtyFlag::VERTEX_BUFFERS) && dirtyGraphicsState.vertexBufferSlots != 0) {
+        if (dirtyGraphicsState.vertexBuffers && dirtyGraphicsState.vertexBufferSlots != 0) {
             uint32_t vertexBufferSlots = dirtyGraphicsState.vertexBufferSlots;
             while (vertexBufferSlots > 0) {
                 const uint32_t i = __builtin_ctzll(vertexBufferSlots);
@@ -3454,7 +3454,7 @@ namespace plume {
                 vertexBufferSlots &= ~(1U << i);
             }
             dirtyGraphicsState.vertexBufferSlots = 0;
-            dirtyGraphicsState.clearDirty(DirtyFlag::VERTEX_BUFFERS);
+            dirtyGraphicsState.vertexBuffers = 0;
         }
 
         // Commit descriptor sets
@@ -3465,16 +3465,16 @@ namespace plume {
         }
 
         // Descriptor sets
-        if (dirtyGraphicsState.isDirty(DirtyFlag::DESCRIPTOR_SETS)) {
+        if (dirtyGraphicsState.descriptorSets) {
             if (activeGraphicsPipelineLayout) {
                 activeGraphicsPipelineLayout->bindDescriptorSets(activeRenderEncoder, renderDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, false, dirtyGraphicsState.descriptorSetDirtyIndex, currentEncoderDescriptorSets, mtl);
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::DESCRIPTOR_SETS);
+            dirtyGraphicsState.descriptorSets = 0;
             dirtyGraphicsState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
         // Push constants
-        if (dirtyGraphicsState.isDirty(DirtyFlag::PUSH_CONSTANTS)) {
+        if (dirtyGraphicsState.pushConstants) {
             if (pushConstants != stateCache.lastPushConstants) {
                 for (const PushConstantData &pushConstant : pushConstants) {
                     const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
@@ -3487,7 +3487,7 @@ namespace plume {
                 }
                 stateCache.lastPushConstants = pushConstants;
             }
-            dirtyGraphicsState.clearDirty(DirtyFlag::PUSH_CONSTANTS);
+            dirtyGraphicsState.pushConstants = 0;
         }
     }
 

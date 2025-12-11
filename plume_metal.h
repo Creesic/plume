@@ -87,122 +87,63 @@ namespace plume {
         };
     };
 
-    enum class DirtyFlag : uint32_t {
-        NONE              = 0,
-        PIPELINE          = 1 << 0,   // Render/compute pipeline state object
-        DEPTH_STENCIL     = 1 << 1,   // Depth/stencil state + stencil reference
-        RASTERIZER        = 1 << 2,   // Cull mode, winding, depth clip mode
-        DEPTH_BIAS        = 1 << 3,   // Dynamic depth bias values
-        VIEWPORTS         = 1 << 4,
-        SCISSORS          = 1 << 5,
-        VERTEX_BUFFERS    = 1 << 6,   // Indicates vertex buffers need update (check slots)
-        INDEX_BUFFER      = 1 << 7,
-        DESCRIPTOR_SETS   = 1 << 8,
-        PUSH_CONSTANTS    = 1 << 9,
-    };
-
-    // Bitwise operators for DirtyFlag
-    inline DirtyFlag operator|(DirtyFlag a, DirtyFlag b) {
-        return static_cast<DirtyFlag>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
-    }
-    inline DirtyFlag operator&(DirtyFlag a, DirtyFlag b) {
-        return static_cast<DirtyFlag>(static_cast<uint32_t>(a) & static_cast<uint32_t>(b));
-    }
-    inline DirtyFlag& operator|=(DirtyFlag& a, DirtyFlag b) {
-        a = a | b;
-        return a;
-    }
-    inline DirtyFlag& operator&=(DirtyFlag& a, DirtyFlag b) {
-        a = a & b;
-        return a;
-    }
-    inline DirtyFlag operator~(DirtyFlag a) {
-        return static_cast<DirtyFlag>(~static_cast<uint32_t>(a));
-    }
-    inline bool hasFlag(DirtyFlag flags, DirtyFlag flag) {
-        return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(flag)) != 0;
-    }
-
-    // Combined flags for common operations
-    static constexpr DirtyFlag DIRTY_ALL_GRAPHICS = static_cast<DirtyFlag>(
-        static_cast<uint32_t>(DirtyFlag::PIPELINE) |
-        static_cast<uint32_t>(DirtyFlag::DEPTH_STENCIL) |
-        static_cast<uint32_t>(DirtyFlag::RASTERIZER) |
-        static_cast<uint32_t>(DirtyFlag::DEPTH_BIAS) |
-        static_cast<uint32_t>(DirtyFlag::VIEWPORTS) |
-        static_cast<uint32_t>(DirtyFlag::SCISSORS) |
-        static_cast<uint32_t>(DirtyFlag::VERTEX_BUFFERS) |
-        static_cast<uint32_t>(DirtyFlag::INDEX_BUFFER) |
-        static_cast<uint32_t>(DirtyFlag::DESCRIPTOR_SETS) |
-        static_cast<uint32_t>(DirtyFlag::PUSH_CONSTANTS)
-    );
-
-    static constexpr DirtyFlag DIRTY_ALL_COMPUTE = static_cast<DirtyFlag>(
-        static_cast<uint32_t>(DirtyFlag::PIPELINE) |
-        static_cast<uint32_t>(DirtyFlag::DESCRIPTOR_SETS) |
-        static_cast<uint32_t>(DirtyFlag::PUSH_CONSTANTS)
-    );
-
     struct ComputeStateFlags {
-        DirtyFlag dirty = DirtyFlag::NONE;
+        union {
+            struct {
+                uint32_t pipelineState : 1;
+                uint32_t descriptorSets : 1;
+                uint32_t pushConstants : 1;
+            };
+            uint32_t value;
+        };
 
         // Marks from which descriptor set we'll invalidate from
-        uint32_t descriptorSetDirtyIndex = 0;
+        uint32_t descriptorSetDirtyIndex;
 
         void setAll() {
-            dirty = DIRTY_ALL_COMPUTE;
+            value = 0x7; // All 3 bits set
             descriptorSetDirtyIndex = 0;
         }
 
         void clear() {
-            dirty = DirtyFlag::NONE;
+            value = 0;
             descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
-        }
-
-        void markDirty(DirtyFlag flag) {
-            dirty |= flag;
-        }
-
-        void clearDirty(DirtyFlag flag) {
-            dirty &= ~flag;
-        }
-
-        bool isDirty(DirtyFlag flag) const {
-            return hasFlag(dirty, flag);
         }
     };
 
     struct GraphicsStateFlags {
-        DirtyFlag dirty = DirtyFlag::NONE;
+        union {
+            struct {
+                uint32_t pipelineState : 1;
+                uint32_t descriptorSets : 1;
+                uint32_t pushConstants : 1;
+                uint32_t viewports : 1;
+                uint32_t scissors : 1;
+                uint32_t indexBuffer : 1;
+                uint32_t depthBias : 1;
+                uint32_t depthStencil : 1;
+                uint32_t rasterizer : 1;
+                uint32_t vertexBuffers : 1;
+            };
+            uint32_t value;
+        };
 
         // Marks from which descriptor set we'll invalidate from
-        uint32_t descriptorSetDirtyIndex = 0;
+        uint32_t descriptorSetDirtyIndex;
 
-        // Specific dirty vertex buffer slots (bitmask for 19 slots)
-        uint32_t vertexBufferSlots = 0;
+        // Specific dirty vertex buffer slots (bitmask)
+        uint32_t vertexBufferSlots;
 
         void setAll() {
-            dirty = DIRTY_ALL_GRAPHICS;
+            value = 0x3FF; // All 10 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
         }
 
         void clear() {
-            dirty = DirtyFlag::NONE;
+            value = 0;
             descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
             vertexBufferSlots = 0;
-        }
-
-        void markDirty(DirtyFlag flag) {
-            dirty |= flag;
-        }
-
-        void clearDirty(DirtyFlag flag) {
-            dirty &= ~flag;
-        }
-
-        bool isDirty(DirtyFlag flag) const {
-            return hasFlag(dirty, flag);
         }
     };
 
