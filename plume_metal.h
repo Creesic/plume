@@ -118,7 +118,6 @@ namespace plume {
                 uint32_t depthBias : 1;
                 uint32_t depthStencil : 1;
                 uint32_t rasterizer : 1;
-                uint32_t vertexBuffers : 1;
             };
             uint32_t value;
         };
@@ -130,7 +129,7 @@ namespace plume {
         uint32_t vertexBufferSlots;
 
         void setAll() {
-            value = 0x3FF; // All 10 bits set
+            value = 0x1FF; // All 9 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
         }

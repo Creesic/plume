@@ -2640,7 +2640,6 @@ namespace plume {
                 vertexBufferOffsets[bufferIndex] = newOffset;
                 dirtyGraphicsState.vertexBufferSlots |= 1 << bufferIndex;
             }
-            dirtyGraphicsState.vertexBuffers = 1;
         }
     }
 
@@ -3446,7 +3445,7 @@ namespace plume {
         }
 
         // Vertex buffers - use bitmask for per-slot tracking
-        if (dirtyGraphicsState.vertexBuffers && dirtyGraphicsState.vertexBufferSlots != 0) {
+        if (dirtyGraphicsState.vertexBufferSlots != 0) {
             uint32_t vertexBufferSlots = dirtyGraphicsState.vertexBufferSlots;
             while (vertexBufferSlots > 0) {
                 const uint32_t i = __builtin_ctzll(vertexBufferSlots);
@@ -3454,7 +3453,6 @@ namespace plume {
                 vertexBufferSlots &= ~(1U << i);
             }
             dirtyGraphicsState.vertexBufferSlots = 0;
-            dirtyGraphicsState.vertexBuffers = 0;
         }
 
         // Commit descriptor sets
