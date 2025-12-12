@@ -41,3 +41,5 @@ set_target_properties(plume_cube PROPERTIES
 # Compile shaders (HLSL compiles to SPIR-V, DXIL, and Metal via DXC)
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "vertex" "cubeVert" "VSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "fragment" "cubeFrag" "PSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.vert.hlsl" "vertex" "swatchVert" "VSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.hlsl" "fragment" "swatchFrag" "PSMain")

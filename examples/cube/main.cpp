@@ -1,7 +1,9 @@
 //
 // plume - Cube Texture Example
 //
-// Demonstrates cube texture creation and sampling
+// Demonstrates cube texture creation, sampling, and GPU readback.
+// This example tests both UMA (Apple Silicon) and non-UMA (Intel) memory paths
+// by reading back the center pixel color and displaying it as a swatch.
 //
 
 #include "plume_render_interface.h"
@@ -20,12 +22,18 @@
 #ifdef _WIN64
 #include "shaders/cubeVert.hlsl.dxil.h"
 #include "shaders/cubeFrag.hlsl.dxil.h"
+#include "shaders/swatchVert.hlsl.dxil.h"
+#include "shaders/swatchFrag.hlsl.dxil.h"
 #endif
 #include "shaders/cubeVert.hlsl.spirv.h"
 #include "shaders/cubeFrag.hlsl.spirv.h"
+#include "shaders/swatchVert.hlsl.spirv.h"
+#include "shaders/swatchFrag.hlsl.spirv.h"
 #ifdef __APPLE__
 #include "shaders/cubeVert.hlsl.metal.h"
 #include "shaders/cubeFrag.hlsl.metal.h"
+#include "shaders/swatchVert.hlsl.metal.h"
+#include "shaders/swatchFrag.hlsl.metal.h"
 #endif
 
 namespace plume {
@@ -142,6 +150,13 @@ namespace plume {
         }
     };
 
+    // Push constants for swatch shader
+    struct SwatchConstants {
+        float offset[2];   // NDC offset for quad position
+        float size[2];     // NDC size of quad
+        float color[4];    // Sampled color to display
+    };
+
     struct CubeContext {
         const RenderInterface *m_renderInterface = nullptr;
         std::string m_apiName;
@@ -163,6 +178,21 @@ namespace plume {
         std::unique_ptr<RenderSampler> m_sampler;
         std::unique_ptr<RenderDescriptorSet> m_descriptorSet;
         std::unique_ptr<RenderBuffer> m_constantBuffer;
+        
+        // Render target for readback (can't read directly from swapchain)
+        std::unique_ptr<RenderTexture> m_renderTarget;
+        std::unique_ptr<RenderTextureView> m_renderTargetView;
+        std::vector<std::unique_ptr<RenderFramebuffer>> m_renderTargetFramebuffers;
+        uint32_t m_renderTargetWidth = 0;
+        uint32_t m_renderTargetHeight = 0;
+        
+        // Readback resources
+        std::unique_ptr<RenderBuffer> m_readbackBuffer;
+        float m_sampledColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        
+        // Swatch pipeline resources
+        std::unique_ptr<RenderPipeline> m_swatchPipeline;
+        std::unique_ptr<RenderPipelineLayout> m_swatchPipelineLayout;
         
         // Camera
         float m_cameraYaw = 0.0f;
@@ -229,6 +259,53 @@ namespace plume {
             auto framebuffer = ctx.m_device->createFramebuffer(fbDesc);
             ctx.m_framebuffers.push_back(std::move(framebuffer));
         }
+    }
+
+    void createRenderTarget(CubeContext& ctx, uint32_t width, uint32_t height) {
+        // Skip if size hasn't changed
+        if (ctx.m_renderTargetWidth == width && ctx.m_renderTargetHeight == height && ctx.m_renderTarget) {
+            return;
+        }
+        
+        ctx.m_renderTargetWidth = width;
+        ctx.m_renderTargetHeight = height;
+        
+        std::cout << "Creating render target (" << width << "x" << height << ") for readback testing..." << std::endl;
+        
+        // Create render target texture that we can copy from
+        RenderTextureDesc rtDesc = RenderTextureDesc::ColorTarget(
+            width, height,
+            SwapchainFormat,
+            RenderMultisampling(),
+            nullptr,
+            RenderTextureFlag::NONE
+        );
+        
+        ctx.m_renderTarget = ctx.m_device->createTexture(rtDesc);
+        assert(ctx.m_renderTarget != nullptr && "Failed to create render target");
+        
+        // Create view for the render target
+        RenderTextureViewDesc viewDesc = RenderTextureViewDesc::Texture2D(SwapchainFormat);
+        ctx.m_renderTargetView = ctx.m_renderTarget->createTextureView(viewDesc);
+        
+        // Create framebuffer for render target
+        ctx.m_renderTargetFramebuffers.clear();
+        const RenderTexture* colorAttachment = ctx.m_renderTarget.get();
+        RenderFramebufferDesc fbDesc;
+        fbDesc.colorAttachments = &colorAttachment;
+        fbDesc.colorAttachmentsCount = 1;
+        fbDesc.depthAttachment = nullptr;
+        ctx.m_renderTargetFramebuffers.push_back(ctx.m_device->createFramebuffer(fbDesc));
+        
+        // Create readback buffer for a single pixel (4 bytes for BGRA8)
+        // We use READBACK heap type which will use Shared memory on UMA (Apple Silicon)
+        // and Managed memory on non-UMA (Intel Macs)
+        ctx.m_readbackBuffer = ctx.m_device->createBuffer(
+            RenderBufferDesc::ReadbackBuffer(4)  // 4 bytes for one BGRA pixel
+        );
+        
+        std::cout << "  Render target and readback buffer created." << std::endl;
+        std::cout << "  (Readback buffer tests UMA vs non-UMA memory paths)" << std::endl;
     }
 
     void createCubeTexture(CubeContext& ctx) {
@@ -397,6 +474,62 @@ namespace plume {
         ctx.m_pipeline = ctx.m_device->createGraphicsPipeline(pipelineDesc);
     }
 
+    void createSwatchPipeline(CubeContext& ctx) {
+        std::cout << "Creating swatch pipeline for color readback display..." << std::endl;
+        
+        // Create pipeline layout with push constants for position, size, and color
+        RenderPipelineLayoutDesc layoutDesc;
+        
+        RenderPushConstantRange pushConstantRange;
+        pushConstantRange.size = sizeof(SwatchConstants);
+        pushConstantRange.stageFlags = RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL;
+        layoutDesc.pushConstantRanges = &pushConstantRange;
+        layoutDesc.pushConstantRangesCount = 1;
+        
+        ctx.m_swatchPipelineLayout = ctx.m_device->createPipelineLayout(layoutDesc);
+        
+        // Create shaders
+        RenderShaderFormat shaderFormat = ctx.m_renderInterface->getCapabilities().shaderFormat;
+        
+        std::unique_ptr<RenderShader> vertexShader;
+        std::unique_ptr<RenderShader> fragmentShader;
+        
+        switch (shaderFormat) {
+#ifdef __APPLE__
+            case RenderShaderFormat::METAL:
+                vertexShader = ctx.m_device->createShader(swatchVertBlobMSL, sizeof(swatchVertBlobMSL), "VSMain", shaderFormat);
+                fragmentShader = ctx.m_device->createShader(swatchFragBlobMSL, sizeof(swatchFragBlobMSL), "PSMain", shaderFormat);
+                break;
+#endif
+            case RenderShaderFormat::SPIRV:
+                vertexShader = ctx.m_device->createShader(swatchVertBlobSPIRV, sizeof(swatchVertBlobSPIRV), "VSMain", shaderFormat);
+                fragmentShader = ctx.m_device->createShader(swatchFragBlobSPIRV, sizeof(swatchFragBlobSPIRV), "PSMain", shaderFormat);
+                break;
+#ifdef _WIN64
+            case RenderShaderFormat::DXIL:
+                vertexShader = ctx.m_device->createShader(swatchVertBlobDXIL, sizeof(swatchVertBlobDXIL), "VSMain", shaderFormat);
+                fragmentShader = ctx.m_device->createShader(swatchFragBlobDXIL, sizeof(swatchFragBlobDXIL), "PSMain", shaderFormat);
+                break;
+#endif
+            default:
+                assert(false && "Unknown shader format");
+        }
+        
+        // Create graphics pipeline
+        RenderGraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.pipelineLayout = ctx.m_swatchPipelineLayout.get();
+        pipelineDesc.vertexShader = vertexShader.get();
+        pipelineDesc.pixelShader = fragmentShader.get();
+        pipelineDesc.renderTargetFormat[0] = SwapchainFormat;
+        pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
+        pipelineDesc.renderTargetCount = 1;
+        pipelineDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
+        
+        ctx.m_swatchPipeline = ctx.m_device->createGraphicsPipeline(pipelineDesc);
+        
+        std::cout << "  Swatch pipeline created." << std::endl;
+    }
+
     void initializeRenderResources(CubeContext& ctx, RenderInterface* renderInterface) {
         ctx.m_device = renderInterface->createDevice();
         ctx.m_commandQueue = ctx.m_device->createCommandQueue(RenderCommandListType::DIRECT);
@@ -407,8 +540,10 @@ namespace plume {
         ctx.m_acquireSemaphore = ctx.m_device->createCommandSemaphore();
         
         createFramebuffers(ctx);
+        createRenderTarget(ctx, ctx.m_swapChain->getWidth(), ctx.m_swapChain->getHeight());
         createCubeTexture(ctx);
         createPipeline(ctx);
+        createSwatchPipeline(ctx);
     }
 
     void createContext(CubeContext& ctx, RenderInterface* renderInterface, RenderWindow window, const std::string& apiName) {
@@ -425,13 +560,18 @@ namespace plume {
             ctx.m_framebuffers.clear();
             ctx.m_swapChain->resize();
             createFramebuffers(ctx);
+            createRenderTarget(ctx, ctx.m_swapChain->getWidth(), ctx.m_swapChain->getHeight());
         }
     }
 
     void render(CubeContext& ctx) {
         static int counter = 0;
-        if (counter++ % 60 == 0) {
+        bool logThisFrame = (counter++ % 60 == 0);
+        if (logThisFrame) {
             std::cout << "Rendering frame " << counter << " using " << ctx.m_apiName << " backend" << std::endl;
+            std::cout << "  Sampled color (from readback): R=" << ctx.m_sampledColor[0] 
+                      << " G=" << ctx.m_sampledColor[1] 
+                      << " B=" << ctx.m_sampledColor[2] << std::endl;
         }
         
         // Update time for camera rotation
@@ -466,26 +606,114 @@ namespace plume {
         // Begin command recording
         ctx.m_commandList->begin();
         
-        RenderTexture* swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
+        // ====== PASS 1: Render cubemap to offscreen render target ======
         ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS,
-            RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+            RenderTextureBarrier(ctx.m_renderTarget.get(), RenderTextureLayout::COLOR_WRITE));
         
-        const RenderFramebuffer* framebuffer = ctx.m_framebuffers[imageIndex].get();
-        ctx.m_commandList->setFramebuffer(framebuffer);
+        const RenderFramebuffer* rtFramebuffer = ctx.m_renderTargetFramebuffers[0].get();
+        ctx.m_commandList->setFramebuffer(rtFramebuffer);
         
         const RenderViewport viewport(0.0f, 0.0f, float(width), float(height));
         const RenderRect scissor(0, 0, width, height);
         ctx.m_commandList->setViewports(viewport);
         ctx.m_commandList->setScissors(scissor);
         
-        // Draw cube texture
+        // Draw cube texture to render target
         ctx.m_commandList->setGraphicsPipelineLayout(ctx.m_pipelineLayout.get());
         ctx.m_commandList->setPipeline(ctx.m_pipeline.get());
         ctx.m_commandList->setGraphicsDescriptorSet(ctx.m_descriptorSet.get(), 0);
         ctx.m_commandList->setGraphicsPushConstants(0, invViewProj.m);
-        
-        // Draw fullscreen triangle (3 vertices, no vertex buffer)
         ctx.m_commandList->drawInstanced(3, 1, 0, 0);
+        
+        // ====== PASS 2: Copy center pixel to readback buffer ======
+        ctx.m_commandList->barriers(RenderBarrierStage::COPY,
+            RenderTextureBarrier(ctx.m_renderTarget.get(), RenderTextureLayout::COPY_SOURCE));
+        
+        // Copy the center pixel from render target to readback buffer
+        uint32_t centerX = width / 2;
+        uint32_t centerY = height / 2;
+        
+        RenderTextureCopyLocation srcLocation = RenderTextureCopyLocation::Subresource(
+            ctx.m_renderTarget.get(), 0, 0
+        );
+        RenderTextureCopyLocation dstLocation = RenderTextureCopyLocation::PlacedFootprint(
+            ctx.m_readbackBuffer.get(),
+            SwapchainFormat,
+            1, 1, 1,  // width, height, depth (single pixel)
+            1,        // rowWidth in pixels
+            0         // offset
+        );
+        
+        RenderBox srcBox;
+        srcBox.left = centerX;
+        srcBox.top = centerY;
+        srcBox.front = 0;
+        srcBox.right = centerX + 1;
+        srcBox.bottom = centerY + 1;
+        srcBox.back = 1;
+        
+        ctx.m_commandList->copyTextureRegion(dstLocation, srcLocation, 0, 0, 0, &srcBox);
+        
+        // ====== PASS 3: Render cubemap and swatch to swapchain ======
+        RenderTexture* swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
+        
+        // Transition swapchain for rendering
+        ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS,
+            RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
+        
+        // Set up swapchain framebuffer
+        const RenderFramebuffer* swapFramebuffer = ctx.m_framebuffers[imageIndex].get();
+        ctx.m_commandList->setFramebuffer(swapFramebuffer);
+        ctx.m_commandList->setViewports(viewport);
+        ctx.m_commandList->setScissors(scissor);
+        
+        // Draw cube texture to swapchain (same as before, but to swapchain)
+        ctx.m_commandList->setGraphicsPipelineLayout(ctx.m_pipelineLayout.get());
+        ctx.m_commandList->setPipeline(ctx.m_pipeline.get());
+        ctx.m_commandList->setGraphicsDescriptorSet(ctx.m_descriptorSet.get(), 0);
+        ctx.m_commandList->setGraphicsPushConstants(0, invViewProj.m);
+        ctx.m_commandList->drawInstanced(3, 1, 0, 0);
+        
+        // Draw swatch quad in bottom-left corner showing the sampled color
+        ctx.m_commandList->setGraphicsPipelineLayout(ctx.m_swatchPipelineLayout.get());
+        ctx.m_commandList->setPipeline(ctx.m_swatchPipeline.get());
+        
+        SwatchConstants swatchConstants;
+        // Position swatch in bottom-left corner (NDC: -1 to 1)
+        float swatchX = -0.9f;
+        float swatchY = 0.6f;
+        float swatchSize = 0.2f;
+        float borderThickness = 0.008f;
+        // Adjust for aspect ratio: screen is wider, so X needs fewer NDC units
+        float borderX = borderThickness / aspect;
+        float borderY = borderThickness;
+        
+        // Draw black outline (slightly larger quad behind)
+        swatchConstants.offset[0] = swatchX - borderX;
+        swatchConstants.offset[1] = swatchY - borderY;
+        swatchConstants.size[0] = swatchSize + borderX * 2.0f;
+        swatchConstants.size[1] = swatchSize + borderY * 2.0f;
+        swatchConstants.color[0] = 0.0f;  // Black
+        swatchConstants.color[1] = 0.0f;
+        swatchConstants.color[2] = 0.0f;
+        swatchConstants.color[3] = 1.0f;
+        
+        ctx.m_commandList->setGraphicsPushConstants(0, &swatchConstants);
+        ctx.m_commandList->drawInstanced(6, 1, 0, 0);
+        
+        // Draw the actual color swatch on top
+        swatchConstants.offset[0] = swatchX;
+        swatchConstants.offset[1] = swatchY;
+        swatchConstants.size[0] = swatchSize;
+        swatchConstants.size[1] = swatchSize;
+        // Use the color read back from the previous frame
+        swatchConstants.color[0] = ctx.m_sampledColor[0];
+        swatchConstants.color[1] = ctx.m_sampledColor[1];
+        swatchConstants.color[2] = ctx.m_sampledColor[2];
+        swatchConstants.color[3] = ctx.m_sampledColor[3];
+        
+        ctx.m_commandList->setGraphicsPushConstants(0, &swatchConstants);
+        ctx.m_commandList->drawInstanced(6, 1, 0, 0);  // 6 vertices for quad (2 triangles)
         
         ctx.m_commandList->barriers(RenderBarrierStage::NONE,
             RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
@@ -505,6 +733,21 @@ namespace plume {
         ctx.m_commandQueue->executeCommandLists(&cmdList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ctx.m_fence.get());
         ctx.m_swapChain->present(imageIndex, &signalSemaphore, 1);
         ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
+        
+        // ====== Read back the pixel color for the NEXT frame ======
+        // This is done after the fence wait to ensure the GPU has completed the copy
+        // This tests the UMA vs non-UMA code path:
+        // - On UMA (Apple Silicon): Uses StorageModeShared, data is immediately accessible
+        // - On non-UMA (Intel Mac): Uses StorageModeManaged, requires synchronization
+        uint8_t* pixelData = static_cast<uint8_t*>(ctx.m_readbackBuffer->map(0, nullptr));
+        if (pixelData) {
+            // Format is B8G8R8A8_UNORM, so bytes are: B, G, R, A
+            ctx.m_sampledColor[0] = pixelData[2] / 255.0f;  // R
+            ctx.m_sampledColor[1] = pixelData[1] / 255.0f;  // G
+            ctx.m_sampledColor[2] = pixelData[0] / 255.0f;  // B
+            ctx.m_sampledColor[3] = pixelData[3] / 255.0f;  // A
+            ctx.m_readbackBuffer->unmap(0, nullptr);
+        }
     }
 
     void CubeExample(RenderInterface* renderInterface, const std::string& apiName) {

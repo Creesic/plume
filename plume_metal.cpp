@@ -3043,6 +3043,7 @@ namespace plume {
         const MetalBuffer *srcBuffer = static_cast<const MetalBuffer *>(srcLocation.buffer);
 
         if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE && srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
+            // Buffer to Texture copy (upload)
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
 
@@ -3072,6 +3073,48 @@ namespace plume {
                 dstOrigin
             );
             activeBlitEncoder->popDebugGroup();
+        } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT && srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
+            // Texture to Buffer copy (readback)
+            assert(dstBuffer != nullptr);
+            assert(srcTexture != nullptr);
+
+            // Calculate source region
+            MTL::Origin srcOrigin;
+            MTL::Size size;
+
+            if (srcBox != nullptr) {
+                srcOrigin = { NS::UInteger(srcBox->left), NS::UInteger(srcBox->top), NS::UInteger(srcBox->front) };
+                size = { NS::UInteger(srcBox->right - srcBox->left), NS::UInteger(srcBox->bottom - srcBox->top), NS::UInteger(srcBox->back - srcBox->front) };
+            } else {
+                srcOrigin = { 0, 0, 0 };
+                size = { dstLocation.placedFootprint.width, dstLocation.placedFootprint.height, dstLocation.placedFootprint.depth };
+            }
+
+            // Calculate bytes per row based on source texture format
+            const uint32_t blockWidth = RenderFormatBlockWidth(srcTexture->desc.format);
+            const uint32_t horizontalBlocks = (dstLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth;
+            const uint32_t verticalBlocks = (size.height + blockWidth - 1) / blockWidth;
+            const uint32_t bytesPerRow = horizontalBlocks * RenderFormatSize(srcTexture->desc.format);
+            const uint32_t bytesPerImage = bytesPerRow * verticalBlocks;
+
+            activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegionToBuffer"));
+            activeBlitEncoder->copyFromTexture(
+                srcTexture->mtl,
+                srcLocation.subresource.arrayIndex,
+                srcLocation.subresource.mipLevel,
+                srcOrigin,
+                size,
+                dstBuffer->mtl,
+                dstLocation.placedFootprint.offset,
+                bytesPerRow,
+                bytesPerImage
+            );
+            activeBlitEncoder->popDebugGroup();
+
+            // Synchronize managed buffers for CPU readback
+            if (dstBuffer->mtl->storageMode() == MTL::StorageModeManaged) {
+                activeBlitEncoder->synchronizeResource(dstBuffer->mtl);
+            }
         } else {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
