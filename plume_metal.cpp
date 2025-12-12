@@ -1201,17 +1201,17 @@ namespace plume {
 
         // Calculate texture properties
         const uint32_t width = buffer->desc.size / RenderFormatSize(format);
-        const size_t rowAlignment = alignmentForRenderFormat(buffer->device->mtl, format);
-        const uint64_t bytesPerRow = alignUp(buffer->desc.size, rowAlignment);
 
         // Configure texture properties
         const MTL::PixelFormat pixelFormat = mapPixelFormat(format);
         const MTL::TextureUsage usage = mapTextureUsageFromBufferFlags(buffer->desc.flags);
         const MTL::ResourceOptions options = mapResourceOption(buffer->desc.heapType);
 
-        // Create texture with configured descriptor and alignment
+        // Create texture with configured descriptor
+        // For a 1D texture buffer, bytesPerRow is the stride between rows. Since there's only one row,
+        // we use the actual buffer size. The buffer must already be properly sized for the format.
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::textureBufferDescriptor(pixelFormat, width, options, usage);
-        this->texture = buffer->mtl->newTexture(descriptor, 0, bytesPerRow);
+        this->texture = buffer->mtl->newTexture(descriptor, 0, buffer->desc.size);
 
         descriptor->release();
     }
@@ -3409,12 +3409,40 @@ namespace plume {
             dirtyComputeState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
-        // Push constants
+        // Push constants - IR Converter expects these as a CBV in the argument buffer at index 2
         if (dirtyComputeState.pushConstants) {
             for (const PushConstantData &pushConstant : pushConstants) {
                 if (pushConstant.stageFlags & RenderShaderStageFlag::COMPUTE) {
-                    const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
-                    activeComputeEncoder->setBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+                    // Calculate sizes with alignment
+                    const size_t dataSize = alignUp(pushConstant.size, 8);
+                    const size_t totalSize = IR_DESCRIPTOR_ENTRY_SIZE + dataSize;
+
+                    // Check if we have space in the buffer
+                    if (pushConstantsBufferOffset + totalSize > PUSH_CONSTANTS_BUFFER_SIZE) {
+                        pushConstantsBufferOffset = 0;
+                    }
+
+                    // Get pointer to buffer contents
+                    uint8_t *bufferContents = static_cast<uint8_t*>(pushConstantsBuffer->contents());
+                    uint8_t *entryPtr = bufferContents + pushConstantsBufferOffset;
+                    uint8_t *dataPtr = entryPtr + IR_DESCRIPTOR_ENTRY_SIZE;
+
+                    // Copy push constant data after the entry
+                    memcpy(dataPtr, pushConstant.data.data(), pushConstant.size);
+
+                    // Fill in the argument buffer entry in IR Converter format
+                    uint64_t *entry = reinterpret_cast<uint64_t*>(entryPtr);
+                    uint64_t dataGpuAddress = pushConstantsBuffer->gpuAddress() + pushConstantsBufferOffset + IR_DESCRIPTOR_ENTRY_SIZE;
+                    entry[0] = dataGpuAddress;
+                    entry[1] = 0;
+                    entry[2] = pushConstant.size;
+
+                    // Mark the buffer as used by the encoder
+                    activeComputeEncoder->useResource(pushConstantsBuffer, MTL::ResourceUsageRead);
+                    activeComputeEncoder->setBuffer(pushConstantsBuffer, pushConstantsBufferOffset, DESCRIPTOR_SETS_BINDING_INDEX);
+
+                    // Advance offset for next allocation
+                    pushConstantsBufferOffset += totalSize;
                 }
             }
             stateCache.lastPushConstants = pushConstants;

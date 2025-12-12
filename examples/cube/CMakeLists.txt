@@ -43,3 +43,5 @@ compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "fragment" "cubeFrag" "PSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.vert.hlsl" "vertex" "swatchVert" "VSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.hlsl" "fragment" "swatchFrag" "PSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readback.comp.hlsl" "compute" "readbackComp" "CSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readbackMS.comp.hlsl" "compute" "readbackCompMS" "CSMain")
