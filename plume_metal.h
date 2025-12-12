@@ -42,8 +42,11 @@ namespace plume {
     static constexpr size_t MAX_CLEAR_RECTS = 16;
     static constexpr uint32_t MAX_BINDING_NUMBER = 128;
     static constexpr uint32_t MAX_DESCRIPTOR_SET_BINDINGS = 8;
-    static constexpr uint32_t MAX_PUSH_CONSTANT_BINDINGS = 4;
-    static constexpr uint32_t MAX_VERTEX_BUFFER_BINDINGS = 19;
+    // Metal Shader Converter uses a single uniforms buffer at index 5
+    static constexpr uint32_t MAX_PUSH_CONSTANT_BINDINGS = 1;
+    // Vertex buffers start at index 6, with attributes at index 11+
+    // This leaves room for up to 25 vertex buffer slots (6-30)
+    static constexpr uint32_t MAX_VERTEX_BUFFER_BINDINGS = 25;
 
     struct MetalInterface;
     struct MetalDevice;
@@ -451,6 +454,11 @@ namespace plume {
         MetalDescriptorSet* computeDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
 
         MTL::Fence *timestampQueryFence = nullptr;
+
+        // IR Converter push constants buffer - holds push constant data with GPU address
+        MTL::Buffer *pushConstantsBuffer = nullptr;
+        static constexpr size_t PUSH_CONSTANTS_BUFFER_SIZE = 4096;  // Max push constants per frame
+        size_t pushConstantsBufferOffset = 0;
 
         std::unordered_set<MetalDescriptorSet*> currentEncoderDescriptorSets;
         void bindEncoderResources(MTL::CommandEncoder* encoder, bool isCompute);

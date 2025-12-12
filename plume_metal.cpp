@@ -23,9 +23,25 @@ namespace plume {
     // MARK: - Constants
 
     static constexpr size_t MAX_DRAWABLES = 3;
-    static constexpr size_t DESCRIPTOR_SETS_BINDING_INDEX = 0;
-    static constexpr size_t PUSH_CONSTANTS_BINDING_INDEX = DESCRIPTOR_SETS_BINDING_INDEX + MAX_DESCRIPTOR_SET_BINDINGS;
-    static constexpr size_t VERTEX_BUFFERS_BINDING_INDEX = PUSH_CONSTANTS_BINDING_INDEX + MAX_PUSH_CONSTANT_BINDINGS;
+    
+    // Metal Shader Converter (IR Converter) compatible binding layout.
+    // These indices match the constants defined in metal_irconverter_runtime.h:
+    //   kIRDescriptorHeapBindPoint = 0
+    //   kIRSamplerHeapBindPoint = 1  
+    //   kIRArgumentBufferBindPoint = 2
+    //   kIRArgumentBufferHullDomainBindPoint = 3
+    //   kIRArgumentBufferDrawArgumentsBindPoint = 4
+    //   kIRArgumentBufferUniformsBindPoint = 5
+    //   kIRVertexBufferBindPoint = 6
+    //   kIRStageInAttributeStartIndex = 11
+    static constexpr size_t DESCRIPTOR_SETS_BINDING_INDEX = 2;  // Maps to kIRArgumentBufferBindPoint (from shader metadata)
+    static constexpr size_t PUSH_CONSTANTS_BINDING_INDEX = 5;   // Maps to kIRArgumentBufferUniformsBindPoint
+    static constexpr size_t VERTEX_BUFFERS_BINDING_INDEX = 6;   // Maps to kIRVertexBufferBindPoint
+    static constexpr size_t VERTEX_ATTRIBUTE_START_INDEX = 11;  // Maps to kIRStageInAttributeStartIndex
+    
+    // IR Converter descriptor table entry size (3 x uint64_t = 24 bytes)
+    // Each entry contains: gpuVA (buffer address), textureViewID (texture resource ID), metadata (flags)
+    static constexpr size_t IR_DESCRIPTOR_ENTRY_SIZE = 24;
 
     // MARK: - Prototypes
 
@@ -1213,7 +1229,16 @@ namespace plume {
         this->desc = desc;
 
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::alloc()->init();
-        const MTL::TextureType textureType = mapTextureType(desc.dimension, desc.multisampling.sampleCount, desc.arraySize);
+        
+        // Determine texture type - cube textures need special handling
+        MTL::TextureType textureType;
+        if (desc.flags & RenderTextureFlag::CUBE) {
+            // Use CubeArray only if there are multiple cubes (arraySize > 6)
+            // Otherwise use regular Cube type which matches HLSL TextureCube
+            textureType = (desc.arraySize > 6) ? MTL::TextureTypeCubeArray : MTL::TextureTypeCube;
+        } else {
+            textureType = mapTextureType(desc.dimension, desc.multisampling.sampleCount, desc.arraySize);
+        }
 
         descriptor->setTextureType(textureType);
         descriptor->setStorageMode(MTL::StorageModePrivate);
@@ -1222,7 +1247,19 @@ namespace plume {
         descriptor->setHeight(desc.height);
         descriptor->setDepth(desc.depth);
         descriptor->setMipmapLevelCount(desc.mipLevels);
-        descriptor->setArrayLength(desc.arraySize);
+        
+        // For cube textures, arrayLength has special meaning:
+        // - TextureTypeCube: arrayLength must be 1 (6 faces are implicit)
+        // - TextureTypeCubeArray: arrayLength is number of cubes (each cube has 6 faces)
+        uint32_t arrayLength = desc.arraySize;
+        if (desc.flags & RenderTextureFlag::CUBE) {
+            // RHI arraySize for cubes is total faces, convert to Metal's cube count
+            arrayLength = desc.arraySize / 6;
+            if (textureType == MTL::TextureTypeCube) {
+                arrayLength = 1;  // Cube type requires exactly 1
+            }
+        }
+        descriptor->setArrayLength(arrayLength);
         descriptor->setSampleCount(desc.multisampling.sampleCount);
 
         MTL::TextureUsage usage = mapTextureUsage(desc.flags);
@@ -1502,7 +1539,9 @@ namespace plume {
             const RenderInputElement &inputElement = desc.inputElements[i];
             assert(inputElement.slotIndex < MAX_VERTEX_BUFFER_BINDINGS && "Vertex attribute slot index out of range.");
 
-            MTL::VertexAttributeDescriptor *attributeDescriptor = vertexDescriptor->attributes()->object(inputElement.location);
+            // Metal Shader Converter expects vertex attributes to start at index 11 (kIRStageInAttributeStartIndex)
+            const uint32_t attributeIndex = VERTEX_ATTRIBUTE_START_INDEX + inputElement.location;
+            MTL::VertexAttributeDescriptor *attributeDescriptor = vertexDescriptor->attributes()->object(attributeIndex);
             attributeDescriptor->setOffset(inputElement.alignedByteOffset);
 
             const uint32_t vertexBufferIndex = VERTEX_BUFFERS_BINDING_INDEX + inputElement.slotIndex;
@@ -1659,7 +1698,17 @@ namespace plume {
             descriptor->release();
         }
 
-        uint64_t requiredSize = alignUp(setLayout->argumentEncoder->encodedLength(), 256);
+        // Calculate buffer size for IR Converter format: 24 bytes per descriptor entry
+        // Use the highest binding index + count to determine the total slots needed
+        uint32_t maxSlotIndex = 0;
+        for (uint32_t i = 0; i < desc.descriptorRangesCount; i++) {
+            const RenderDescriptorRange &range = desc.descriptorRanges[i];
+            uint32_t endSlot = range.binding + range.count;
+            if (endSlot > maxSlotIndex) {
+                maxSlotIndex = endSlot;
+            }
+        }
+        uint64_t requiredSize = alignUp(maxSlotIndex * IR_DESCRIPTOR_ENTRY_SIZE, 256);
 
         argumentBuffer = {
             .mtl = device->mtl->newBuffer(requiredSize, MTL::ResourceStorageModeShared),
@@ -1667,9 +1716,8 @@ namespace plume {
             .offset = 0,
         };
 
-        if (!device->useArgumentBuffersTier2) {
-            argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
-        }
+        // Zero-initialize the argument buffer
+        memset(argumentBuffer.mtl->contents(), 0, requiredSize);
 
         bindImmutableSamplers();
         resourceEntries.resize(maxResources);
@@ -1693,21 +1741,20 @@ namespace plume {
     }
 
     void MetalDescriptorSet::bindImmutableSamplers() const {
-        // For Tier 2, get pointer to argument buffer for direct writes
-        uint8_t *bufferPtr = nullptr;
-        if (device->useArgumentBuffersTier2) {
-            bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
-        }
+        // Get pointer to argument buffer for direct writes
+        uint8_t *bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
 
         for (const auto &binding : setLayout->setBindings) {
             for (uint32_t i = 0; i < binding.immutableSamplers.size(); i++) {
                 uint32_t argumentIndex = binding.binding + i;
-                if (device->useArgumentBuffersTier2) {
-                    uint32_t offset = argumentIndex * sizeof(uint64_t);
-                    *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = binding.immutableSamplers[i]->gpuResourceID();
-                } else {
-                    argumentBuffer.argumentEncoder->setSamplerState(binding.immutableSamplers[i], argumentIndex);
-                }
+                // IR Converter uses 24-byte entries (3 x uint64_t)
+                uint32_t offset = argumentIndex * IR_DESCRIPTOR_ENTRY_SIZE;
+                uint64_t *entryPtr = reinterpret_cast<uint64_t*>(bufferPtr + offset);
+                // IR Converter sampler entry (different layout than textures!):
+                // [0] = sampler resource ID, [1] = LOD bias, [2] = unused
+                entryPtr[0] = binding.immutableSamplers[i]->gpuResourceID()._impl;
+                entryPtr[1] = 0;
+                entryPtr[2] = 0;
             }
         }
     }
@@ -1808,13 +1855,14 @@ namespace plume {
 
         if (descriptor != nullptr) {
             const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
-            const uint32_t argumentOffset = argumentIndex * sizeof(uint64_t);
+            
+            // IR Converter uses 24-byte entries (3 x uint64_t) for descriptor tables
+            // Entry format: [gpuVA (buffer), textureViewID (texture), metadata (flags)]
+            const uint32_t argumentOffset = argumentIndex * IR_DESCRIPTOR_ENTRY_SIZE;
 
-            // For Tier 2, get pointer to argument buffer for direct writes
-            uint8_t *bufferPtr = nullptr;
-            if (device->useArgumentBuffersTier2) {
-                bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
-            }
+            // Get pointer to argument buffer for direct writes
+            uint8_t *bufferPtr = static_cast<uint8_t*>(argumentBuffer.mtl->contents()) + argumentBuffer.offset;
+            uint64_t *entryPtr = reinterpret_cast<uint64_t*>(bufferPtr + argumentOffset);
 
             switch (dtype) {
                 case MTL::DataTypeTexture: {
@@ -1826,11 +1874,13 @@ namespace plume {
                         residencySet->addAllocation(nativeTexture);
                         needsCommit = true;
                     }
-                    if (device->useArgumentBuffersTier2) {
-                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = nativeTexture->gpuResourceID();
-                    } else {
-                        argumentBuffer.argumentEncoder->setTexture(nativeTexture, argumentIndex);
-                    }
+                    // IR Converter texture entry:
+                    // [0] = 0 (no buffer address)
+                    // [1] = texture resource ID
+                    // [2] = minLODClamp in low 32 bits (0 for now)
+                    entryPtr[0] = 0;
+                    entryPtr[1] = nativeTexture->gpuResourceID()._impl;
+                    entryPtr[2] = 0;  // minLODClamp = 0
                     nativeTexture->retain();
                     break;
                 }
@@ -1843,22 +1893,27 @@ namespace plume {
                         residencySet->addAllocation(nativeBuffer);
                         needsCommit = true;
                     }
-                    if (device->useDirectBufferAddresses) {
-                        uint64_t gpuAddress = nativeBuffer->gpuAddress() + bufferDescriptor->offset;
-                        *reinterpret_cast<uint64_t*>(bufferPtr + argumentOffset) = gpuAddress;
-                    } else {
-                        argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, argumentIndex);
-                    }
+                    // IR Converter buffer entry:
+                    // [0] = GPU virtual address
+                    // [1] = 0 (no texture)
+                    // [2] = buffer length in low 32 bits, typed buffer flag in high bit
+                    uint64_t gpuAddress = nativeBuffer->gpuAddress() + bufferDescriptor->offset;
+                    uint64_t bufferLength = nativeBuffer->length() - bufferDescriptor->offset;
+                    entryPtr[0] = gpuAddress;
+                    entryPtr[1] = 0;
+                    entryPtr[2] = bufferLength & 0xFFFFFFFF;  // Buffer length in low 32 bits
                     nativeBuffer->retain();
                     break;
                 }
                 case MTL::DataTypeSampler: {
                     const SamplerDescriptor *samplerDescriptor = static_cast<const SamplerDescriptor *>(descriptor);
-                    if (device->useArgumentBuffersTier2) {
-                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = samplerDescriptor->state->gpuResourceID();
-                    } else {
-                        argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, argumentIndex);
-                    }
+                    // IR Converter sampler entry (different layout than textures!):
+                    // [0] = sampler resource ID (field 0 in struct__desc.0)
+                    // [1] = LOD bias as float32 (cast to uint64)
+                    // [2] = unused
+                    entryPtr[0] = samplerDescriptor->state->gpuResourceID()._impl;
+                    entryPtr[1] = 0;  // LOD bias = 0
+                    entryPtr[2] = 0;
                     break;
                 }
 
@@ -2231,6 +2286,10 @@ namespace plume {
 
         timestampQueryFence = device->mtl->newFence();
         timestampQueryFence->setLabel(MTLSTR("Timestamp Query Fence"));
+        
+        // Create push constants buffer for IR Converter compatibility
+        pushConstantsBuffer = device->mtl->newBuffer(PUSH_CONSTANTS_BUFFER_SIZE, MTL::ResourceStorageModeShared);
+        pushConstantsBuffer->setLabel(MTLSTR("Push Constants Buffer"));
 
         releasePool->release();
     }
@@ -2245,6 +2304,10 @@ namespace plume {
         }
 
         timestampQueryFence->release();
+        
+        if (pushConstantsBuffer != nullptr) {
+            pushConstantsBuffer->release();
+        }
     }
 
     void MetalCommandList::begin() {
@@ -2261,6 +2324,9 @@ namespace plume {
             }
             fenceSlots.update[dstStage] = -1;
         }
+        
+        // Reset push constants buffer offset for new command list
+        pushConstantsBufferOffset = 0;
     }
 
     void MetalCommandList::end() {
@@ -3506,17 +3572,57 @@ namespace plume {
             dirtyGraphicsState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
         }
 
-        // Push constants
+        // Push constants - IR Converter expects these as a CBV in the argument buffer at index 2
+        // The shader reads: top_level_global_ab[0].field0 -> GPU address -> dereference to get data
+        // 
+        // We allocate space in the push constants buffer for:
+        // 1. The argument buffer entry (24 bytes): [gpuAddress, 0, size]
+        // 2. The actual push constant data (aligned to 8 bytes)
+        // Then bind the argument buffer entry at index 2
         if (dirtyGraphicsState.pushConstants) {
-            if (pushConstants != stateCache.lastPushConstants) {
+            // Always rebind push constants when dirty - the cache comparison was causing issues
+            {
                 for (const PushConstantData &pushConstant : pushConstants) {
-                    const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
+                    // Calculate sizes with alignment
+                    const size_t dataSize = alignUp(pushConstant.size, 8);
+                    const size_t totalSize = IR_DESCRIPTOR_ENTRY_SIZE + dataSize;
+                    
+                    // Check if we have space in the buffer
+                    if (pushConstantsBufferOffset + totalSize > PUSH_CONSTANTS_BUFFER_SIZE) {
+                        // Buffer full - reset (this is a simple approach; could use ring buffer)
+                        pushConstantsBufferOffset = 0;
+                    }
+                    
+                    // Get pointer to buffer contents
+                    uint8_t *bufferContents = static_cast<uint8_t*>(pushConstantsBuffer->contents());
+                    uint8_t *entryPtr = bufferContents + pushConstantsBufferOffset;
+                    uint8_t *dataPtr = entryPtr + IR_DESCRIPTOR_ENTRY_SIZE;
+                    
+                    // Copy push constant data after the entry
+                    memcpy(dataPtr, pushConstant.data.data(), pushConstant.size);
+                    
+                    // Fill in the argument buffer entry in IR Converter format
+                    // [0] = GPU address of data
+                    // [1] = 0 (no texture)
+                    // [2] = buffer length
+                    uint64_t *entry = reinterpret_cast<uint64_t*>(entryPtr);
+                    uint64_t dataGpuAddress = pushConstantsBuffer->gpuAddress() + pushConstantsBufferOffset + IR_DESCRIPTOR_ENTRY_SIZE;
+                    entry[0] = dataGpuAddress;
+                    entry[1] = 0;
+                    entry[2] = pushConstant.size;
+                    
+                    // Mark the buffer as used by the encoder for argument buffer tier 2
+                    activeRenderEncoder->useResource(pushConstantsBuffer, MTL::ResourceUsageRead);
+                    
                     if (pushConstant.stageFlags & RenderShaderStageFlag::VERTEX) {
-                        activeRenderEncoder->setVertexBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+                        activeRenderEncoder->setVertexBuffer(pushConstantsBuffer, pushConstantsBufferOffset, DESCRIPTOR_SETS_BINDING_INDEX);
                     }
                     if (pushConstant.stageFlags & RenderShaderStageFlag::PIXEL) {
-                        activeRenderEncoder->setFragmentBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+                        activeRenderEncoder->setFragmentBuffer(pushConstantsBuffer, pushConstantsBufferOffset, DESCRIPTOR_SETS_BINDING_INDEX);
                     }
+                    
+                    // Advance offset for next allocation
+                    pushConstantsBufferOffset += totalSize;
                 }
                 stateCache.lastPushConstants = pushConstants;
             }
@@ -3755,8 +3861,23 @@ namespace plume {
             if (descriptorSet->residencySet != nullptr) {
                 commandBuffer->useResidencySet(descriptorSet->residencySet);
             } else {
-                // Track descriptor set for later resource binding
-                encoderDescriptorSets.insert(const_cast<MetalDescriptorSet*>(descriptorSet));
+                // Call useResource immediately for all resources in this descriptor set
+                // This must happen BEFORE the draw that uses them
+                if (isCompute) {
+                    auto* computeEncoder = static_cast<MTL::ComputeCommandEncoder*>(encoder);
+                    for (const auto& entry : descriptorSet->resourceEntries) {
+                        if (entry.resource != nullptr) {
+                            computeEncoder->useResource(entry.resource, mapResourceUsage(entry.type));
+                        }
+                    }
+                } else {
+                    auto* renderEncoder = static_cast<MTL::RenderCommandEncoder*>(encoder);
+                    for (const auto& entry : descriptorSet->resourceEntries) {
+                        if (entry.resource != nullptr) {
+                            renderEncoder->useResource(entry.resource, mapResourceUsage(entry.type), MTL::RenderStageVertex | MTL::RenderStageFragment);
+                        }
+                    }
+                }
             }
 
             // Bind argument buffer
