@@ -7,6 +7,11 @@
 {
   # https://devenv.sh/basics/
 
+  # Custom overlays for Metal shader compilation support
+  overlays = [
+    (import ./nix/overlays/default.nix)
+  ];
+
   # https://devenv.sh/packages/
   packages =
     (with pkgs; [
@@ -35,6 +40,14 @@
       # Math library for examples
       glm
     ])
+    # DXC with Metal support (macOS only)
+    ++ lib.optionals pkgs.stdenv.isDarwin [
+      pkgs.directx-shader-compiler-metal
+    ]
+    # Standard DXC for other platforms
+    ++ lib.optionals (!pkgs.stdenv.isDarwin) [
+      pkgs.directx-shader-compiler
+    ]
     # SDL2 from pinned nixpkgs (real SDL2, not sdl2-compat)
     ++ [ inputs.nixpkgs-sdl2.legacyPackages.${pkgs.system}.SDL2 ]
     ++ lib.optionals pkgs.stdenv.isLinux (with pkgs; [

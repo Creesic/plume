@@ -3,3 +3,6 @@ inputs:
     url: github:cachix/devenv-nixpkgs/rolling
   nixpkgs-sdl2:
     url: github:NixOS/nixpkgs/nixos-24.05
+
+# Allow Apple's Metal Shader Converter (proprietary)
+allowUnfree: true
