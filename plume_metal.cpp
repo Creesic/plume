@@ -1808,6 +1808,7 @@ namespace plume {
 
         if (descriptor != nullptr) {
             const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
+            const uint32_t argumentOffset = argumentIndex * sizeof(uint64_t);
 
             // For Tier 2, get pointer to argument buffer for direct writes
             uint8_t *bufferPtr = nullptr;
@@ -1826,8 +1827,7 @@ namespace plume {
                         needsCommit = true;
                     }
                     if (device->useArgumentBuffersTier2) {
-                        uint32_t offset = argumentIndex * sizeof(uint64_t);
-                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = nativeTexture->gpuResourceID();
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = nativeTexture->gpuResourceID();
                     } else {
                         argumentBuffer.argumentEncoder->setTexture(nativeTexture, argumentIndex);
                     }
@@ -1844,9 +1844,8 @@ namespace plume {
                         needsCommit = true;
                     }
                     if (device->useDirectBufferAddresses) {
-                        uint32_t offset = argumentIndex * sizeof(uint64_t);
                         uint64_t gpuAddress = nativeBuffer->gpuAddress() + bufferDescriptor->offset;
-                        *reinterpret_cast<uint64_t*>(bufferPtr + offset) = gpuAddress;
+                        *reinterpret_cast<uint64_t*>(bufferPtr + argumentOffset) = gpuAddress;
                     } else {
                         argumentBuffer.argumentEncoder->setBuffer(nativeBuffer, bufferDescriptor->offset, argumentIndex);
                     }
@@ -1856,8 +1855,7 @@ namespace plume {
                 case MTL::DataTypeSampler: {
                     const SamplerDescriptor *samplerDescriptor = static_cast<const SamplerDescriptor *>(descriptor);
                     if (device->useArgumentBuffersTier2) {
-                        uint32_t offset = argumentIndex * sizeof(uint64_t);
-                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + offset) = samplerDescriptor->state->gpuResourceID();
+                        *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = samplerDescriptor->state->gpuResourceID();
                     } else {
                         argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, argumentIndex);
                     }
