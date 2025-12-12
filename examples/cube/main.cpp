@@ -24,8 +24,8 @@
 #include "shaders/cubeVert.hlsl.spirv.h"
 #include "shaders/cubeFrag.hlsl.spirv.h"
 #ifdef __APPLE__
-#include "shaders/cubeVert.metal.h"
-#include "shaders/cubeFrag.metal.h"
+#include "shaders/cubeVert.hlsl.metal.h"
+#include "shaders/cubeFrag.hlsl.metal.h"
 #endif
 
 namespace plume {

@@ -22,8 +22,8 @@
 #include "shaders/triangleVert.hlsl.spirv.h"
 #include "shaders/triangleFrag.hlsl.spirv.h"
 #ifdef __APPLE__
-#include "shaders/triangleVert.metal.h"
-#include "shaders/triangleFrag.metal.h"
+#include "shaders/triangleVert.hlsl.metal.h"
+#include "shaders/triangleFrag.hlsl.metal.h"
 #endif
 
 // Function prototype for creating the Metal interface on Apple platforms
