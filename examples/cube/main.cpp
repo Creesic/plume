@@ -36,12 +36,15 @@
 #include "shaders/swatchFrag.metal.h"
 #include "shaders/readbackComp.metal.h"
 #include "shaders/readbackCompMS.metal.h"
+#include "shaders/readbackDepthCompMS.metal.h"
 #endif
 #include "shaders/readbackComp.hlsl.spirv.h"
 #include "shaders/readbackCompMS.hlsl.spirv.h"
+#include "shaders/readbackDepthCompMS.hlsl.spirv.h"
 #ifdef _WIN64
 #include "shaders/readbackComp.hlsl.dxil.h"
 #include "shaders/readbackCompMS.hlsl.dxil.h"
+#include "shaders/readbackDepthCompMS.hlsl.dxil.h"
 #endif
 
 namespace plume {
@@ -228,6 +231,22 @@ namespace plume {
         std::unique_ptr<RenderBufferFormattedView> m_computeOutputMSBufferView;
         std::unique_ptr<RenderBuffer> m_computeReadbackMSBuffer;
         float m_computeSampledColorMS[4] = {0.0f, 0.0f, 0.0f, 1.0f};         // Color from MSAA compute readback
+        
+        // MSAA depth texture test (replicates exact rt64 pictograph setup)
+        // rt64 uses D32_FLOAT depth textures with MSAA, then reads via compute shader
+        std::unique_ptr<RenderTexture> m_depthMSAATexture;           // MSAA depth texture
+        std::unique_ptr<RenderTextureView> m_depthMSAATextureView;
+        std::unique_ptr<RenderTexture> m_depthResolvedTexture;       // Non-MSAA resolved depth
+        std::unique_ptr<RenderTextureView> m_depthResolvedTextureView;
+        std::unique_ptr<RenderPipeline> m_depthReadbackMSPipeline;
+        std::unique_ptr<RenderPipelineLayout> m_depthReadbackMSPipelineLayout;
+        std::unique_ptr<RenderDescriptorSet> m_depthOutputDescriptorSet;   // RWBuffer output
+        std::unique_ptr<RenderDescriptorSet> m_depthInputMSDescriptorSet;  // Binds MSAA depth for MSAA shader
+        std::unique_ptr<RenderBuffer> m_depthOutputBuffer;
+        std::unique_ptr<RenderBufferFormattedView> m_depthOutputBufferView;
+        std::unique_ptr<RenderBuffer> m_depthReadbackBuffer;
+        std::unique_ptr<RenderFramebuffer> m_depthMSAAFramebuffer;    // Framebuffer for clearing depth
+        float m_depthSampledValue = 0.0f;                             // Depth value from MSAA compute readback
 
         // Camera
         float m_cameraYaw = 0.0f;
@@ -716,6 +735,121 @@ namespace plume {
         std::cout << "  MSAA compute readback pipeline created." << std::endl;
     }
 
+    void createDepthMSAATextures(CubeContext& ctx, uint32_t width, uint32_t height) {
+        std::cout << "Creating MSAA depth textures (rt64 pictograph exact setup)..." << std::endl;
+        
+        // Create MSAA depth texture (4x MSAA like rt64 uses)
+        RenderMultisampling msaa;
+        msaa.sampleCount = 4;
+        
+        RenderTextureDesc depthMSAADesc = RenderTextureDesc::DepthTarget(
+            width, height,
+            RenderFormat::D32_FLOAT,
+            msaa,
+            nullptr,
+            RenderTextureFlag::STORAGE  // Allow compute shader access
+        );
+        
+        ctx.m_depthMSAATexture = ctx.m_device->createTexture(depthMSAADesc);
+        ctx.m_depthMSAATextureView = ctx.m_depthMSAATexture->createTextureView(
+            RenderTextureViewDesc::Texture2D(RenderFormat::D32_FLOAT)
+        );
+        
+        // Create non-MSAA resolved depth texture  
+        RenderTextureDesc depthResolvedDesc = RenderTextureDesc::DepthTarget(
+            width, height,
+            RenderFormat::D32_FLOAT,
+            RenderMultisampling(),  // No MSAA
+            nullptr,
+            RenderTextureFlag::STORAGE
+        );
+        
+        ctx.m_depthResolvedTexture = ctx.m_device->createTexture(depthResolvedDesc);
+        ctx.m_depthResolvedTextureView = ctx.m_depthResolvedTexture->createTextureView(
+            RenderTextureViewDesc::Texture2D(RenderFormat::D32_FLOAT)
+        );
+        
+        // Create descriptor sets for depth readback pipeline
+        // Output buffer descriptor set (set 0)
+        RenderDescriptorRange outputRange(RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER, 0, 1);
+        RenderDescriptorSetDesc outputDescSetDesc(&outputRange, 1);
+        ctx.m_depthOutputDescriptorSet = ctx.m_device->createDescriptorSet(outputDescSetDesc);
+        
+        // Input MSAA depth texture descriptor set (set 1)
+        RenderDescriptorRange inputRange(RenderDescriptorRangeType::TEXTURE, 0, 1);
+        RenderDescriptorSetDesc inputDescSetDesc(&inputRange, 1);
+        ctx.m_depthInputMSDescriptorSet = ctx.m_device->createDescriptorSet(inputDescSetDesc);
+        
+        // Create pipeline layout
+        RenderPipelineLayoutDesc layoutDesc;
+        RenderPushConstantRange pushConstantRange;
+        pushConstantRange.size = sizeof(ReadbackConstants);
+        pushConstantRange.stageFlags = RenderShaderStageFlag::COMPUTE;
+        layoutDesc.pushConstantRanges = &pushConstantRange;
+        layoutDesc.pushConstantRangesCount = 1;
+        
+        RenderDescriptorSetDesc descriptorSetDescs[2] = { outputDescSetDesc, inputDescSetDesc };
+        layoutDesc.descriptorSetDescs = descriptorSetDescs;
+        layoutDesc.descriptorSetDescsCount = 2;
+        
+        ctx.m_depthReadbackMSPipelineLayout = ctx.m_device->createPipelineLayout(layoutDesc);
+        
+        // Create depth MSAA compute shader
+        RenderShaderFormat shaderFormat = ctx.m_renderInterface->getCapabilities().shaderFormat;
+        std::unique_ptr<RenderShader> computeShader;
+        
+        switch (shaderFormat) {
+#ifdef __APPLE__
+            case RenderShaderFormat::METAL:
+                computeShader = ctx.m_device->createShader(readbackDepthCompMSBlobMSL, sizeof(readbackDepthCompMSBlobMSL), "CSMain", shaderFormat);
+                break;
+#endif
+            case RenderShaderFormat::SPIRV:
+                computeShader = ctx.m_device->createShader(readbackDepthCompMSBlobSPIRV, sizeof(readbackDepthCompMSBlobSPIRV), "CSMain", shaderFormat);
+                break;
+#ifdef _WIN64
+            case RenderShaderFormat::DXIL:
+                computeShader = ctx.m_device->createShader(readbackDepthCompMSBlobDXIL, sizeof(readbackDepthCompMSBlobDXIL), "CSMain", shaderFormat);
+                break;
+#endif
+            default:
+                assert(false && "Unknown shader format");
+        }
+        
+        // Create compute pipeline
+        RenderComputePipelineDesc pipelineDesc(ctx.m_depthReadbackMSPipelineLayout.get(), computeShader.get(), 8, 8, 1);
+        ctx.m_depthReadbackMSPipeline = ctx.m_device->createComputePipeline(pipelineDesc);
+        
+        // Create output buffer (1 uint16 packed into uint32)
+        ctx.m_depthOutputBuffer = ctx.m_device->createBuffer(
+            RenderBufferDesc::DefaultBuffer(4, RenderBufferFlag::STORAGE | RenderBufferFlag::FORMATTED)
+        );
+        ctx.m_depthOutputBufferView = ctx.m_depthOutputBuffer->createBufferFormattedView(RenderFormat::R32_UINT);
+        
+        // Create CPU-readable readback buffer
+        ctx.m_depthReadbackBuffer = ctx.m_device->createBuffer(
+            RenderBufferDesc::ReadbackBuffer(4)
+        );
+        
+        // Set output buffer in descriptor set
+        ctx.m_depthOutputDescriptorSet->setBuffer(0, ctx.m_depthOutputBuffer.get(), 4, nullptr, ctx.m_depthOutputBufferView.get());
+        
+        // Bind the MSAA depth texture (this is what rt64 does for pictograph)
+        ctx.m_depthInputMSDescriptorSet->setTexture(0, ctx.m_depthMSAATexture.get(), 
+            RenderTextureLayout::SHADER_READ, ctx.m_depthMSAATextureView.get());
+        
+        // Create a framebuffer with the MSAA depth texture for clearing
+        RenderFramebufferDesc fbDesc;
+        fbDesc.colorAttachments = nullptr;
+        fbDesc.colorAttachmentsCount = 0;
+        fbDesc.depthAttachment = ctx.m_depthMSAATexture.get();
+        ctx.m_depthMSAAFramebuffer = ctx.m_device->createFramebuffer(fbDesc);
+        
+        std::cout << "  MSAA depth texture: " << width << "x" << height << " D32_FLOAT 4xMSAA" << std::endl;
+        std::cout << "  Resolved depth texture: " << width << "x" << height << " D32_FLOAT" << std::endl;
+        std::cout << "  Depth readback pipeline created." << std::endl;
+    }
+
     void initializeRenderResources(CubeContext& ctx, RenderInterface* renderInterface) {
         ctx.m_device = renderInterface->createDevice();
         ctx.m_commandQueue = ctx.m_device->createCommandQueue(RenderCommandListType::DIRECT);
@@ -732,6 +866,7 @@ namespace plume {
         createSwatchPipeline(ctx);
         createComputeReadbackPipeline(ctx);
         createComputeReadbackMSPipeline(ctx);
+        createDepthMSAATextures(ctx, ctx.m_swapChain->getWidth(), ctx.m_swapChain->getHeight());
     }
 
     void createContext(CubeContext& ctx, RenderInterface* renderInterface, RenderWindow window, const std::string& apiName) {
@@ -766,6 +901,7 @@ namespace plume {
             std::cout << "  MSAA compute (rt64 bug): R=" << ctx.m_computeSampledColorMS[0]
                       << " G=" << ctx.m_computeSampledColorMS[1]
                       << " B=" << ctx.m_computeSampledColorMS[2] << std::endl;
+            std::cout << "  MSAA depth (pictograph): depth=" << ctx.m_depthSampledValue << std::endl;
         }
 
         // Update time for camera rotation
@@ -906,6 +1042,34 @@ namespace plume {
             4
         );
 
+        // ====== PASS 2.7: MSAA DEPTH compute shader readback (exact rt64 pictograph setup) ======
+        // This uses a real MSAA D32_FLOAT depth texture read via Texture2DMS<float>
+        // This exactly matches what rt64 pictograph does on Intel
+        
+        // First, clear the MSAA depth texture to a known value (0.5) so we can verify readback works
+        ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS,
+            RenderTextureBarrier(ctx.m_depthMSAATexture.get(), RenderTextureLayout::DEPTH_WRITE));
+        ctx.m_commandList->setFramebuffer(ctx.m_depthMSAAFramebuffer.get());
+        ctx.m_commandList->clearDepth(true, 0.5f);
+        
+        ctx.m_commandList->barriers(RenderBarrierStage::COMPUTE,
+            RenderTextureBarrier(ctx.m_depthMSAATexture.get(), RenderTextureLayout::SHADER_READ));
+
+        ctx.m_commandList->setComputePipelineLayout(ctx.m_depthReadbackMSPipelineLayout.get());
+        ctx.m_commandList->setPipeline(ctx.m_depthReadbackMSPipeline.get());
+        ctx.m_commandList->setComputeDescriptorSet(ctx.m_depthOutputDescriptorSet.get(), 0);
+        ctx.m_commandList->setComputeDescriptorSet(ctx.m_depthInputMSDescriptorSet.get(), 1);
+        ctx.m_commandList->setComputePushConstants(0, &readbackConstants);
+        ctx.m_commandList->dispatch(1, 1, 1);
+
+        ctx.m_commandList->barriers(RenderBarrierStage::COPY,
+            RenderBufferBarrier(ctx.m_depthOutputBuffer.get(), RenderBufferAccess::READ));
+        ctx.m_commandList->copyBufferRegion(
+            RenderBufferReference(ctx.m_depthReadbackBuffer.get()),
+            RenderBufferReference(ctx.m_depthOutputBuffer.get()),
+            4
+        );
+
         // ====== PASS 3: Render cubemap and swatch to swapchain ======
         RenderTexture* swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
 
@@ -1030,6 +1194,38 @@ namespace plume {
         ctx.m_commandList->setGraphicsPushConstants(0, &swatchConstants);
         ctx.m_commandList->drawInstanced(6, 1, 0, 0);
 
+        // ====== Draw fourth swatch for MSAA DEPTH compute readback (exact rt64 pictograph) ======
+        // This swatch shows the depth value as a grayscale
+        // On Intel this should show 0 (black) if the bug is present
+        float swatch4X = swatch3X + swatchSize + 0.1f;  // Offset to the right
+
+        // Draw black outline for fourth swatch
+        swatchConstants.offset[0] = swatch4X - borderX;
+        swatchConstants.offset[1] = swatchY - borderY;
+        swatchConstants.size[0] = swatchSize + borderX * 2.0f;
+        swatchConstants.size[1] = swatchSize + borderY * 2.0f;
+        swatchConstants.color[0] = 0.0f;  // Black
+        swatchConstants.color[1] = 0.0f;
+        swatchConstants.color[2] = 0.0f;
+        swatchConstants.color[3] = 1.0f;
+
+        ctx.m_commandList->setGraphicsPushConstants(0, &swatchConstants);
+        ctx.m_commandList->drawInstanced(6, 1, 0, 0);
+
+        // Draw the depth value as grayscale swatch on top
+        swatchConstants.offset[0] = swatch4X;
+        swatchConstants.offset[1] = swatchY;
+        swatchConstants.size[0] = swatchSize;
+        swatchConstants.size[1] = swatchSize;
+        // Display depth as grayscale (same value for R, G, B)
+        swatchConstants.color[0] = ctx.m_depthSampledValue;
+        swatchConstants.color[1] = ctx.m_depthSampledValue;
+        swatchConstants.color[2] = ctx.m_depthSampledValue;
+        swatchConstants.color[3] = 1.0f;
+
+        ctx.m_commandList->setGraphicsPushConstants(0, &swatchConstants);
+        ctx.m_commandList->drawInstanced(6, 1, 0, 0);
+
         ctx.m_commandList->barriers(RenderBarrierStage::NONE,
             RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
 
@@ -1085,6 +1281,15 @@ namespace plume {
             ctx.m_computeSampledColorMS[2] = computePixelDataMS[0] / 255.0f;  // B
             ctx.m_computeSampledColorMS[3] = computePixelDataMS[3] / 255.0f;  // A
             ctx.m_computeReadbackMSBuffer->unmap(0, nullptr);
+        }
+
+        // Read back from MSAA DEPTH compute shader path (exact rt64 pictograph setup)
+        uint32_t* depthData = static_cast<uint32_t*>(ctx.m_depthReadbackBuffer->map(0, nullptr));
+        if (depthData) {
+            // Depth is stored as uint16 (0-65535), convert to 0.0-1.0
+            uint32_t depthU16 = depthData[0] & 0xFFFF;
+            ctx.m_depthSampledValue = static_cast<float>(depthU16) / 65535.0f;
+            ctx.m_depthReadbackBuffer->unmap(0, nullptr);
         }
     }
 

@@ -46,6 +46,7 @@ if(APPLE)
     compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.metal" "fragment" "swatchFrag" "PSMain")
     compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readback.comp.metal" "compute" "readbackComp" "CSMain")
     compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readbackMS.comp.metal" "compute" "readbackCompMS" "CSMain")
+    compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readbackDepthMS.comp.metal" "compute" "readbackDepthCompMS" "CSMain")
 endif()
 
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "vertex" "cubeVert" "VSMain")
@@ -54,3 +55,4 @@ compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.vert.hlsl"
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.hlsl" "fragment" "swatchFrag" "PSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readback.comp.hlsl" "compute" "readbackComp" "CSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readbackMS.comp.hlsl" "compute" "readbackCompMS" "CSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/readbackDepthMS.comp.hlsl" "compute" "readbackDepthCompMS" "CSMain")
