@@ -3402,50 +3402,147 @@ namespace plume {
             }
         }
 
-        // Descriptor sets
-        if (dirtyComputeState.descriptorSets) {
-            activeComputePipelineLayout->bindDescriptorSets(activeComputeEncoder, computeDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, true, dirtyComputeState.descriptorSetDirtyIndex, currentEncoderDescriptorSets, mtl);
-            dirtyComputeState.descriptorSets = 0;
-            dirtyComputeState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
-        }
-
-        // Push constants - IR Converter expects these as a CBV in the argument buffer at index 2
-        if (dirtyComputeState.pushConstants) {
+        // IR Converter expects all resources flattened into a single argument buffer at index 2.
+        // We need to combine all descriptor sets + push constants into one buffer.
+        // Layout: [set0 entries][set1 entries]...[push constants CBV][push constants data]
+        if (dirtyComputeState.descriptorSets || dirtyComputeState.pushConstants) {
+            // Calculate total entries needed across all descriptor sets
+            uint32_t totalEntries = 0;
+            for (uint32_t i = 0; i < activeComputePipelineLayout->setLayoutCount; i++) {
+                if (computeDescriptorSets[i] != nullptr) {
+                    totalEntries += computeDescriptorSets[i]->setLayout->descriptorBindingIndices.size();
+                }
+            }
+            
+            // Add space for push constants CBV entry + data
+            size_t pushConstantDataSize = 0;
             for (const PushConstantData &pushConstant : pushConstants) {
                 if (pushConstant.stageFlags & RenderShaderStageFlag::COMPUTE) {
-                    // Calculate sizes with alignment
-                    const size_t dataSize = alignUp(pushConstant.size, 8);
-                    const size_t totalSize = IR_DESCRIPTOR_ENTRY_SIZE + dataSize;
-
-                    // Check if we have space in the buffer
-                    if (pushConstantsBufferOffset + totalSize > PUSH_CONSTANTS_BUFFER_SIZE) {
-                        pushConstantsBufferOffset = 0;
+                    pushConstantDataSize = alignUp(pushConstant.size, 8);
+                    totalEntries++; // One entry for the CBV
+                }
+            }
+            
+            // Calculate buffer size needed
+            size_t flattenedSize = totalEntries * IR_DESCRIPTOR_ENTRY_SIZE + pushConstantDataSize;
+            flattenedSize = alignUp(flattenedSize, 256);
+            
+            // Check if we have space in the push constants buffer (reusing it as scratch)
+            if (pushConstantsBufferOffset + flattenedSize > PUSH_CONSTANTS_BUFFER_SIZE) {
+                pushConstantsBufferOffset = 0;
+            }
+            
+            uint8_t *bufferBase = static_cast<uint8_t*>(pushConstantsBuffer->contents()) + pushConstantsBufferOffset;
+            size_t flatBufferOffset = pushConstantsBufferOffset;
+            uint32_t currentEntry = 0;
+            
+            // IR Converter sorts resources by register type: SRV (t), UAV (u), CBV (b)
+            // We need to copy entries in that order, not in descriptor set order.
+            // First pass: Textures/SRVs (from all sets)
+            // Second pass: UAVs/RWBuffers (from all sets)
+            // Third pass: CBVs/Buffers (from all sets)
+            
+            // Collect all entries with their types for proper ordering
+            struct FlattenEntry {
+                uint8_t* srcPtr;
+                RenderDescriptorRangeType type;
+                MTL::Resource* resource;
+            };
+            std::vector<FlattenEntry> srvEntries, uavEntries, cbvEntries;
+            
+            for (uint32_t setIndex = 0; setIndex < activeComputePipelineLayout->setLayoutCount; setIndex++) {
+                MetalDescriptorSet *descriptorSet = computeDescriptorSets[setIndex];
+                if (descriptorSet == nullptr) continue;
+                
+                // Use residency set or call useResource for each resource
+                if (descriptorSet->residencySet != nullptr) {
+                    mtl->useResidencySet(descriptorSet->residencySet);
+                } else {
+                    for (const auto& entry : descriptorSet->resourceEntries) {
+                        if (entry.resource != nullptr) {
+                            activeComputeEncoder->useResource(entry.resource, mapResourceUsage(entry.type));
+                        }
                     }
-
-                    // Get pointer to buffer contents
-                    uint8_t *bufferContents = static_cast<uint8_t*>(pushConstantsBuffer->contents());
-                    uint8_t *entryPtr = bufferContents + pushConstantsBufferOffset;
-                    uint8_t *dataPtr = entryPtr + IR_DESCRIPTOR_ENTRY_SIZE;
-
-                    // Copy push constant data after the entry
+                }
+                
+                // Categorize entries by type
+                uint8_t *srcBase = static_cast<uint8_t*>(descriptorSet->argumentBuffer.mtl->contents()) + descriptorSet->argumentBuffer.offset;
+                for (uint32_t i = 0; i < descriptorSet->setLayout->descriptorBindingIndices.size(); i++) {
+                    uint8_t *srcPtr = srcBase + (i * IR_DESCRIPTOR_ENTRY_SIZE);
+                    RenderDescriptorRangeType type = descriptorSet->resourceEntries[i].type;
+                    MTL::Resource* resource = descriptorSet->resourceEntries[i].resource;
+                    
+                    FlattenEntry entry = { srcPtr, type, resource };
+                    
+                    // Sort into SRV, UAV, or CBV buckets
+                    switch (type) {
+                        case RenderDescriptorRangeType::TEXTURE:
+                        case RenderDescriptorRangeType::FORMATTED_BUFFER:
+                        case RenderDescriptorRangeType::STRUCTURED_BUFFER:
+                        case RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER:
+                            srvEntries.push_back(entry);
+                            break;
+                        case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
+                        case RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER:
+                        case RenderDescriptorRangeType::READ_WRITE_STRUCTURED_BUFFER:
+                        case RenderDescriptorRangeType::READ_WRITE_BYTE_ADDRESS_BUFFER:
+                            uavEntries.push_back(entry);
+                            break;
+                        case RenderDescriptorRangeType::CONSTANT_BUFFER:
+                            cbvEntries.push_back(entry);
+                            break;
+                        default:
+                            // Samplers and others - add to end
+                            cbvEntries.push_back(entry);
+                            break;
+                    }
+                }
+            }
+            
+            // Copy in order: SRV, UAV, CBV
+            auto copyEntries = [&](const std::vector<FlattenEntry>& entries) {
+                for (const auto& entry : entries) {
+                    uint8_t *dstPtr = bufferBase + (currentEntry * IR_DESCRIPTOR_ENTRY_SIZE);
+                    memcpy(dstPtr, entry.srcPtr, IR_DESCRIPTOR_ENTRY_SIZE);
+                    currentEntry++;
+                }
+            };
+            
+            copyEntries(srvEntries);
+            copyEntries(uavEntries);
+            copyEntries(cbvEntries);
+            
+            // Add push constants CBV entry at the end
+            for (const PushConstantData &pushConstant : pushConstants) {
+                if (pushConstant.stageFlags & RenderShaderStageFlag::COMPUTE) {
+                    // Entry points to data that follows all entries
+                    uint8_t *entryPtr = bufferBase + (currentEntry * IR_DESCRIPTOR_ENTRY_SIZE);
+                    uint8_t *dataPtr = bufferBase + (totalEntries * IR_DESCRIPTOR_ENTRY_SIZE);
+                    
+                    // Copy push constant data
                     memcpy(dataPtr, pushConstant.data.data(), pushConstant.size);
-
-                    // Fill in the argument buffer entry in IR Converter format
+                    
+                    // Fill in the CBV entry
                     uint64_t *entry = reinterpret_cast<uint64_t*>(entryPtr);
-                    uint64_t dataGpuAddress = pushConstantsBuffer->gpuAddress() + pushConstantsBufferOffset + IR_DESCRIPTOR_ENTRY_SIZE;
+                    uint64_t dataGpuAddress = pushConstantsBuffer->gpuAddress() + flatBufferOffset + (totalEntries * IR_DESCRIPTOR_ENTRY_SIZE);
                     entry[0] = dataGpuAddress;
                     entry[1] = 0;
                     entry[2] = pushConstant.size;
-
-                    // Mark the buffer as used by the encoder
-                    activeComputeEncoder->useResource(pushConstantsBuffer, MTL::ResourceUsageRead);
-                    activeComputeEncoder->setBuffer(pushConstantsBuffer, pushConstantsBufferOffset, DESCRIPTOR_SETS_BINDING_INDEX);
-
-                    // Advance offset for next allocation
-                    pushConstantsBufferOffset += totalSize;
+                    
+                    currentEntry++;
                 }
             }
+            
+            // Bind the flattened buffer at index 2
+            activeComputeEncoder->useResource(pushConstantsBuffer, MTL::ResourceUsageRead);
+            activeComputeEncoder->setBuffer(pushConstantsBuffer, flatBufferOffset, DESCRIPTOR_SETS_BINDING_INDEX);
+            
+            // Advance offset for next allocation
+            pushConstantsBufferOffset += flattenedSize;
+            
             stateCache.lastPushConstants = pushConstants;
+            dirtyComputeState.descriptorSets = 0;
+            dirtyComputeState.descriptorSetDirtyIndex = MAX_DESCRIPTOR_SET_BINDINGS;
             dirtyComputeState.pushConstants = 0;
         }
     }
