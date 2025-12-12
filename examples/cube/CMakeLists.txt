@@ -42,7 +42,11 @@ set_target_properties(plume_cube PROPERTIES
 if(APPLE)
     compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.metal" "vertex" "cubeVert" "VSMain")
     compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.metal" "fragment" "cubeFrag" "PSMain")
+    compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.vert.metal" "vertex" "swatchVert" "VSMain")
+    compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.metal" "fragment" "swatchFrag" "PSMain")
 endif()
 
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "vertex" "cubeVert" "VSMain")
 compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "fragment" "cubeFrag" "PSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.vert.hlsl" "vertex" "swatchVert" "VSMain")
+compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/swatch.frag.hlsl" "fragment" "swatchFrag" "PSMain")
