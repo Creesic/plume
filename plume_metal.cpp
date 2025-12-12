@@ -830,28 +830,29 @@ namespace plume {
         }
     }
 
-    MTL::ResourceOptions mapResourceOption(RenderHeapType heapType) {
+    MTL::ResourceOptions mapResourceOption(RenderHeapType heapType, bool hasUnifiedMemory) {
         switch (heapType) {
             case RenderHeapType::DEFAULT:
                 return MTL::ResourceStorageModePrivate;
             case RenderHeapType::UPLOAD:
             case RenderHeapType::READBACK:
             case RenderHeapType::GPU_UPLOAD:
-                return MTL::ResourceStorageModeShared;
+                return hasUnifiedMemory ? MTL::ResourceStorageModeShared 
+                                        : MTL::ResourceStorageModeManaged;
             default:
                 assert(false && "Unknown heap type.");
                 return MTL::ResourceStorageModePrivate;
         }
     }
 
-    MTL::StorageMode mapStorageMode(RenderHeapType heapType) {
+    MTL::StorageMode mapStorageMode(RenderHeapType heapType, bool hasUnifiedMemory) {
         switch (heapType) {
             case RenderHeapType::DEFAULT:
                 return MTL::StorageModePrivate;
             case RenderHeapType::UPLOAD:
-                return MTL::StorageModeShared;
             case RenderHeapType::READBACK:
-                return MTL::StorageModeShared;
+                return hasUnifiedMemory ? MTL::StorageModeShared 
+                                        : MTL::StorageModeManaged;
             default:
                 assert(false && "Unknown heap type.");
                 return MTL::StorageModePrivate;
@@ -1115,7 +1116,7 @@ namespace plume {
         this->desc = desc;
         this->device = device;
 
-        this->mtl = device->mtl->newBuffer(desc.size, mapResourceOption(desc.heapType));
+        this->mtl = device->mtl->newBuffer(desc.size, mapResourceOption(desc.heapType, device->hasUnifiedMemory));
 
         if (desc.flags & RenderBufferFlag::DEVICE_ADDRESSABLE) {
             // If the buffer may be used by device address, we need to make sure it will be resident.
@@ -1191,7 +1192,7 @@ namespace plume {
         // Configure texture properties
         const MTL::PixelFormat pixelFormat = mapPixelFormat(format);
         const MTL::TextureUsage usage = mapTextureUsageFromBufferFlags(buffer->desc.flags);
-        const MTL::ResourceOptions options = mapResourceOption(buffer->desc.heapType);
+        const MTL::ResourceOptions options = mapResourceOption(buffer->desc.heapType, buffer->device->hasUnifiedMemory);
 
         // Create texture with configured descriptor and alignment
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::textureBufferDescriptor(pixelFormat, width, options, usage);
@@ -2961,6 +2962,11 @@ namespace plume {
         const MetalBuffer *interfaceSrcBuffer = static_cast<const MetalBuffer *>(srcBuffer.ref);
 
         activeBlitEncoder->copyFromBuffer(interfaceSrcBuffer->mtl, srcBuffer.offset, interfaceDstBuffer->mtl, dstBuffer.offset, size);
+
+        // Synchronize managed buffers for CPU readback
+        if (interfaceDstBuffer->mtl->storageMode() == MTL::StorageModeManaged) {
+            activeBlitEncoder->synchronizeResource(interfaceDstBuffer->mtl);
+        }
     }
 
     void MetalCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, const uint32_t dstX, const uint32_t dstY, const uint32_t dstZ, const RenderBox *srcBox) {
@@ -3051,6 +3057,11 @@ namespace plume {
         activeBlitEncoder->pushDebugGroup(MTLSTR("CopyBuffer"));
         activeBlitEncoder->copyFromBuffer(src->mtl, 0, dst->mtl, 0, dst->desc.size);
         activeBlitEncoder->popDebugGroup();
+
+        // Synchronize managed buffers for CPU readback
+        if (dst->mtl->storageMode() == MTL::StorageModeManaged) {
+            activeBlitEncoder->synchronizeResource(dst->mtl);
+        }
     }
 
     void MetalCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
@@ -3834,6 +3845,7 @@ namespace plume {
 
         useArgumentBuffersTier2 = mtl->argumentBuffersSupport() == MTL::ArgumentBuffersTier2;
         useDirectBufferAddresses = useArgumentBuffersTier2 && mtl->supportsFamily(MTL::GPUFamilyMetal3);
+        hasUnifiedMemory = mtl->hasUnifiedMemory();
 
         nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
 

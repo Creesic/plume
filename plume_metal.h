@@ -706,6 +706,7 @@ namespace plume {
         bool supportsResidencySets;
         bool useArgumentBuffersTier2 = false;
         bool useDirectBufferAddresses = false;
+        bool hasUnifiedMemory = false;
 
         // Resolve functionality
         MTL::ComputePipelineState *resolveTexturePipelineState;
