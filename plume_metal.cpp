@@ -837,7 +837,7 @@ namespace plume {
             case RenderHeapType::UPLOAD:
             case RenderHeapType::READBACK:
             case RenderHeapType::GPU_UPLOAD:
-                return hasUnifiedMemory ? MTL::ResourceStorageModeShared 
+                return hasUnifiedMemory ? MTL::ResourceStorageModeShared
                                         : MTL::ResourceStorageModeManaged;
             default:
                 assert(false && "Unknown heap type.");
@@ -851,7 +851,7 @@ namespace plume {
                 return MTL::StorageModePrivate;
             case RenderHeapType::UPLOAD:
             case RenderHeapType::READBACK:
-                return hasUnifiedMemory ? MTL::StorageModeShared 
+                return hasUnifiedMemory ? MTL::StorageModeShared
                                         : MTL::StorageModeManaged;
             default:
                 assert(false && "Unknown heap type.");
@@ -1186,17 +1186,17 @@ namespace plume {
 
         // Calculate texture properties
         const uint32_t width = buffer->desc.size / RenderFormatSize(format);
-        const size_t rowAlignment = alignmentForRenderFormat(buffer->device->mtl, format);
-        const uint64_t bytesPerRow = alignUp(buffer->desc.size, rowAlignment);
 
         // Configure texture properties
         const MTL::PixelFormat pixelFormat = mapPixelFormat(format);
         const MTL::TextureUsage usage = mapTextureUsageFromBufferFlags(buffer->desc.flags);
         const MTL::ResourceOptions options = mapResourceOption(buffer->desc.heapType, buffer->device->hasUnifiedMemory);
 
-        // Create texture with configured descriptor and alignment
+        // Create texture with configured descriptor
+        // For a 1D texture buffer, bytesPerRow is the stride between rows. Since there's only one row,
+        // we use the actual buffer size. The buffer must already be properly sized for the format.
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::textureBufferDescriptor(pixelFormat, width, options, usage);
-        this->texture = buffer->mtl->newTexture(descriptor, 0, bytesPerRow);
+        this->texture = buffer->mtl->newTexture(descriptor, 0, buffer->desc.size);
 
         descriptor->release();
     }
