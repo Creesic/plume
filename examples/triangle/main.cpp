@@ -30,7 +30,7 @@
 namespace plume {
     extern std::unique_ptr<RenderInterface> CreateMetalInterface();
     extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
-    #if SDL_VULKAN_ENABLED
+    #if PLUME_SDL_VULKAN_ENABLED
     extern std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow);
     #else
     extern std::unique_ptr<RenderInterface> CreateVulkanInterface();

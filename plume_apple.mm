@@ -47,7 +47,7 @@ namespace plume {
     }
 
     CGFloat getScaleFactor(NSWindow *nsWindow) {
-#ifdef APPLE_RETINA_ENABLED
+#ifdef PLUME_APPLE_RETINA_ENABLED
         return [nsWindow backingScaleFactor];
 #else
         return 1.0f;

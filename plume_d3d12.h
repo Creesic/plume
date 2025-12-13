@@ -13,7 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#ifdef D3D12_AGILITY_SDK_ENABLED
+#ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
 #   include <directx/d3d12.h>
 #else
 #   include <d3d12.h>
@@ -169,7 +169,7 @@ namespace plume {
     };
 
     struct D3D12CommandList : RenderCommandList {
-#   ifdef D3D12_AGILITY_SDK_ENABLED
+#   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         ID3D12GraphicsCommandList9 *d3d = nullptr;
 #   else
         ID3D12GraphicsCommandList7 *d3d = nullptr;

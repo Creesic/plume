@@ -29,7 +29,7 @@
 #undef Always
 #endif
 
-#ifdef SDL_VULKAN_ENABLED
+#ifdef PLUME_SDL_VULKAN_ENABLED
 #include <SDL_vulkan.h>
 #endif
 
@@ -39,7 +39,7 @@ namespace plume {
     typedef HWND RenderWindow;
 #elif defined(__ANDROID__)
     typedef ANativeWindow* RenderWindow;
-#elif defined(SDL_VULKAN_ENABLED)
+#elif defined(PLUME_SDL_VULKAN_ENABLED)
     typedef SDL_Window *RenderWindow;
 #elif defined(__linux__)
     struct RenderWindow {

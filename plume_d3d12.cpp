@@ -36,7 +36,7 @@
 #define D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
 #endif
 
-#ifdef D3D12_AGILITY_SDK_ENABLED
+#ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
 extern "C" {
     __declspec(dllexport) extern const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
     __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
@@ -541,7 +541,7 @@ namespace plume {
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;     
         case RenderPrimitiveTopology::TRIANGLE_STRIP:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
-#   ifdef D3D12_AGILITY_SDK_ENABLED
+#   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         case RenderPrimitiveTopology::TRIANGLE_FAN:
             return D3D_PRIMITIVE_TOPOLOGY_TRIANGLEFAN;
 #   endif
@@ -2227,7 +2227,7 @@ namespace plume {
     }
 
     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
-#   ifdef D3D12_AGILITY_SDK_ENABLED
+#   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         assert(queue->device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
         d3d->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
 #   else
@@ -3086,7 +3086,7 @@ namespace plume {
         psoDesc.RasterizerState.SlopeScaledDepthBias = desc.slopeScaledDepthBias;
 
         if (desc.dynamicDepthBiasEnabled) {
-#       ifdef D3D12_AGILITY_SDK_ENABLED
+#       ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
             psoDesc.Flags |= D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
 #       else
             assert(false && "Dynamic depth bias is unsupported without the Agility SDK.");
@@ -3691,7 +3691,7 @@ namespace plume {
             bool dynamicDepthBiasOption = false;
             bool gpuUploadHeapOption = false;
 
-#       ifdef D3D12_AGILITY_SDK_ENABLED
+#       ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
             // Check if triangle fan is supported.
             D3D12_FEATURE_DATA_D3D12_OPTIONS15 d3d12Options15 = {};
             res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS15, &d3d12Options15, sizeof(d3d12Options15));

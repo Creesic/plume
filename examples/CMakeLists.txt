@@ -1,7 +1,7 @@
 set(CMAKE_CXX_STANDARD 17)
 
 # Enable SDL Vulkan integration
-set(SDL_VULKAN_ENABLED ON CACHE BOOL "Enable SDL Vulkan integration" FORCE)
+set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "Enable SDL Vulkan integration" FORCE)
 
 # Find SDL2 (required for examples)
 find_package(SDL2 REQUIRED)
