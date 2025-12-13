@@ -4108,6 +4108,7 @@ namespace plume {
         capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
+        capabilities.resolveRegion = true;
         capabilities.resolveModes = false;
         capabilities.descriptorIndexing = descriptorIndexingSupported;
         capabilities.scalarBlockLayout = scalarBlockLayoutSupported;

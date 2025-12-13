@@ -169,10 +169,11 @@ namespace plume {
     };
 
     struct D3D12CommandList : RenderCommandList {
+        ID3D12GraphicsCommandList *d3d = nullptr;
+        ID3D12GraphicsCommandList1 *d3dV1 = nullptr;
+        ID3D12GraphicsCommandList4 *d3dV4 = nullptr;
 #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
-        ID3D12GraphicsCommandList9 *d3d = nullptr;
-#   else
-        ID3D12GraphicsCommandList7 *d3d = nullptr;
+        ID3D12GraphicsCommandList9 *d3dV9 = nullptr;
 #   endif
         ID3D12CommandAllocator *commandAllocator = nullptr;
         D3D12CommandQueue *queue = nullptr;

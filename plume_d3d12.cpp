@@ -1854,6 +1854,14 @@ namespace plume {
             return;
         }
 
+        // Attempt to query the interfaces available for this command list.
+        d3d->QueryInterface(IID_PPV_ARGS(&d3dV1));
+        d3d->QueryInterface(IID_PPV_ARGS(&d3dV4));
+
+#   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
+        d3d->QueryInterface(IID_PPV_ARGS(&d3dV9));
+#   endif
+
         d3d->Close();
     }
 
@@ -1977,10 +1985,12 @@ namespace plume {
     }
 
     void D3D12CommandList::traceRays(uint32_t width, uint32_t height, uint32_t depth, RenderBufferReference shaderBindingTable, const RenderShaderBindingGroupsInfo &shaderBindingGroupsInfo) {
+        assert(d3dV4 != nullptr);
+        assert(activeComputePipelineLayout != nullptr); // Ray tracing uses compute layout
+
         const D3D12Buffer *interfaceBuffer = static_cast<const D3D12Buffer *>(shaderBindingTable.ref);
         assert(interfaceBuffer != nullptr);
         assert((interfaceBuffer->desc.flags & RenderBufferFlag::SHADER_BINDING_TABLE) && "Buffer must allow being used as a shader binding table.");
-        assert(activeComputePipelineLayout != nullptr); // Ray tracing uses compute layout
 
         D3D12_GPU_VIRTUAL_ADDRESS tableAddress = interfaceBuffer->d3d->GetGPUVirtualAddress() + shaderBindingTable.offset;
         const RenderShaderBindingGroupInfo &rayGen = shaderBindingGroupsInfo.rayGen;
@@ -2002,7 +2012,7 @@ namespace plume {
         desc.Width = width;
         desc.Height = height;
         desc.Depth = depth;
-        d3d->DispatchRays(&desc);
+        d3dV4->DispatchRays(&desc);
     }
     
     void D3D12CommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
@@ -2040,8 +2050,9 @@ namespace plume {
             break;
         }
         case D3D12Pipeline::Type::Raytracing: {
+            assert(d3dV4 != nullptr);
             const D3D12RaytracingPipeline *raytracingPipeline = static_cast<const D3D12RaytracingPipeline *>(interfacePipeline);
-            d3d->SetPipelineState1(raytracingPipeline->stateObject);
+            d3dV4->SetPipelineState1(raytracingPipeline->stateObject);
             break;
         }
         default:
@@ -2229,7 +2240,7 @@ namespace plume {
     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
 #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         assert(queue->device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
-        d3d->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
+        d3dV9->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
 #   else
         assert(false && "Dynamic depth bias is unsupported without the Agility SDK.");
 #   endif
@@ -2337,6 +2348,7 @@ namespace plume {
     }
 
     void D3D12CommandList::resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
+        assert(d3dV1 != nullptr);
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
@@ -2351,11 +2363,12 @@ namespace plume {
         }
 
         setSamplePositions(interfaceDstTexture);
-        d3d->ResolveSubresourceRegion(interfaceDstTexture->d3d, 0, dstX, dstY, interfaceSrcTexture->d3d, 0, (srcRect != nullptr) ? &rect : nullptr, toDXGI(interfaceDstTexture->desc.format), toD3D12(resolveMode));
+        d3dV1->ResolveSubresourceRegion(interfaceDstTexture->d3d, 0, dstX, dstY, interfaceSrcTexture->d3d, 0, (srcRect != nullptr) ? &rect : nullptr, toDXGI(interfaceDstTexture->desc.format), toD3D12(resolveMode));
         resetSamplePositions();
     }
 
     void D3D12CommandList::buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) {
+        assert(d3dV4 != nullptr);
         assert(dstAccelerationStructure != nullptr);
         assert(scratchBuffer.ref != nullptr);
 
@@ -2374,10 +2387,11 @@ namespace plume {
         buildDesc.DestAccelerationStructureData = interfaceAccelerationStructure->buffer->d3d->GetGPUVirtualAddress() + interfaceAccelerationStructure->offset;
         buildDesc.ScratchAccelerationStructureData = interfaceScratchBuffer->d3d->GetGPUVirtualAddress() + scratchBuffer.offset;
 
-        d3d->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+        d3dV4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
     }
 
     void D3D12CommandList::buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) {
+        assert(d3dV4 != nullptr);
         assert(dstAccelerationStructure != nullptr);
         assert(scratchBuffer.ref != nullptr);
         assert(instancesBuffer.ref != nullptr);
@@ -2400,7 +2414,7 @@ namespace plume {
         buildDesc.DestAccelerationStructureData = interfaceAccelerationStructure->buffer->d3d->GetGPUVirtualAddress() + interfaceAccelerationStructure->offset;
         buildDesc.ScratchAccelerationStructureData = interfaceScratchBuffer->d3d->GetGPUVirtualAddress() + scratchBuffer.offset;
 
-        d3d->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+        d3dV4->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
     }
 
     void D3D12CommandList::discardTexture(const RenderTexture* texture) {
@@ -2470,6 +2484,7 @@ namespace plume {
 
         const D3D12Texture *interfaceTexture = static_cast<const D3D12Texture *>(texture);
         if (interfaceTexture->desc.multisampling.sampleLocationsEnabled) {
+            assert(d3dV1 != nullptr);
             thread_local std::vector<D3D12_SAMPLE_POSITION> samplePositions;
             samplePositions.resize(interfaceTexture->desc.multisampling.sampleCount);
             for (uint32_t i = 0; i < interfaceTexture->desc.multisampling.sampleCount; i++) {
@@ -2478,7 +2493,7 @@ namespace plume {
                 samplePositions[i].Y = location.y;
             }
 
-            d3d->SetSamplePositions(uint32_t(samplePositions.size()), 1, samplePositions.data());
+            d3dV1->SetSamplePositions(uint32_t(samplePositions.size()), 1, samplePositions.data());
             activeSamplePositions = true;
         }
         else {
@@ -2488,7 +2503,8 @@ namespace plume {
 
     void D3D12CommandList::resetSamplePositions() {
         if (activeSamplePositions) {
-            d3d->SetSamplePositions(0, 0, nullptr);
+            assert(d3dV1 != nullptr);
+            d3dV1->SetSamplePositions(0, 0, nullptr);
             activeSamplePositions = false;
             targetFramebufferSamplePositionsSet = false;
         }
@@ -3670,10 +3686,12 @@ namespace plume {
             }
 
             // Determine if the device supports sample locations.
+            bool resolveRegionOption = false;
             bool samplePositionsOption = false;
             D3D12_FEATURE_DATA_D3D12_OPTIONS2 d3d12Options2 = {};
             res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &d3d12Options2, sizeof(d3d12Options2));
             if (SUCCEEDED(res)) {
+                resolveRegionOption = true;
                 samplePositionsOption = d3d12Options2.ProgrammableSamplePositionsTier >= D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
             }
 
@@ -3738,8 +3756,8 @@ namespace plume {
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
                 capabilities.sampleLocations = samplePositionsOption;
-                // Resolve modes require sample positions support.
-                capabilities.resolveModes = samplePositionsOption;
+                capabilities.resolveRegion = resolveRegionOption;
+                capabilities.resolveModes = samplePositionsOption; // Resolve modes require sample positions support.
                 capabilities.triangleFan = triangleFanSupportOption;
                 capabilities.dynamicDepthBias = dynamicDepthBiasOption;
                 capabilities.uma = uma;

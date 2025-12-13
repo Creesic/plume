@@ -3810,6 +3810,7 @@ namespace plume {
         // capabilities.raytracing = mtl->supportsRaytracing();
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
+        capabilities.resolveRegion = true;
         capabilities.resolveModes = false;
         capabilities.scalarBlockLayout = true;
         capabilities.presentWait = true;

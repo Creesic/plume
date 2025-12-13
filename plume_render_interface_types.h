@@ -1752,7 +1752,8 @@ namespace plume {
         // MSAA.
         bool sampleLocations = false;
 
-        // Resolve Modes.
+        // Resolve.
+        bool resolveRegion = false;
         bool resolveModes = false;
 
         // Bindless resources.
