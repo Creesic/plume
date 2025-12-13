@@ -9,6 +9,8 @@
 
 #include <unordered_set>
 
+#include <dxgi1_5.h>
+
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wtautological-undefined-compare"
@@ -1327,6 +1329,11 @@ namespace plume {
         nativeFormat = toDXGI(format);
 
         getWindowSize(width, height);
+
+        swapChainFlags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        if (commandQueue->device->renderInterface->allowTearing) {
+            swapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
         
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
         swapChainDesc.BufferCount = textureCount;
@@ -1336,7 +1343,7 @@ namespace plume {
         swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         swapChainDesc.SampleDesc.Count = 1;
-        swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        swapChainDesc.Flags = swapChainFlags;
 
         IDXGISwapChain1 *swapChain1;
         IDXGIFactory4 *dxgiFactory = commandQueue->device->renderInterface->dxgiFactory;
@@ -1385,8 +1392,9 @@ namespace plume {
     }
 
     bool D3D12SwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) {
+        const bool tearingAllowed = (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0U;
         UINT syncInterval = vsyncEnabled ? 1 : 0;
-        UINT flags = !vsyncEnabled ? DXGI_PRESENT_ALLOW_TEARING : 0;
+        UINT flags = (tearingAllowed && !vsyncEnabled) ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT res = d3d->Present(syncInterval, flags);
         return SUCCEEDED(res);
     }
@@ -1410,7 +1418,7 @@ namespace plume {
             textures[i].d3d = nullptr;
         }
 
-        HRESULT res = d3d->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
+        HRESULT res = d3d->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, swapChainFlags);
         if (FAILED(res)) {
             fprintf(stderr, "ResizeBuffers failed with error code 0x%lX.\n", res);
             return false;
@@ -4169,6 +4177,14 @@ namespace plume {
         if (FAILED(res)) {
             fprintf(stderr, "CreateDXGIFactory2 failed with error code 0x%lX.\n", res);
             return;
+        }
+
+        // Check for support for allowing tearing on the swap chain.
+        BOOL allowTearingBool = FALSE;
+        IDXGIFactory5 *dxgiFactory5 = nullptr;
+        if (SUCCEEDED(dxgiFactory->QueryInterface(IID_PPV_ARGS(&dxgiFactory5)))) {
+            res = dxgiFactory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearingBool, sizeof(allowTearingBool));
+            allowTearing = SUCCEEDED(res) && allowTearingBool;
         }
 
         // Fill capabilities.

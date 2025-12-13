@@ -113,6 +113,7 @@ namespace plume {
         uint32_t refreshRate = 0;
         bool vsyncEnabled = true;
         uint32_t maxFrameLatency = 0;
+        UINT swapChainFlags = 0;
 
         D3D12SwapChain(D3D12CommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency);
         ~D3D12SwapChain() override;
@@ -484,6 +485,7 @@ namespace plume {
         IDXGIFactory4 *dxgiFactory = nullptr;
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
+        bool allowTearing = false;
 
         D3D12Interface();
         ~D3D12Interface() override;
