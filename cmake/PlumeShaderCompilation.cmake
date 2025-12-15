@@ -54,9 +54,10 @@ function(plume_compile_metal_shaders TARGET_NAME)
         set(H_OUTPUT "${OUTPUT_DIR}/${SHADER_NAME}.metallib.h")
 
         # Compile Metal to IR
+        # Use -mmacosx-version-min to ensure compatibility with older macOS versions
         add_custom_command(
             OUTPUT ${IR_OUTPUT}
-            COMMAND xcrun -sdk macosx metal -o ${IR_OUTPUT} -c ${SHADER_SOURCE}
+            COMMAND xcrun -sdk macosx metal -mmacosx-version-min=11.0 -o ${IR_OUTPUT} -c ${SHADER_SOURCE}
             DEPENDS ${SHADER_SOURCE}
             COMMENT "Compiling ${SHADER_NAME}.metal to IR"
             VERBATIM
@@ -89,7 +90,4 @@ function(plume_compile_metal_shaders TARGET_NAME)
 
     # Add include directory for generated headers
     target_include_directories(${TARGET_NAME} PRIVATE "${OUTPUT_DIR}")
-
-    # Define that we have pre-compiled shaders
-    target_compile_definitions(${TARGET_NAME} PRIVATE PLUME_PRECOMPILED_METAL_SHADERS)
 endfunction()

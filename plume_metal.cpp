@@ -18,11 +18,8 @@
 #include <mutex>
 
 #include "plume_metal.h"
-
-#ifdef PLUME_PRECOMPILED_METAL_SHADERS
 #include "plume_clear.metallib.h"
 #include "plume_resolve.metallib.h"
-#endif
 
 namespace plume {
     // MARK: - Constants
@@ -3997,10 +3994,6 @@ namespace plume {
     }
 
     void MetalDevice::createResolvePipelineState() {
-        NS::Error* error = nullptr;
-        MTL::Library *library = nullptr;
-
-#ifdef PLUME_PRECOMPILED_METAL_SHADERS
         // Load pre-compiled metallib from embedded data
         dispatch_data_t dispatchData = dispatch_data_create(
             plume_resolve_metallib,
@@ -4008,39 +4001,10 @@ namespace plume {
             nullptr,
             DISPATCH_DATA_DESTRUCTOR_DEFAULT
         );
-        library = mtl->newLibrary(dispatchData, &error);
+
+        NS::Error* error = nullptr;
+        MTL::Library *library = mtl->newLibrary(dispatchData, &error);
         dispatch_release(dispatchData);
-#else
-        // Fallback: compile shader at runtime
-        const char* resolve_shader = R"(
-            #include <metal_stdlib>
-            using namespace metal;
-
-            struct ResolveParams {
-                uint2 dstOffset;
-                uint2 srcOffset;
-                uint2 resolveSize;
-            };
-
-            kernel void msaaResolve(
-                texture2d_ms<float> source [[texture(0)]],
-                texture2d<float, access::write> destination [[texture(1)]],
-                constant ResolveParams& params [[buffer(0)]],
-                uint2 gid [[thread_position_in_grid]])
-            {
-                if (gid.x >= params.resolveSize.x || gid.y >= params.resolveSize.y) return;
-                uint2 dstPos = gid + params.dstOffset;
-                uint2 srcPos = gid + params.srcOffset;
-                float4 color = float4(0);
-                for (uint s = 0; s < source.get_num_samples(); s++) {
-                    color += source.read(srcPos, s);
-                }
-                color /= float(source.get_num_samples());
-                destination.write(color, dstPos);
-            }
-        )";
-        library = mtl->newLibrary(NS::String::string(resolve_shader, NS::UTF8StringEncoding), nullptr, &error);
-#endif
 
         if (error != nullptr) {
             fprintf(stderr, "Failed to create resolve shader library: %s\n", error->localizedDescription()->utf8String());
@@ -4059,10 +4023,6 @@ namespace plume {
     }
 
     void MetalDevice::createClearShaderLibrary() {
-        NS::Error* error = nullptr;
-        MTL::Library *clearShaderLibrary = nullptr;
-
-#ifdef PLUME_PRECOMPILED_METAL_SHADERS
         // Load pre-compiled metallib from embedded data
         dispatch_data_t dispatchData = dispatch_data_create(
             plume_clear_metallib,
@@ -4070,51 +4030,10 @@ namespace plume {
             nullptr,
             DISPATCH_DATA_DESTRUCTOR_DEFAULT
         );
-        clearShaderLibrary = mtl->newLibrary(dispatchData, &error);
+
+        NS::Error* error = nullptr;
+        MTL::Library *clearShaderLibrary = mtl->newLibrary(dispatchData, &error);
         dispatch_release(dispatchData);
-#else
-        // Fallback: compile shader at runtime
-        const char* clear_shader = R"(
-            #include <metal_stdlib>
-            using namespace metal;
-
-            struct DepthClearFragmentOut {
-                float depth [[depth(any)]];
-            };
-
-            struct VertexOutput {
-                float4 position [[position]];
-                uint rect_index [[flat]];
-            };
-
-            vertex VertexOutput clearVert(uint vid [[vertex_id]],
-                                        uint instance_id [[instance_id]],
-                                        constant float2* vertices [[buffer(0)]])
-            {
-                VertexOutput out;
-                out.position = float4(vertices[vid], 0, 1);
-                out.rect_index = instance_id;
-                return out;
-            }
-
-            // Color clear fragment shader
-            fragment float4 clearColorFrag(VertexOutput in [[stage_in]],
-                                         constant float4* clearColors [[buffer(0)]])
-            {
-                return clearColors[in.rect_index];
-            }
-
-            // Depth clear fragment shader
-            fragment DepthClearFragmentOut clearDepthFrag(VertexOutput in [[stage_in]],
-                                        constant float* clearDepths [[buffer(0)]])
-            {
-                DepthClearFragmentOut out;
-                out.depth = clearDepths[in.rect_index];
-                return out;
-            }
-        )";
-        clearShaderLibrary = mtl->newLibrary(NS::String::string(clear_shader, NS::UTF8StringEncoding), nullptr, &error);
-#endif
 
         if (error != nullptr) {
             fprintf(stderr, "Failed to create clear shader library: %s\n", error->localizedDescription()->utf8String());
