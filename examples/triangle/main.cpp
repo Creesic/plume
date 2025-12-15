@@ -22,8 +22,8 @@
 #include "shaders/triangleVert.hlsl.spirv.h"
 #include "shaders/triangleFrag.hlsl.spirv.h"
 #ifdef __APPLE__
-#include "shaders/triangleVert.metal.h"
-#include "shaders/triangleFrag.metal.h"
+#include "shaders/triangleVert.hlsl.metal.h"
+#include "shaders/triangleFrag.hlsl.metal.h"
 #endif
 
 // Function prototype for creating the Metal interface on Apple platforms
@@ -52,7 +52,7 @@ namespace plume {
         std::vector<std::unique_ptr<RenderCommandSemaphore>> m_releaseSemaphores;
         std::unique_ptr<RenderCommandFence> m_commandFence;
         std::vector<std::unique_ptr<RenderFramebuffer>> m_framebuffers;
-        
+
         // Pipeline and buffer resources
         std::unique_ptr<RenderPipeline> m_pipeline;
         std::unique_ptr<RenderPipelineLayout> m_pipelineLayout;
@@ -66,34 +66,34 @@ namespace plume {
     void createFramebuffers(TestContext& ctx) {
         // Create framebuffers for each swap chain image
         ctx.m_framebuffers.clear();
-        
+
         for (uint32_t i = 0; i < ctx.m_swapChain->getTextureCount(); i++) {
             const RenderTexture* colorAttachment = ctx.m_swapChain->getTexture(i);
-            
+
             RenderFramebufferDesc fbDesc;
             fbDesc.colorAttachments = &colorAttachment;
             fbDesc.colorAttachmentsCount = 1;
             fbDesc.depthAttachment = nullptr;
-            
+
             auto framebuffer = ctx.m_device->createFramebuffer(fbDesc);
             ctx.m_framebuffers.push_back(std::move(framebuffer));
         }
     }
-    
+
     void createPipeline(TestContext& ctx) {
         // Create a pipeline layout (without any descriptor sets or push constants)
         RenderPipelineLayoutDesc layoutDesc;
         layoutDesc.allowInputLayout = true;
-        
+
         ctx.m_pipelineLayout = ctx.m_device->createPipelineLayout(layoutDesc);
-        
+
         // Get the shader format from the render interface
         RenderShaderFormat shaderFormat = ctx.m_renderInterface->getCapabilities().shaderFormat;
-        
+
         // Create shader objects
         std::unique_ptr<RenderShader> vertexShader;
         std::unique_ptr<RenderShader> fragmentShader;
-        
+
         // Different entry point names depending on shader format
         switch (shaderFormat) {
 #ifdef __APPLE__
@@ -115,16 +115,16 @@ namespace plume {
             default:
                 assert(false && "Unknown shader format");
         }
-        
+
         // Define vertex input layout
         // The vertex format has position (vec3) and color (vec4)
         ctx.m_inputSlot = RenderInputSlot(0, sizeof(float) * 7); // 3 floats for position + 4 floats for color
-        
+
         std::vector<RenderInputElement> inputElements = {
             RenderInputElement("POSITION", 0, 0, RenderFormat::R32G32B32_FLOAT, 0, 0),
             RenderInputElement("COLOR", 0, 1, RenderFormat::R32G32B32A32_FLOAT, 0, sizeof(float) * 3)
         };
-        
+
         // Create graphics pipeline
         RenderGraphicsPipelineDesc pipelineDesc;
         pipelineDesc.inputSlots = &ctx.m_inputSlot;
@@ -138,10 +138,10 @@ namespace plume {
         pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
         pipelineDesc.renderTargetCount = 1;
         pipelineDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
-        
+
         ctx.m_pipeline = ctx.m_device->createGraphicsPipeline(pipelineDesc);
     }
-    
+
     void createVertexBuffer(TestContext& ctx) {
         // Define triangle vertices: position (x, y, z) and color (r, g, b, a)
         const float vertices[] = {
@@ -149,15 +149,15 @@ namespace plume {
             -0.5f, -0.5f, 0.0f,    0.0f, 1.0f, 0.0f, 1.0f, // Bottom left vertex (green)
             0.5f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f, 1.0f  // Bottom right vertex (blue)
         };
-        
+
         // Create vertex buffer
         ctx.m_vertexBuffer = ctx.m_device->createBuffer(RenderBufferDesc::VertexBuffer(sizeof(vertices), RenderHeapType::UPLOAD));
-        
+
         // Map buffer and copy vertex data
         void* bufferData = ctx.m_vertexBuffer->map();
         std::memcpy(bufferData, vertices, sizeof(vertices));
         ctx.m_vertexBuffer->unmap();
-        
+
         // Create vertex buffer view
         ctx.m_vertexBufferView = RenderVertexBufferView(ctx.m_vertexBuffer.get(), sizeof(vertices));
     }
@@ -165,34 +165,34 @@ namespace plume {
     static void initializeRenderResources(TestContext& ctx, RenderInterface* renderInterface) {
         // Create device
         ctx.m_device = renderInterface->createDevice();
-        
+
         // Create command queue for graphics
         ctx.m_commandQueue = ctx.m_device->createCommandQueue(RenderCommandListType::DIRECT);
-        
+
         // Create a command fence
         ctx.m_fence = ctx.m_device->createCommandFence();
-        
+
         // Create a swap chain for the window using the render window from init
         ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(ctx.m_renderWindow, BufferCount, SwapchainFormat, 2);
-        
+
         // Explicitly resize the swapchain to create the textures
         ctx.m_swapChain->resize();
-        
+
         // Create command list
         ctx.m_commandList = ctx.m_commandQueue->createCommandList();
-        
+
         // Create acquire semaphore for swap chain synchronization
         ctx.m_acquireSemaphore = ctx.m_device->createCommandSemaphore();
-        
+
         // Create command fence for synchronization
         ctx.m_commandFence = ctx.m_device->createCommandFence();
-        
+
         // Create framebuffers for each swap chain image
         createFramebuffers(ctx);
-        
+
         // Create the graphics pipeline
         createPipeline(ctx);
-        
+
         // Create the vertex buffer with triangle data
         createVertexBuffer(ctx);
     }
@@ -210,19 +210,19 @@ namespace plume {
 
     static void resize(TestContext& ctx, int width, int height) {
         std::cout << "Resizing triangle example to " << width << "x" << height << std::endl;
-        
+
         // Simply resize the swapchain
         if (ctx.m_swapChain) {
             // Clear old framebuffers
             ctx.m_framebuffers.clear();
-            
+
             // Resize the swap chain
             bool resized = ctx.m_swapChain->resize();
             if (!resized) {
                 std::cerr << "Failed to resize swap chain" << std::endl;
                 return;
             }
-            
+
             // Recreate framebuffers for the resized swap chain
             createFramebuffers(ctx);
         }
@@ -237,42 +237,42 @@ namespace plume {
         // Acquire the next swapchain image
         uint32_t imageIndex = 0;
         ctx.m_swapChain->acquireTexture(ctx.m_acquireSemaphore.get(), &imageIndex);
-        
+
         // Begin command recording
         ctx.m_commandList->begin();
 
         // Get the current swap chain texture and transition to render target
         RenderTexture *swapChainTexture = ctx.m_swapChain->getTexture(imageIndex);
         ctx.m_commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COLOR_WRITE));
-        
+
         // Get the current swapchain framebuffer
         const RenderFramebuffer* framebuffer = ctx.m_framebuffers[imageIndex].get();
         ctx.m_commandList->setFramebuffer(framebuffer);
-        
+
         // Set up viewport and scissor
         const uint32_t width = ctx.m_swapChain->getWidth();
         const uint32_t height = ctx.m_swapChain->getHeight();
         const RenderViewport viewport(0.0f, 0.0f, float(width), float(height));
         const RenderRect scissor(0, 0, width, height);
-        
+
         ctx.m_commandList->setViewports(viewport);
         ctx.m_commandList->setScissors(scissor);
-        
+
         // Clear with a dark blue color
         RenderColor clearColor(0.0f, 0.0f, 0.2f, 1.0f);
         ctx.m_commandList->clearColor(0, clearColor);
-        
+
         // Bind the pipeline and vertex buffer
         ctx.m_commandList->setGraphicsPipelineLayout(ctx.m_pipelineLayout.get());
         ctx.m_commandList->setPipeline(ctx.m_pipeline.get());
         ctx.m_commandList->setVertexBuffers(0, &ctx.m_vertexBufferView, 1, &ctx.m_inputSlot);
-        
+
         // Draw the triangle
         ctx.m_commandList->drawInstanced(3, 1, 0, 0);
-        
+
         // Transition to present layout
         ctx.m_commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
-        
+
         // End command recording
         ctx.m_commandList->end();
 
@@ -280,14 +280,14 @@ namespace plume {
         while (ctx.m_releaseSemaphores.size() < ctx.m_swapChain->getTextureCount()) {
             ctx.m_releaseSemaphores.emplace_back(ctx.m_device->createCommandSemaphore());
         }
-        
+
         // Submit and present
         const RenderCommandList* cmdList = ctx.m_commandList.get();
         RenderCommandSemaphore* waitSemaphore = ctx.m_acquireSemaphore.get();
         RenderCommandSemaphore* signalSemaphore = ctx.m_releaseSemaphores[imageIndex].get();
-        
+
         ctx.m_commandQueue->executeCommandLists(&cmdList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ctx.m_fence.get());
-        
+
         // Present the frame
         ctx.m_swapChain->present(imageIndex, &signalSemaphore, 1);
         ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
@@ -303,7 +303,7 @@ namespace plume {
 #if defined(__APPLE__)
         flags |= SDL_WINDOW_METAL;
 #endif
-        
+
         std::string windowTitle = "Plume Example (" + apiName + ")";
         SDL_Window* window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
         if (!window) {
@@ -338,7 +338,7 @@ namespace plume {
                         if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
                             int width = event.window.data1;
                             int height = event.window.data2;
-                            
+
                             resize(ctx, width, height);
                         }
                         break;
