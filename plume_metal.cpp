@@ -19,6 +19,11 @@
 
 #include "plume_metal.h"
 
+#ifdef PLUME_PRECOMPILED_METAL_SHADERS
+#include "plume_clear.metallib.h"
+#include "plume_resolve.metallib.h"
+#endif
+
 namespace plume {
     // MARK: - Constants
 
@@ -3992,6 +3997,21 @@ namespace plume {
     }
 
     void MetalDevice::createResolvePipelineState() {
+        NS::Error* error = nullptr;
+        MTL::Library *library = nullptr;
+
+#ifdef PLUME_PRECOMPILED_METAL_SHADERS
+        // Load pre-compiled metallib from embedded data
+        dispatch_data_t dispatchData = dispatch_data_create(
+            plume_resolve_metallib,
+            plume_resolve_metallib_size,
+            nullptr,
+            DISPATCH_DATA_DESTRUCTOR_DEFAULT
+        );
+        library = mtl->newLibrary(dispatchData, &error);
+        dispatch_release(dispatchData);
+#else
+        // Fallback: compile shader at runtime
         const char* resolve_shader = R"(
             #include <metal_stdlib>
             using namespace metal;
@@ -4019,10 +4039,13 @@ namespace plume {
                 destination.write(color, dstPos);
             }
         )";
+        library = mtl->newLibrary(NS::String::string(resolve_shader, NS::UTF8StringEncoding), nullptr, &error);
+#endif
 
-        NS::Error* error = nullptr;
-        MTL::Library *library = mtl->newLibrary(NS::String::string(resolve_shader, NS::UTF8StringEncoding), nullptr, &error);
-        assert(library != nullptr && "Failed to create library");
+        if (error != nullptr) {
+            fprintf(stderr, "Failed to create resolve shader library: %s\n", error->localizedDescription()->utf8String());
+        }
+        assert(library != nullptr && "Failed to create resolve shader library");
 
         MTL::Function *resolveFunction = library->newFunction(NS::String::string("msaaResolve", NS::UTF8StringEncoding));
         assert(resolveFunction != nullptr && "Failed to create resolve function");
@@ -4031,12 +4054,26 @@ namespace plume {
         resolveTexturePipelineState = mtl->newComputePipelineState(resolveFunction, &error);
         assert(resolveTexturePipelineState != nullptr && "Failed to create MSAA resolve pipeline state");
 
-        // Destroy
         resolveFunction->release();
         library->release();
     }
 
     void MetalDevice::createClearShaderLibrary() {
+        NS::Error* error = nullptr;
+        MTL::Library *clearShaderLibrary = nullptr;
+
+#ifdef PLUME_PRECOMPILED_METAL_SHADERS
+        // Load pre-compiled metallib from embedded data
+        dispatch_data_t dispatchData = dispatch_data_create(
+            plume_clear_metallib,
+            plume_clear_metallib_size,
+            nullptr,
+            DISPATCH_DATA_DESTRUCTOR_DEFAULT
+        );
+        clearShaderLibrary = mtl->newLibrary(dispatchData, &error);
+        dispatch_release(dispatchData);
+#else
+        // Fallback: compile shader at runtime
         const char* clear_shader = R"(
             #include <metal_stdlib>
             using namespace metal;
@@ -4076,13 +4113,13 @@ namespace plume {
                 return out;
             }
         )";
+        clearShaderLibrary = mtl->newLibrary(NS::String::string(clear_shader, NS::UTF8StringEncoding), nullptr, &error);
+#endif
 
-        NS::Error* error = nullptr;
-        MTL::Library *clearShaderLibrary = mtl->newLibrary(NS::String::string(clear_shader, NS::UTF8StringEncoding), nullptr, &error);
         if (error != nullptr) {
-            fprintf(stderr, "Error: %s\n", error->localizedDescription()->utf8String());
+            fprintf(stderr, "Failed to create clear shader library: %s\n", error->localizedDescription()->utf8String());
         }
-        assert(clearShaderLibrary != nullptr && "Failed to create clear color library");
+        assert(clearShaderLibrary != nullptr && "Failed to create clear shader library");
 
         // Create and cache the shader functions
         clearVertexFunction = clearShaderLibrary->newFunction(MTLSTR("clearVert"));
