@@ -33,7 +33,7 @@ function(plume_fetch_spirv_cross)
     endif()
 
     # Build our custom spirv_cross_msl tool
-    set(SPIRV_CROSS_MSL_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/spirv_cross_msl.cpp")
+    set(SPIRV_CROSS_MSL_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/spirv_cross_msl.cpp")
 
     if(NOT EXISTS "${SPIRV_CROSS_MSL_SOURCE}")
         message(FATAL_ERROR "plume spirv_cross_msl.cpp not found at ${SPIRV_CROSS_MSL_SOURCE}")

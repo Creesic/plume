@@ -8,7 +8,7 @@ function(plume_build_file_to_c)
     endif()
 
     # Find the source file relative to this module
-    set(FILE_TO_C_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/file_to_c.cpp")
+    set(FILE_TO_C_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/file_to_c.cpp")
 
     if(NOT EXISTS "${FILE_TO_C_SOURCE}")
         message(FATAL_ERROR "plume file_to_c.cpp not found at ${FILE_TO_C_SOURCE}")

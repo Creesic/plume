@@ -1,5 +1,9 @@
-// spirv_cross_msl - Converts SPIR-V to Metal Shading Language
-// Adapted from RT64's spirv_cross_msl tool
+//
+// plume
+//
+// Copyright (c) 2024 renderbag and contributors. All rights reserved.
+// Licensed under the MIT license. See LICENSE file for details.
+//
 
 #include "spirv_msl.hpp"
 #include "spirv_parser.hpp"
