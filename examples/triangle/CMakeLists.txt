@@ -40,9 +40,9 @@ set_target_properties(plume_triangle PROPERTIES
 
 # Compile shaders
 if(APPLE)
-    compile_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.metal" "vertex" "triangleVert" "VSMain")
-    compile_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.metal" "fragment" "triangleFrag" "PSMain")
+    plume_compile_metal_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.metal" "triangleVert")
+    plume_compile_metal_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.metal" "triangleFrag")
 endif()
 
-compile_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.hlsl" "vertex" "triangleVert" "VSMain")
-compile_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.hlsl" "fragment" "triangleFrag" "PSMain")
+plume_compile_vertex_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.hlsl" "triangleVert" "VSMain")
+plume_compile_pixel_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.hlsl" "triangleFrag" "PSMain")

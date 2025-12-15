@@ -40,9 +40,9 @@ set_target_properties(plume_cube PROPERTIES
 
 # Compile shaders
 if(APPLE)
-    compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.metal" "vertex" "cubeVert" "VSMain")
-    compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.metal" "fragment" "cubeFrag" "PSMain")
+    plume_compile_metal_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.metal" "cubeVert")
+    plume_compile_metal_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.metal" "cubeFrag")
 endif()
 
-compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "vertex" "cubeVert" "VSMain")
-compile_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "fragment" "cubeFrag" "PSMain")
+plume_compile_vertex_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "cubeVert" "VSMain")
+plume_compile_pixel_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "cubeFrag" "PSMain")
