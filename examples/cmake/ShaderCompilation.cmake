@@ -2,7 +2,7 @@
 # Using DXC for HLSL to SPIR-V compilation and Metal for macOS
 
 # Build file_to_c tool (shared with plume core)
-include(${CMAKE_SOURCE_DIR}/cmake/PlumeShaderCompilation.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/PlumeInternalShaders.cmake)
 plume_build_file_to_c()
 
 # Fetch DXC for shader compilation

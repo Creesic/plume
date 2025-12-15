@@ -1,5 +1,5 @@
-# Plume internal shader compilation
-# Compiles Metal shaders to metallib and embeds them as C arrays
+# PlumeInternalShaders.cmake
+# Internal shader compilation for Plume's built-in shaders (clear, resolve)
 
 # Build the file_to_c tool for the host system
 function(plume_build_file_to_c)

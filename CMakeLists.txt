@@ -110,8 +110,8 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
 
-    # Compile and embed Metal shaders
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlumeShaderCompilation.cmake)
+    # Compile and embed internal Metal shaders
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlumeInternalShaders.cmake)
     plume_compile_metal_shaders(plume)
 endif()
 
