@@ -40,9 +40,13 @@
       # Math library for examples
       glm
     ])
-    # DXC with Metal support (macOS only)
+    # macOS specific packages
     ++ lib.optionals pkgs.stdenv.isDarwin [
+      # DXC with Metal support
       pkgs.directx-shader-compiler-metal
+      # MoltenVK for Vulkan on macOS
+      pkgs.moltenvk
+      pkgs.vulkan-validation-layers
     ]
     # Standard DXC for other platforms
     ++ lib.optionals (!pkgs.stdenv.isDarwin) [
@@ -79,14 +83,13 @@
     SDL2_ROOT = "${inputs.nixpkgs-sdl2.legacyPackages.${pkgs.system}.SDL2}";
     CMAKE_PREFIX_PATH = "${inputs.nixpkgs-sdl2.legacyPackages.${pkgs.system}.SDL2}:${pkgs.glm}";
   } // lib.optionalAttrs pkgs.stdenv.isLinux {
-    # Vulkan SDK path for validation layers (Linux only)
+    # Vulkan environment for Linux
     VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
     VK_INSTANCE_LAYERS = "VK_LAYER_KHRONOS_validation";
   } // lib.optionalAttrs pkgs.stdenv.isDarwin {
-    # Vulkan SDK path for macOS
-    VULKAN_SDK = "/Users/dcvz/VulkanSDK/1.3.296.0/macOS";
-    VK_ICD_FILENAMES = "/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/icd.d/MoltenVK_icd.json";
-    VK_LAYER_PATH = "/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/explicit_layer.d";
+    # Vulkan environment for macOS (MoltenVK from nixpkgs)
+    VK_ICD_FILENAMES = "${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
+    VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
   };
 
   # https://devenv.sh/scripts/
@@ -101,6 +104,7 @@
         unset CPATH LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_LDFLAGS NIX_CPPFLAGS NIX_CXXSTDLIB_COMPILE \
               CMAKE_PREFIX_PATH PKG_CONFIG_PATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH
         echo "Using SDK: $SDKROOT"
+        echo "Using MoltenVK from nix: ${pkgs.moltenvk}"
         # Use system compiler with deployment target for maximumFramesPerSecond support
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPLUME_BUILD_EXAMPLES=ON \
           -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
@@ -108,8 +112,7 @@
           -DCMAKE_C_COMPILER="/usr/bin/clang" \
           -DCMAKE_CXX_COMPILER="/usr/bin/clang++" \
           -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-          -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++" \
-          -DVULKAN_SDK="/Users/dcvz/VulkanSDK/1.3.296.0/macOS"
+          -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
       '' else ''
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPLUME_BUILD_EXAMPLES=ON
       ''}
@@ -134,44 +137,22 @@
 
     run-triangle.exec = ''
       echo "Running triangle example..."
-      export VULKAN_SDK="/Users/dcvz/VulkanSDK/1.3.296.0/macOS"
-      export VK_ICD_FILENAMES="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/icd.d/MoltenVK_icd.json"
-      export VK_LAYER_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/explicit_layer.d"
-      export DYLD_LIBRARY_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/lib:$DYLD_LIBRARY_PATH"
-      export PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/bin:$PATH"
-      echo "Environment set up for MoltenVK:"
-      echo "  VULKAN_SDK=$VULKAN_SDK"
-      echo "  VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
-      echo "  DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
+      ${if pkgs.stdenv.isDarwin then ''
+        export VK_ICD_FILENAMES="${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json"
+        export VK_LAYER_PATH="${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d"
+        export DYLD_LIBRARY_PATH="${pkgs.vulkan-loader}/lib:''${DYLD_LIBRARY_PATH:-}"
+      '' else ""}
       ./build/bin/plume_triangle
     '';
 
     run-cube.exec = ''
       echo "Running cube example..."
-      export VULKAN_SDK="/Users/dcvz/VulkanSDK/1.3.296.0/macOS"
-      export VK_ICD_FILENAMES="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/icd.d/MoltenVK_icd.json"
-      export VK_LAYER_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/explicit_layer.d"
-      export DYLD_LIBRARY_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/lib:$DYLD_LIBRARY_PATH"
-      export PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/bin:$PATH"
-      echo "Environment set up for MoltenVK:"
-      echo "  VULKAN_SDK=$VULKAN_SDK"
-      echo "  VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
-      echo "  DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
+      ${if pkgs.stdenv.isDarwin then ''
+        export VK_ICD_FILENAMES="${pkgs.moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json"
+        export VK_LAYER_PATH="${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d"
+        export DYLD_LIBRARY_PATH="${pkgs.vulkan-loader}/lib:''${DYLD_LIBRARY_PATH:-}"
+      '' else ""}
       ./build/bin/plume_cube
-    '';
-
-    run-particles.exec = ''
-      echo "Running particles example..."
-      export VULKAN_SDK="/Users/dcvz/VulkanSDK/1.3.296.0/macOS"
-      export VK_ICD_FILENAMES="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/icd.d/MoltenVK_icd.json"
-      export VK_LAYER_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/share/vulkan/explicit_layer.d"
-      export DYLD_LIBRARY_PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/lib:$DYLD_LIBRARY_PATH"
-      export PATH="/Users/dcvz/VulkanSDK/1.3.296.0/macOS/bin:$PATH"
-      echo "Environment set up for MoltenVK:"
-      echo "  VULKAN_SDK=$VULKAN_SDK"
-      echo "  VK_ICD_FILENAMES=$VK_ICD_FILENAMES"
-      echo "  DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
-      ./build/bin/plume_particles
     '';
   };
 
