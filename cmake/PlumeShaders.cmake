@@ -9,6 +9,18 @@
 #   plume_compile_pixel_shader(my_target shaders/main.frag.hlsl mainFrag PSMain)
 #   plume_compile_compute_shader(my_target shaders/compute.hlsl computeShader CSMain)
 #
+# Advanced usage with extra options:
+#   plume_compile_pixel_shader(my_target shaders/main.frag.hlsl mainFrag PSMain
+#       EXTRA_ARGS -D MULTISAMPLING -O0
+#       INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/src
+#       SHADER_MODEL 6_3)
+#
+#   # Spec constants mode (SPIRV + Metal only, no DXIL):
+#   plume_compile_pixel_shader(my_target shaders/main.frag.hlsl mainFrag PSMain SPEC_CONSTANTS)
+#
+#   # Library shader (DXIL only, Windows):
+#   plume_compile_library_shader(my_target shaders/lib.hlsl libShader)
+#
 # Bring your own DXC/SPIRV-Cross (set before calling plume_shaders_init):
 #   set(PLUME_DXC_EXECUTABLE "/path/to/dxc")
 #   set(PLUME_DXC_LIB_DIR "/path/to/lib")  # macOS/Linux only
@@ -49,7 +61,11 @@ function(plume_shaders_init)
 endfunction()
 
 # Internal: Compile HLSL to a specific format (spirv or dxil)
+# Optional args: INCLUDE_DIRS, EXTRA_ARGS, SHADER_MODEL, OUTPUT_DIR
 function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME OUTPUT_FORMAT ENTRY_POINT)
+    # Parse optional arguments
+    cmake_parse_arguments(PARSE_ARGV 6 ARG "" "SHADER_MODEL;OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS")
+
     plume_get_dxc_command(DXC_CMD)
 
     if(OUTPUT_FORMAT STREQUAL "spirv")
@@ -64,34 +80,68 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
         message(FATAL_ERROR "Unknown output format: ${OUTPUT_FORMAT}")
     endif()
 
-    set(SHADER_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_EXT}")
-    set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.c")
-    set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.h")
-
-    # Determine shader profile and extra args based on type
-    if(SHADER_TYPE STREQUAL "vertex")
-        set(SHADER_PROFILE "vs_6_0")
-        set(DXC_EXTRA_ARGS "-fvk-invert-y")
-    elseif(SHADER_TYPE STREQUAL "pixel" OR SHADER_TYPE STREQUAL "fragment")
-        set(SHADER_PROFILE "ps_6_0")
-        set(DXC_EXTRA_ARGS "")
-    elseif(SHADER_TYPE STREQUAL "compute")
-        set(SHADER_PROFILE "cs_6_0")
-        set(DXC_EXTRA_ARGS "")
-    elseif(SHADER_TYPE STREQUAL "ray")
-        set(SHADER_PROFILE "lib_6_3")
-        set(DXC_EXTRA_ARGS ${PLUME_DXC_RT_OPTS})
+    # Use custom output directory if provided
+    if(ARG_OUTPUT_DIR)
+        set(OUT_DIR "${ARG_OUTPUT_DIR}")
     else()
-        message(FATAL_ERROR "Unknown shader type: ${SHADER_TYPE}. Use: vertex, pixel/fragment, compute, or ray")
+        set(OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    endif()
+    file(MAKE_DIRECTORY "${OUT_DIR}")
+
+    set(SHADER_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.${OUTPUT_EXT}")
+    set(C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.c")
+    set(H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.h")
+
+    # Use provided shader model or default to 6_0
+    if(ARG_SHADER_MODEL)
+        set(SM_VERSION "${ARG_SHADER_MODEL}")
+    else()
+        set(SM_VERSION "6_0")
     endif()
 
+    # Determine shader profile and type-specific args
+    if(SHADER_TYPE STREQUAL "vertex")
+        set(SHADER_PROFILE "vs_${SM_VERSION}")
+        set(DXC_TYPE_ARGS "-fvk-invert-y")
+    elseif(SHADER_TYPE STREQUAL "pixel" OR SHADER_TYPE STREQUAL "fragment")
+        set(SHADER_PROFILE "ps_${SM_VERSION}")
+        set(DXC_TYPE_ARGS "")
+    elseif(SHADER_TYPE STREQUAL "compute")
+        set(SHADER_PROFILE "cs_${SM_VERSION}")
+        set(DXC_TYPE_ARGS "")
+    elseif(SHADER_TYPE STREQUAL "geometry")
+        set(SHADER_PROFILE "gs_${SM_VERSION}")
+        set(DXC_TYPE_ARGS "")
+    elseif(SHADER_TYPE STREQUAL "ray")
+        set(SHADER_PROFILE "lib_6_3")
+        set(DXC_TYPE_ARGS ${PLUME_DXC_RT_OPTS})
+    elseif(SHADER_TYPE STREQUAL "library")
+        set(SHADER_PROFILE "lib_${SM_VERSION}")
+        set(DXC_TYPE_ARGS "-D;LIBRARY")
+    else()
+        message(FATAL_ERROR "Unknown shader type: ${SHADER_TYPE}. Use: vertex, pixel/fragment, compute, geometry, ray, or library")
+    endif()
+
+    # Build include directory flags
+    set(INCLUDE_FLAGS "")
+    foreach(INCLUDE_DIR ${ARG_INCLUDE_DIRS})
+        list(APPEND INCLUDE_FLAGS "-I${INCLUDE_DIR}")
+    endforeach()
+
     set(BLOB_NAME "${OUTPUT_NAME}Blob${BLOB_SUFFIX}")
+
+    # Build entry point args (library shaders don't have entry points)
+    if(ENTRY_POINT STREQUAL "")
+        set(ENTRY_POINT_ARGS "")
+    else()
+        set(ENTRY_POINT_ARGS "-E" "${ENTRY_POINT}")
+    endif()
 
     # Compile using DXC
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT}"
-        COMMAND ${DXC_CMD} ${PLUME_DXC_COMMON_OPTS} -E ${ENTRY_POINT} -T ${SHADER_PROFILE}
-                ${FORMAT_FLAGS} ${DXC_EXTRA_ARGS} -Fo "${SHADER_OUTPUT}" "${SHADER_SOURCE}"
+        COMMAND ${DXC_CMD} ${PLUME_DXC_COMMON_OPTS} ${INCLUDE_FLAGS} ${ENTRY_POINT_ARGS} -T ${SHADER_PROFILE}
+                ${FORMAT_FLAGS} ${DXC_TYPE_ARGS} ${ARG_EXTRA_ARGS} -Fo "${SHADER_OUTPUT}" "${SHADER_SOURCE}"
         DEPENDS "${SHADER_SOURCE}"
         COMMENT "Compiling ${SHADER_TYPE} shader ${OUTPUT_NAME} to ${OUTPUT_FORMAT}"
         VERBATIM
@@ -111,12 +161,25 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
 endfunction()
 
 # Internal: Compile SPIR-V to Metal via spirv-cross
+# Optional args: OUTPUT_DIR
+# Note: For HLSL sources, OUTPUT_NAME should include .hlsl suffix for proper naming
 function(_plume_compile_spirv_to_metal_impl TARGET_NAME SPIRV_FILE OUTPUT_NAME)
-    set(METAL_SOURCE "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal")
-    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
-    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
-    set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
-    set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
+    cmake_parse_arguments(PARSE_ARGV 3 ARG "" "OUTPUT_DIR" "")
+
+    # Use custom output directory if provided
+    if(ARG_OUTPUT_DIR)
+        set(OUT_DIR "${ARG_OUTPUT_DIR}")
+    else()
+        set(OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    endif()
+    file(MAKE_DIRECTORY "${OUT_DIR}")
+
+    # Use OUTPUT_NAME.hlsl for naming to match RT64's expected paths
+    set(METAL_SOURCE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.metal")
+    set(IR_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.ir")
+    set(METALLIB_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.metallib")
+    set(C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.metal.c")
+    set(H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.hlsl.metal.h")
 
     # Get deployment target for Metal compilation
     if(CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -215,13 +278,23 @@ endfunction()
 # ============================================================================
 
 # Compile a shader and add it to a target
-# Usage: plume_compile_shader(TARGET SOURCE TYPE OUTPUT_NAME ENTRY_POINT)
+# Usage: plume_compile_shader(TARGET SOURCE TYPE OUTPUT_NAME ENTRY_POINT [options])
 #   TARGET      - CMake target to add shader to
 #   SOURCE      - Path to shader source file (.hlsl or .metal)
-#   TYPE        - Shader type: vertex, pixel, compute, or ray
+#   TYPE        - Shader type: vertex, pixel, compute, geometry, ray, or library
 #   OUTPUT_NAME - Base name for output files (e.g., "mainVert")
 #   ENTRY_POINT - Shader entry point function name (e.g., "VSMain")
+#
+# Options:
+#   SPEC_CONSTANTS    - Only compile SPIRV + Metal (no DXIL), for specialization constants
+#   SHADER_MODEL <ver> - Shader model version (default: 6_0)
+#   INCLUDE_DIRS <dirs> - Additional include directories for DXC
+#   EXTRA_ARGS <args>  - Additional DXC arguments (e.g., -D MULTISAMPLING -O0)
+#   OUTPUT_DIR <dir>   - Custom output directory (default: ${CMAKE_BINARY_DIR}/shaders)
 function(plume_compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_POINT)
+    # Parse optional arguments
+    cmake_parse_arguments(ARG "SPEC_CONSTANTS" "SHADER_MODEL;OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+
     get_filename_component(SHADER_EXT "${SHADER_SOURCE}" EXT)
 
     if(SHADER_EXT MATCHES "\\.metal$")
@@ -229,18 +302,36 @@ function(plume_compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME 
             _plume_compile_metal_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME})
         endif()
     elseif(SHADER_EXT MATCHES "\\.hlsl$")
-        # Always compile to SPIR-V
-        _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "spirv" ${ENTRY_POINT})
+        # Build optional args to pass to impl
+        set(IMPL_ARGS "")
+        if(ARG_SHADER_MODEL)
+            list(APPEND IMPL_ARGS SHADER_MODEL "${ARG_SHADER_MODEL}")
+        endif()
+        if(ARG_INCLUDE_DIRS)
+            list(APPEND IMPL_ARGS INCLUDE_DIRS ${ARG_INCLUDE_DIRS})
+        endif()
+        if(ARG_EXTRA_ARGS)
+            list(APPEND IMPL_ARGS EXTRA_ARGS ${ARG_EXTRA_ARGS})
+        endif()
+        if(ARG_OUTPUT_DIR)
+            list(APPEND IMPL_ARGS OUTPUT_DIR "${ARG_OUTPUT_DIR}")
+            set(OUT_DIR "${ARG_OUTPUT_DIR}")
+        else()
+            set(OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+        endif()
 
-        # Compile to DXIL on Windows
-        if(WIN32)
-            _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "dxil" ${ENTRY_POINT})
+        # Always compile to SPIR-V
+        _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "spirv" ${ENTRY_POINT} ${IMPL_ARGS})
+
+        # Compile to DXIL on Windows (unless SPEC_CONSTANTS mode)
+        if(WIN32 AND NOT ARG_SPEC_CONSTANTS)
+            _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "dxil" ${ENTRY_POINT} ${IMPL_ARGS})
         endif()
 
         # Compile SPIR-V to Metal on Apple (if spirv-cross is available)
         if(APPLE AND TARGET plume_spirv_cross_msl)
-            set(SPIRV_FILE "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.spv")
-            _plume_compile_spirv_to_metal_impl(${TARGET_NAME} "${SPIRV_FILE}" ${OUTPUT_NAME})
+            set(SPIRV_FILE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spv")
+            _plume_compile_spirv_to_metal_impl(${TARGET_NAME} "${SPIRV_FILE}" ${OUTPUT_NAME} OUTPUT_DIR "${OUT_DIR}")
         endif()
     else()
         message(WARNING "Unsupported shader extension '${SHADER_EXT}' for ${SHADER_SOURCE}. Use .hlsl or .metal")
@@ -248,23 +339,70 @@ function(plume_compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME 
 endfunction()
 
 # Compile a vertex shader
+# Usage: plume_compile_vertex_shader(TARGET SOURCE OUTPUT_NAME ENTRY_POINT [options])
+# Options: SPEC_CONSTANTS, SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS (see plume_compile_shader)
 function(plume_compile_vertex_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "vertex" ${OUTPUT_NAME} ${ENTRY_POINT})
+    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "vertex" ${OUTPUT_NAME} ${ENTRY_POINT} ${ARGN})
 endfunction()
 
 # Compile a pixel/fragment shader
+# Usage: plume_compile_pixel_shader(TARGET SOURCE OUTPUT_NAME ENTRY_POINT [options])
+# Options: SPEC_CONSTANTS, SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS (see plume_compile_shader)
 function(plume_compile_pixel_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "pixel" ${OUTPUT_NAME} ${ENTRY_POINT})
+    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "pixel" ${OUTPUT_NAME} ${ENTRY_POINT} ${ARGN})
 endfunction()
 
 # Compile a compute shader
+# Usage: plume_compile_compute_shader(TARGET SOURCE OUTPUT_NAME ENTRY_POINT [options])
+# Options: SPEC_CONSTANTS, SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS (see plume_compile_shader)
 function(plume_compile_compute_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "compute" ${OUTPUT_NAME} ${ENTRY_POINT})
+    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "compute" ${OUTPUT_NAME} ${ENTRY_POINT} ${ARGN})
+endfunction()
+
+# Compile a geometry shader
+# Usage: plume_compile_geometry_shader(TARGET SOURCE OUTPUT_NAME ENTRY_POINT [options])
+# Options: SPEC_CONSTANTS, SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS (see plume_compile_shader)
+function(plume_compile_geometry_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
+    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "geometry" ${OUTPUT_NAME} ${ENTRY_POINT} ${ARGN})
 endfunction()
 
 # Compile a ray tracing shader
+# Usage: plume_compile_ray_shader(TARGET SOURCE OUTPUT_NAME ENTRY_POINT [options])
+# Options: SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS (see plume_compile_shader)
 function(plume_compile_ray_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_POINT)
-    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "ray" ${OUTPUT_NAME} ${ENTRY_POINT})
+    plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "ray" ${OUTPUT_NAME} ${ENTRY_POINT} ${ARGN})
+endfunction()
+
+# Compile a library shader (DXIL only, Windows)
+# Usage: plume_compile_library_shader(TARGET SOURCE OUTPUT_NAME [options])
+# Options: SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS, OUTPUT_DIR
+function(plume_compile_library_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    # Parse optional arguments
+    cmake_parse_arguments(ARG "" "SHADER_MODEL;OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+
+    if(NOT WIN32)
+        return()
+    endif()
+
+    # Build optional args to pass to impl
+    set(IMPL_ARGS "")
+    if(ARG_SHADER_MODEL)
+        list(APPEND IMPL_ARGS SHADER_MODEL "${ARG_SHADER_MODEL}")
+    else()
+        list(APPEND IMPL_ARGS SHADER_MODEL "6_3")  # Library shaders default to 6_3
+    endif()
+    if(ARG_INCLUDE_DIRS)
+        list(APPEND IMPL_ARGS INCLUDE_DIRS ${ARG_INCLUDE_DIRS})
+    endif()
+    if(ARG_EXTRA_ARGS)
+        list(APPEND IMPL_ARGS EXTRA_ARGS ${ARG_EXTRA_ARGS})
+    endif()
+    if(ARG_OUTPUT_DIR)
+        list(APPEND IMPL_ARGS OUTPUT_DIR "${ARG_OUTPUT_DIR}")
+    endif()
+
+    # Library shaders don't have an entry point - use empty string
+    _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" "library" ${OUTPUT_NAME} "dxil" "" ${IMPL_ARGS})
 endfunction()
 
 # Compile a native Metal shader (Apple only, no-op on other platforms)
@@ -274,4 +412,80 @@ function(plume_compile_metal_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     if(APPLE)
         _plume_compile_metal_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME})
     endif()
+endfunction()
+
+# Preprocess a shader header file and embed it as text
+# Useful for runtime shader compilation where you need the preprocessed source
+# Usage: plume_preprocess_shader(TARGET SOURCE OUTPUT_NAME [INCLUDE_DIRS dirs] [OUTPUT_DIR dir] [VAR_NAME name])
+#   VAR_NAME - Optional variable name for the embedded data (defaults to OUTPUT_NAME)
+function(plume_preprocess_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    cmake_parse_arguments(ARG "" "OUTPUT_DIR;VAR_NAME" "INCLUDE_DIRS" ${ARGN})
+
+    get_filename_component(SHADER_NAME "${SHADER_SOURCE}" NAME)
+
+    # Use custom output directory if provided
+    if(ARG_OUTPUT_DIR)
+        set(OUT_DIR "${ARG_OUTPUT_DIR}")
+    else()
+        set(OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    endif()
+    file(MAKE_DIRECTORY "${OUT_DIR}")
+
+    # Variable name for embedded data (defaults to OUTPUT_NAME)
+    if(ARG_VAR_NAME)
+        set(VAR_NAME "${ARG_VAR_NAME}")
+    else()
+        set(VAR_NAME "${OUTPUT_NAME}")
+    endif()
+
+    set(PREPROCESSED_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.rw")
+    set(C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.rw.c")
+    set(H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.rw.h")
+
+    # Build include directory flags
+    set(INCLUDE_FLAGS "")
+    foreach(INCLUDE_DIR ${ARG_INCLUDE_DIRS})
+        list(APPEND INCLUDE_FLAGS "-I${INCLUDE_DIR}")
+    endforeach()
+
+    # Preprocess using C preprocessor
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+            add_custom_command(
+                OUTPUT "${PREPROCESSED_OUTPUT}"
+                COMMAND clang -x c -E -P "${SHADER_SOURCE}" -o "${PREPROCESSED_OUTPUT}" ${INCLUDE_FLAGS}
+                DEPENDS "${SHADER_SOURCE}"
+                COMMENT "Preprocessing shader ${SHADER_NAME}"
+                VERBATIM
+            )
+        else()
+            add_custom_command(
+                OUTPUT "${PREPROCESSED_OUTPUT}"
+                COMMAND ${CMAKE_CXX_COMPILER} /Zs /EP "${SHADER_SOURCE}" ${INCLUDE_FLAGS} > "${PREPROCESSED_OUTPUT}"
+                DEPENDS "${SHADER_SOURCE}"
+                COMMENT "Preprocessing shader ${SHADER_NAME}"
+                VERBATIM
+            )
+        endif()
+    else()
+        add_custom_command(
+            OUTPUT "${PREPROCESSED_OUTPUT}"
+            COMMAND ${CMAKE_CXX_COMPILER} -x c -E -P "${SHADER_SOURCE}" -o "${PREPROCESSED_OUTPUT}" ${INCLUDE_FLAGS}
+            DEPENDS "${SHADER_SOURCE}"
+            COMMENT "Preprocessing shader ${SHADER_NAME}"
+            VERBATIM
+        )
+    endif()
+
+    # Generate C header with text content (use --text for char type compatibility)
+    add_custom_command(
+        OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
+        COMMAND plume_file_to_c "${PREPROCESSED_OUTPUT}" "${VAR_NAME}Text" "${C_OUTPUT}" "${H_OUTPUT}" --text
+        DEPENDS "${PREPROCESSED_OUTPUT}" plume_file_to_c
+        COMMENT "Generating C header for preprocessed shader ${OUTPUT_NAME}"
+        VERBATIM
+    )
+
+    target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
