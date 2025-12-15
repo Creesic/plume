@@ -9,25 +9,20 @@
 #   plume_compile_pixel_shader(my_target shaders/main.frag.hlsl mainFrag PSMain)
 #   plume_compile_compute_shader(my_target shaders/compute.hlsl computeShader CSMain)
 #
-#   # Metal shaders (Apple only)
-#   if(APPLE)
-#       plume_compile_metal_shader(my_target shaders/main.metal mainShader)
-#   endif()
-#
-# Bring your own DXC:
+# Bring your own DXC/SPIRV-Cross:
 #   set(PLUME_DXC_EXECUTABLE "/path/to/dxc")
 #   set(PLUME_DXC_LIB_DIR "/path/to/lib")  # Required on macOS/Linux for dylib/so
-#   plume_shaders_init(FETCH_DXC OFF)
+#   plume_shaders_init(FETCH_DXC OFF FETCH_SPIRV_CROSS OFF)
 #
 # Output:
 #   HLSL shaders compile to:
 #     - SPIR-V (all platforms): {OUTPUT_NAME}BlobSPIRV in shaders/{OUTPUT_NAME}.hlsl.spirv.h
 #     - DXIL (Windows only): {OUTPUT_NAME}BlobDXIL in shaders/{OUTPUT_NAME}.hlsl.dxil.h
-#   Metal shaders compile to:
-#     - metallib: {OUTPUT_NAME}BlobMSL in shaders/{OUTPUT_NAME}.metal.h
+#     - Metal (Apple only): {OUTPUT_NAME}BlobMSL in shaders/{OUTPUT_NAME}.metal.h (via SPIR-V cross-compilation)
 
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeFileToC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeDXC.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeSpirvCross.cmake")
 
 # Initialize shader compilation infrastructure
 # Call this once before using other plume_compile_* functions
@@ -36,16 +31,31 @@ include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeDXC.cmake")
 #   FETCH_DXC - If ON (default), fetches DXC binaries automatically.
 #               Set to OFF if you want to provide your own DXC by setting
 #               PLUME_DXC_EXECUTABLE and optionally PLUME_DXC_LIB_DIR.
+#   FETCH_SPIRV_CROSS - If ON (default on Apple), fetches and builds SPIRV-Cross.
+#                       Set to OFF to skip SPIR-V to Metal conversion.
 function(plume_shaders_init)
-    cmake_parse_arguments(PARSE_ARGV 0 ARG "" "FETCH_DXC" "")
+    cmake_parse_arguments(PARSE_ARGV 0 ARG "" "FETCH_DXC;FETCH_SPIRV_CROSS" "")
 
     # Default FETCH_DXC to ON if not specified
     if(NOT DEFINED ARG_FETCH_DXC)
         set(ARG_FETCH_DXC ON)
     endif()
 
+    # Default FETCH_SPIRV_CROSS to ON on Apple, OFF otherwise
+    if(NOT DEFINED ARG_FETCH_SPIRV_CROSS)
+        if(APPLE)
+            set(ARG_FETCH_SPIRV_CROSS ON)
+        else()
+            set(ARG_FETCH_SPIRV_CROSS OFF)
+        endif()
+    endif()
+
     if(ARG_FETCH_DXC)
         plume_fetch_dxc()
+    endif()
+
+    if(ARG_FETCH_SPIRV_CROSS AND APPLE)
+        plume_fetch_spirv_cross()
     endif()
 
     plume_build_file_to_c()
@@ -116,7 +126,62 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
 
-# Internal: Compile Metal shader to metallib
+# Internal: Compile SPIR-V to Metal via spirv-cross
+function(_plume_compile_spirv_to_metal_impl TARGET_NAME SPIRV_FILE OUTPUT_NAME)
+    set(METAL_SOURCE "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal")
+    set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
+    set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
+    set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
+    set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
+
+    # Get deployment target for Metal compilation
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+        set(METAL_VERSION_FLAG "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    else()
+        set(METAL_VERSION_FLAG "")
+    endif()
+
+    # Convert SPIR-V to Metal source
+    add_custom_command(
+        OUTPUT "${METAL_SOURCE}"
+        COMMAND plume_spirv_cross_msl "${SPIRV_FILE}" "${METAL_SOURCE}"
+        DEPENDS "${SPIRV_FILE}" plume_spirv_cross_msl
+        COMMENT "Converting ${OUTPUT_NAME} SPIR-V to Metal"
+        VERBATIM
+    )
+
+    # Compile Metal to IR
+    add_custom_command(
+        OUTPUT "${IR_OUTPUT}"
+        COMMAND xcrun -sdk macosx metal ${METAL_VERSION_FLAG} -o "${IR_OUTPUT}" -c "${METAL_SOURCE}"
+        DEPENDS "${METAL_SOURCE}"
+        COMMENT "Compiling Metal shader ${OUTPUT_NAME} to IR"
+        VERBATIM
+    )
+
+    # Link IR to metallib
+    add_custom_command(
+        OUTPUT "${METALLIB_OUTPUT}"
+        COMMAND xcrun -sdk macosx metallib "${IR_OUTPUT}" -o "${METALLIB_OUTPUT}"
+        DEPENDS "${IR_OUTPUT}"
+        COMMENT "Linking ${OUTPUT_NAME} to metallib"
+        VERBATIM
+    )
+
+    # Generate C header
+    add_custom_command(
+        OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
+        COMMAND plume_file_to_c "${METALLIB_OUTPUT}" "${OUTPUT_NAME}BlobMSL" "${C_OUTPUT}" "${H_OUTPUT}"
+        DEPENDS "${METALLIB_OUTPUT}" plume_file_to_c
+        COMMENT "Generating C header for Metal shader ${OUTPUT_NAME}"
+        VERBATIM
+    )
+
+    target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
+endfunction()
+
+# Internal: Compile native Metal shader to metallib (for handwritten .metal files)
 function(_plume_compile_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
     set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
@@ -183,9 +248,15 @@ function(plume_compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME 
         # Always compile to SPIR-V
         _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "spirv" ${ENTRY_POINT})
 
-        # Also compile to DXIL on Windows
+        # Compile to DXIL on Windows
         if(WIN32)
             _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${SHADER_TYPE} ${OUTPUT_NAME} "dxil" ${ENTRY_POINT})
+        endif()
+
+        # Compile SPIR-V to Metal on Apple (if spirv-cross is available)
+        if(APPLE AND TARGET plume_spirv_cross_msl)
+            set(SPIRV_FILE "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.spv")
+            _plume_compile_spirv_to_metal_impl(${TARGET_NAME} "${SPIRV_FILE}" ${OUTPUT_NAME})
         endif()
     else()
         message(WARNING "Unsupported shader extension '${SHADER_EXT}' for ${SHADER_SOURCE}. Use .hlsl or .metal")
@@ -212,7 +283,8 @@ function(plume_compile_ray_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME ENTRY_PO
     plume_compile_shader(${TARGET_NAME} "${SHADER_SOURCE}" "ray" ${OUTPUT_NAME} ${ENTRY_POINT})
 endfunction()
 
-# Compile a Metal shader (Apple only, no-op on other platforms)
+# Compile a native Metal shader (Apple only, no-op on other platforms)
+# Use this for handwritten .metal files, not for cross-compiled HLSL
 # Usage: plume_compile_metal_shader(TARGET SOURCE OUTPUT_NAME)
 function(plume_compile_metal_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     if(APPLE)

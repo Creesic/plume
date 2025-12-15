@@ -38,11 +38,6 @@ set_target_properties(plume_triangle PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# Compile shaders
-if(APPLE)
-    plume_compile_metal_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.metal" "triangleVert")
-    plume_compile_metal_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.metal" "triangleFrag")
-endif()
-
+# Compile shaders (HLSL to SPIR-V/DXIL/Metal)
 plume_compile_vertex_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert.hlsl" "triangleVert" "VSMain")
 plume_compile_pixel_shader(plume_triangle "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag.hlsl" "triangleFrag" "PSMain")

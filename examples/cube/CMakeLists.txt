@@ -38,11 +38,6 @@ set_target_properties(plume_cube PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# Compile shaders
-if(APPLE)
-    plume_compile_metal_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.metal" "cubeVert")
-    plume_compile_metal_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.metal" "cubeFrag")
-endif()
-
+# Compile shaders (HLSL to SPIR-V/DXIL/Metal)
 plume_compile_vertex_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.vert.hlsl" "cubeVert" "VSMain")
 plume_compile_pixel_shader(plume_cube "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube.frag.hlsl" "cubeFrag" "PSMain")
