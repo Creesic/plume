@@ -3,28 +3,34 @@
 
 include(FetchContent)
 
-# Fetch SPIRV-Cross pre-built binaries and build our tool
+# Build the spirv_cross_msl tool, fetching libraries if not provided
 function(plume_fetch_spirv_cross)
     if(TARGET plume_spirv_cross_msl)
         return()
     endif()
 
-    FetchContent_Declare(
-        plume_spirv_cross
-        GIT_REPOSITORY https://github.com/renderbag/spriv-cross-bin.git
-        GIT_TAG main
-    )
-    FetchContent_MakeAvailable(plume_spirv_cross)
-
-    # Determine library path based on platform/architecture
-    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
-        set(SPIRV_CROSS_ARCH "x64")
+    # Use provided paths or fetch pre-built binaries
+    if(DEFINED PLUME_SPIRV_CROSS_LIB_DIR AND DEFINED PLUME_SPIRV_CROSS_INCLUDE_DIR)
+        set(SPIRV_CROSS_LIB_DIR "${PLUME_SPIRV_CROSS_LIB_DIR}")
+        set(SPIRV_CROSS_INCLUDE_DIR "${PLUME_SPIRV_CROSS_INCLUDE_DIR}")
     else()
-        set(SPIRV_CROSS_ARCH "arm64")
-    endif()
+        FetchContent_Declare(
+            plume_spirv_cross
+            GIT_REPOSITORY https://github.com/renderbag/spriv-cross-bin.git
+            GIT_TAG main
+        )
+        FetchContent_MakeAvailable(plume_spirv_cross)
 
-    set(SPIRV_CROSS_LIB_DIR "${plume_spirv_cross_SOURCE_DIR}/lib/${SPIRV_CROSS_ARCH}")
-    set(SPIRV_CROSS_INCLUDE_DIR "${plume_spirv_cross_SOURCE_DIR}/include")
+        # Determine library path based on platform/architecture
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
+            set(SPIRV_CROSS_ARCH "x64")
+        else()
+            set(SPIRV_CROSS_ARCH "arm64")
+        endif()
+
+        set(SPIRV_CROSS_LIB_DIR "${plume_spirv_cross_SOURCE_DIR}/lib/${SPIRV_CROSS_ARCH}")
+        set(SPIRV_CROSS_INCLUDE_DIR "${plume_spirv_cross_SOURCE_DIR}/include")
+    endif()
 
     # Build our custom spirv_cross_msl tool
     set(SPIRV_CROSS_MSL_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../tools/spirv_cross_msl.cpp")

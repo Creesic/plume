@@ -9,10 +9,9 @@
 #   plume_compile_pixel_shader(my_target shaders/main.frag.hlsl mainFrag PSMain)
 #   plume_compile_compute_shader(my_target shaders/compute.hlsl computeShader CSMain)
 #
-# Bring your own DXC/SPIRV-Cross:
+# Bring your own DXC/SPIRV-Cross (set before calling plume_shaders_init):
 #   set(PLUME_DXC_EXECUTABLE "/path/to/dxc")
-#   set(PLUME_DXC_LIB_DIR "/path/to/lib")  # Required on macOS/Linux for dylib/so
-#   plume_shaders_init(FETCH_DXC OFF FETCH_SPIRV_CROSS OFF)
+#   set(PLUME_DXC_LIB_DIR "/path/to/lib")  # macOS/Linux only
 #
 # Output:
 #   HLSL shaders compile to:
@@ -27,34 +26,19 @@ include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeSpirvCross.cmake")
 # Initialize shader compilation infrastructure
 # Call this once before using other plume_compile_* functions
 #
-# Options:
-#   FETCH_DXC - If ON (default), fetches DXC binaries automatically.
-#               Set to OFF if you want to provide your own DXC by setting
-#               PLUME_DXC_EXECUTABLE and optionally PLUME_DXC_LIB_DIR.
-#   FETCH_SPIRV_CROSS - If ON (default on Apple), fetches and builds SPIRV-Cross.
-#                       Set to OFF to skip SPIR-V to Metal conversion.
+# If you want to provide your own tools, set these before calling:
+#   PLUME_DXC_EXECUTABLE - Path to DXC binary
+#   PLUME_DXC_LIB_DIR - Path to DXC libraries (macOS/Linux only)
+#   PLUME_SPIRV_CROSS_LIB_DIR - Path to spirv-cross static libraries
+#   PLUME_SPIRV_CROSS_INCLUDE_DIR - Path to spirv-cross headers
 function(plume_shaders_init)
-    cmake_parse_arguments(PARSE_ARGV 0 ARG "" "FETCH_DXC;FETCH_SPIRV_CROSS" "")
-
-    # Default FETCH_DXC to ON if not specified
-    if(NOT DEFINED ARG_FETCH_DXC)
-        set(ARG_FETCH_DXC ON)
-    endif()
-
-    # Default FETCH_SPIRV_CROSS to ON on Apple, OFF otherwise
-    if(NOT DEFINED ARG_FETCH_SPIRV_CROSS)
-        if(APPLE)
-            set(ARG_FETCH_SPIRV_CROSS ON)
-        else()
-            set(ARG_FETCH_SPIRV_CROSS OFF)
-        endif()
-    endif()
-
-    if(ARG_FETCH_DXC)
+    # Fetch DXC if not already provided
+    if(NOT DEFINED PLUME_DXC_EXECUTABLE)
         plume_fetch_dxc()
     endif()
 
-    if(ARG_FETCH_SPIRV_CROSS AND APPLE)
+    # Fetch/build spirv-cross on Apple if not already provided
+    if(APPLE AND NOT TARGET plume_spirv_cross_msl)
         plume_fetch_spirv_cross()
     endif()
 
