@@ -1,6 +1,10 @@
 # Shader compilation functions for Plume
 # Using DXC for HLSL to SPIR-V compilation and Metal for macOS
 
+# Build file_to_c tool (shared with plume core)
+include(${CMAKE_SOURCE_DIR}/cmake/PlumeShaderCompilation.cmake)
+plume_build_file_to_c()
+
 # Fetch DXC for shader compilation
 include(FetchContent)
 FetchContent_Declare(
@@ -13,7 +17,7 @@ FetchContent_MakeAvailable(dxc)
 # Set up DXC paths based on platform
 if(WIN32)
     set(DXC "${dxc_SOURCE_DIR}/bin/x64/dxc.exe")
-    
+
     # Dependencies that must be next to the DLL if on Windows
     if(EXISTS "${dxc_SOURCE_DIR}/bin/x64/dxcompiler.dll")
         configure_file("${dxc_SOURCE_DIR}/bin/x64/dxcompiler.dll" "${CMAKE_BINARY_DIR}/bin/dxcompiler.dll" COPYONLY)
@@ -30,12 +34,12 @@ elseif(APPLE)
         set(DXC_EXECUTABLE "${dxc_SOURCE_DIR}/bin/arm64/dxc-macos")
         set(DXC_LIB_DIR "${dxc_SOURCE_DIR}/lib/arm64")
     endif()
-    
+
     # Make sure the executable is accessible and has execute permissions
     if(EXISTS "${DXC_EXECUTABLE}")
         # Set executable permission if needed
         execute_process(COMMAND chmod +x "${DXC_EXECUTABLE}")
-        
+
         # Set DXC command with DYLD_LIBRARY_PATH
         set(DXC "DYLD_LIBRARY_PATH=${DXC_LIB_DIR}" "${DXC_EXECUTABLE}")
     else()
@@ -50,7 +54,7 @@ else()
         set(DXC_EXECUTABLE "${dxc_SOURCE_DIR}/bin/arm64/dxc-linux")
         set(DXC_LIB_DIR "${dxc_SOURCE_DIR}/lib/arm64")
     endif()
-    
+
     # Make sure the executable is accessible and has execute permissions
     if(EXISTS "${DXC_EXECUTABLE}")
         # Set executable permission if needed
@@ -85,10 +89,10 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
     set(SHADER_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_EXT}")
     set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.c")
     set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.hlsl.${OUTPUT_FORMAT}.h")
-    
+
     # Create output directory
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
-    
+
     # Determine the shader options based on type
     if(SHADER_TYPE STREQUAL "vertex")
         set(SHADER_PROFILE "vs_6_0")
@@ -107,7 +111,7 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
     endif()
 
     set(BLOB_NAME "${OUTPUT_NAME}Blob${BLOB_SUFFIX}")
-    
+
     # Compile using DXC
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
@@ -116,18 +120,18 @@ function(build_shader_dxc_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling ${SHADER_TYPE} shader ${SHADER_SOURCE} to ${OUTPUT_FORMAT} using DXC"
     )
-    
+
     # Generate C header
     add_custom_command(
         OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
-        COMMAND file_to_c ${SHADER_OUTPUT} "${BLOB_NAME}" "${C_OUTPUT}" "${H_OUTPUT}"
-        DEPENDS ${SHADER_OUTPUT} file_to_c
+        COMMAND plume_file_to_c ${SHADER_OUTPUT} "${BLOB_NAME}" "${C_OUTPUT}" "${H_OUTPUT}"
+        DEPENDS ${SHADER_OUTPUT} plume_file_to_c
         COMMENT "Generating C header for ${OUTPUT_FORMAT} shader ${OUTPUT_NAME}"
     )
-    
+
     # Add the generated source file to the target
     target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
-    
+
     # Make sure the target can find the generated header
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
@@ -149,10 +153,10 @@ function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
     set(METAL_C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
     set(METAL_H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
-    
+
     # Create output directory
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
-    
+
     # Compile Metal to IR
     add_custom_command(
         OUTPUT ${IR_OUTPUT}
@@ -160,7 +164,7 @@ function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
         DEPENDS ${SHADER_SOURCE}
         COMMENT "Compiling Metal shader to IR"
     )
-    
+
     # Compile IR to metallib
     add_custom_command(
         OUTPUT ${METALLIB_OUTPUT}
@@ -168,18 +172,18 @@ function(build_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
         DEPENDS ${IR_OUTPUT}
         COMMENT "Compiling Metal IR to metallib"
     )
-    
+
     # Generate C header
     add_custom_command(
         OUTPUT "${METAL_C_OUTPUT}" "${METAL_H_OUTPUT}"
-        COMMAND file_to_c ${METALLIB_OUTPUT} "${OUTPUT_NAME}BlobMSL" "${METAL_C_OUTPUT}" "${METAL_H_OUTPUT}"
-        DEPENDS ${METALLIB_OUTPUT} file_to_c
+        COMMAND plume_file_to_c ${METALLIB_OUTPUT} "${OUTPUT_NAME}BlobMSL" "${METAL_C_OUTPUT}" "${METAL_H_OUTPUT}"
+        DEPENDS ${METALLIB_OUTPUT} plume_file_to_c
         COMMENT "Generating C header for Metal shader ${OUTPUT_NAME}"
     )
-    
+
     # Add the generated source file to the target
     target_sources(${TARGET_NAME} PRIVATE "${METAL_C_OUTPUT}")
-    
+
     # Make sure the target can find the generated header
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
@@ -188,7 +192,7 @@ endfunction()
 function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_POINT)
     # Get the file extension to determine the shader language
     get_filename_component(SHADER_EXT ${SHADER_SOURCE} EXT)
-    
+
     # Compile based on extension
     if(SHADER_EXT MATCHES ".*\\.metal$")
         # Compile Metal shader
@@ -198,7 +202,7 @@ function(compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME ENTRY_
     elseif(SHADER_SOURCE MATCHES ".*\\.hlsl$")
         # Compile HLSL shader to SPIR-V using DXC
         build_shader_spirv_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} ${ENTRY_POINT})
-        
+
         # Also compile to DXIL on Windows
         if(WIN32)
             build_shader_dxil_impl(${TARGET_NAME} ${SHADER_SOURCE} ${SHADER_TYPE} ${OUTPUT_NAME} ${ENTRY_POINT})
@@ -212,8 +216,8 @@ function(file_to_c_header INPUT_FILE OUTPUT_FILE VARIABLE_NAME)
     add_custom_command(
         OUTPUT ${OUTPUT_FILE}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
-        COMMAND ${CMAKE_BINARY_DIR}/bin/file_to_c ${INPUT_FILE} ${OUTPUT_FILE} ${VARIABLE_NAME} ${VARIABLE_NAME}Size
-        DEPENDS ${INPUT_FILE} file_to_c
+        COMMAND plume_file_to_c ${INPUT_FILE} ${VARIABLE_NAME} ${OUTPUT_FILE} ${OUTPUT_FILE}
+        DEPENDS ${INPUT_FILE} plume_file_to_c
         COMMENT "Converting ${INPUT_FILE} to C header"
     )
-endfunction() 
+endfunction()

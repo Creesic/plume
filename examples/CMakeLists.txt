@@ -6,9 +6,6 @@ set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "Enable SDL Vulkan integration" FORCE
 # Find SDL2 (required for examples)
 find_package(SDL2 REQUIRED)
 
-# Add tools directory first (needed for shader compilation)
-add_subdirectory(tools)
-
 # Include custom ShaderCompilation module
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(ShaderCompilation)
