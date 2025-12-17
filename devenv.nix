@@ -10,9 +10,7 @@
   # https://devenv.sh/packages/
   packages =
     (with pkgs; [
-      #
       # Common development tools
-      #
       cmake
       ninja
       pkg-config
@@ -26,27 +24,24 @@
       spirv-headers
       glslang
 
-      # Platform-specific shader compilers
+      # Shader compilers
       shaderc
+      directx-shader-compiler
+
+      # Vulkan validation
+      vulkan-validation-layers
 
       # Math library for examples
       glm
     ])
     # macOS specific packages
     ++ lib.optionals pkgs.stdenv.isDarwin [
-      pkgs.directx-shader-compiler
       pkgs.moltenvk
-      pkgs.vulkan-validation-layers
-    ]
-    ++ lib.optionals (!pkgs.stdenv.isDarwin) [
-      pkgs.directx-shader-compiler
     ]
     # SDL2 from pinned nixpkgs
     ++ [ inputs.nixpkgs-sdl2.legacyPackages.${pkgs.system}.SDL2 ]
     ++ lib.optionals pkgs.stdenv.isLinux (with pkgs; [
-      #
       # Linux specific packages
-      #
       clang
       clang-tools
       lldb
@@ -58,7 +53,6 @@
       xorg.libX11
       xorg.libXrandr
       xorg.libXi
-      vulkan-validation-layers
     ])
     # Note: On macOS, we use the system SDK via Xcode, so we don't need
     # to include Darwin frameworks from nixpkgs here.
@@ -131,8 +125,10 @@
   enterShell = lib.optionalString pkgs.stdenv.isDarwin ''
     export DEVELOPER_DIR="$(/usr/bin/readlink /var/db/xcode_select_link)"
     export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+
     # Use system clang instead of Nix's clang-wrapper
     export PATH="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin:$DEVELOPER_DIR/usr/bin:$PATH"
+
     # Use system xcrun instead of Nix's xcbuild version (avoids Metal compiler warnings)
     export PATH="${pkgs.runCommand "xcrun-wrapper" {} "mkdir -p $out/bin && ln -s /usr/bin/xcrun $out/bin/xcrun"}/bin:$PATH"
   '';
