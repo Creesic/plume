@@ -211,6 +211,7 @@ namespace plume {
             MTL::Resource* resource = nullptr;
             RenderDescriptorRangeType type = RenderDescriptorRangeType::UNKNOWN;
             uint32_t instanceCount = 0;  // For acceleration structures: TLAS instance count
+            const uint32_t* instanceContributions = nullptr;  // For acceleration structures: per-instance hit group offsets
         };
 
         MetalDevice *device = nullptr;
@@ -632,6 +633,7 @@ namespace plume {
         uint64_t size = 0;
         RenderAccelerationStructureType type = RenderAccelerationStructureType::UNKNOWN;
         uint32_t instanceCount = 0;  // For TLAS: number of instances (set during build)
+        std::vector<uint32_t> instanceContributions;  // For TLAS: per-instance hit group offsets
 
         MetalAccelerationStructure(MetalDevice *device, const RenderAccelerationStructureDesc &desc);
         ~MetalAccelerationStructure() override;

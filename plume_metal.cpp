@@ -2043,6 +2043,7 @@ namespace plume {
             resourceEntries[descriptorIndex].resource = metalAS->mtl;
             resourceEntries[descriptorIndex].type = RenderDescriptorRangeType::ACCELERATION_STRUCTURE;
             resourceEntries[descriptorIndex].instanceCount = metalAS->instanceCount;
+            resourceEntries[descriptorIndex].instanceContributions = metalAS->instanceContributions.empty() ? nullptr : metalAS->instanceContributions.data();
             metalAS->mtl->retain();
 
             // Add to residency set if available.
@@ -2772,6 +2773,7 @@ namespace plume {
         MTL::AccelerationStructure* tlas = nullptr;
         MTL::Buffer* constantBuffer = nullptr;
         uint32_t tlasInstanceCount = 0;
+        const uint32_t* tlasInstanceContributions = nullptr;
 
         for (size_t i = 0; i < descriptorSet->resourceEntries.size(); i++) {
             const auto& entry = descriptorSet->resourceEntries[i];
@@ -2785,6 +2787,7 @@ namespace plume {
                 case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
                     tlas = static_cast<MTL::AccelerationStructure*>(entry.resource);
                     tlasInstanceCount = entry.instanceCount;
+                    tlasInstanceContributions = entry.instanceContributions;
                     break;
                 case RenderDescriptorRangeType::CONSTANT_BUFFER:
                     constantBuffer = static_cast<MTL::Buffer*>(entry.resource);
@@ -2838,12 +2841,14 @@ namespace plume {
                 header->addressOfInstanceContributions = descriptorSet->rtASHeaderBuffer->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
 
                 // Fill instance contributions array. Each entry is the hit group offset for that instance.
-                // Currently initialized to 0 for all instances (single hit group).
-                // TODO: Support per-instance hit group offsets for multi-material scenes.
                 auto* instanceContributions = reinterpret_cast<uint32_t*>(
                     static_cast<uint8_t*>(descriptorSet->rtASHeaderBuffer->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
-                for (uint32_t i = 0; i < tlasInstanceCount; i++) {
-                    instanceContributions[i] = 0;
+                if (tlasInstanceContributions != nullptr) {
+                    // Use per-instance hit group offsets from the TLAS build.
+                    memcpy(instanceContributions, tlasInstanceContributions, tlasInstanceCount * sizeof(uint32_t));
+                } else {
+                    // Default to 0 for all instances (single hit group).
+                    memset(instanceContributions, 0, tlasInstanceCount * sizeof(uint32_t));
                 }
             }
 
@@ -3759,8 +3764,17 @@ namespace plume {
         memcpy(&instDesc, buildInfo.buildData.data(), sizeof(void *));
         assert(instDesc != nullptr);
 
-        // Store instance count for use during traceRays (needed for instance contributions array).
+        // Store instance count and extract contributions from instancesBufferData.
+        // The contributions are stored in intersectionFunctionTableOffset of each instance descriptor.
         dstAS->instanceCount = static_cast<uint32_t>(instDesc->instanceCount());
+        if (dstAS->instanceCount > 0 && !buildInfo.instancesBufferData.empty()) {
+            const auto* bufferInstances = reinterpret_cast<const MTL::AccelerationStructureUserIDInstanceDescriptor*>(
+                buildInfo.instancesBufferData.data());
+            dstAS->instanceContributions.resize(dstAS->instanceCount);
+            for (uint32_t i = 0; i < dstAS->instanceCount; i++) {
+                dstAS->instanceContributions[i] = bufferInstances[i].intersectionFunctionTableOffset;
+            }
+        }
 
         // Set the instance descriptor buffer.
         instDesc->setInstanceDescriptorBuffer(instances->mtl);
@@ -4701,7 +4715,7 @@ namespace plume {
         buildInfo.scratchSize = sizes.buildScratchBufferSize;
         buildInfo.accelerationStructureSize = sizes.accelerationStructureSize;
 
-        // Store the descriptor in buildData for use during the actual build.
+        // Store the descriptor pointer in buildData for use during the actual build.
         instDesc->retain();
         buildInfo.buildData.resize(sizeof(void *));
         memcpy(buildInfo.buildData.data(), &instDesc, sizeof(void *));
