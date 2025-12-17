@@ -222,6 +222,12 @@ namespace plume {
         std::mutex residencySetWriteMutex;
         bool needsCommit = false;
 
+        // Cached buffers for raytracing TLAB construction
+        MTL::Buffer* rtASHeaderBuffer = nullptr;       // IRRaytracingAccelerationStructureGPUHeader + instance contributions
+        MTL::Buffer* rtUAVTableBuffer = nullptr;       // IRDescriptorTableEntry for output UAV texture
+        MTL::Buffer* rtTLABBuffer = nullptr;           // Top-Level Argument Buffer (array of GPU addresses)
+        bool rtBuffersDirty = true;                    // Set when resources change, cleared after TLAB rebuild
+
         MetalDescriptorSet(MetalDevice *device, const RenderDescriptorSetDesc &desc);
         MetalDescriptorSet(MetalDevice *device, uint32_t entryCount);
         ~MetalDescriptorSet() override;

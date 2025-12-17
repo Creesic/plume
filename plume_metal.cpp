@@ -1913,6 +1913,17 @@ namespace plume {
         if (argumentBuffer.mtl != nullptr) {
             argumentBuffer.mtl->release();
         }
+
+        // Release cached raytracing buffers.
+        if (rtASHeaderBuffer != nullptr) {
+            rtASHeaderBuffer->release();
+        }
+        if (rtUAVTableBuffer != nullptr) {
+            rtUAVTableBuffer->release();
+        }
+        if (rtTLABBuffer != nullptr) {
+            rtTLABBuffer->release();
+        }
     }
 
     void MetalDescriptorSet::bindImmutableSamplers() const {
@@ -1990,6 +2001,9 @@ namespace plume {
             const TextureDescriptor descriptor = { .texture = interfaceTexture->mtl };
             setDescriptor(descriptorIndex, &descriptor);
         }
+
+        // Mark RT buffers dirty in case this is a UAV texture used for raytracing output.
+        rtBuffersDirty = true;
     }
 
     void MetalDescriptorSet::setSampler(const uint32_t descriptorIndex, const RenderSampler *sampler) {
@@ -2037,6 +2051,9 @@ namespace plume {
                 residencySet->addAllocation(metalAS->mtl);
                 needsCommit = true;
             }
+
+            // Mark RT buffers dirty so TLAB is rebuilt on next traceRays.
+            rtBuffersDirty = true;
         }
     }
 
@@ -2726,41 +2743,9 @@ namespace plume {
         activeComputeEncoder->setComputePipelineState(activeRaytracingPipeline->computePipeline);
 
         // Get the first descriptor set (set 0) which contains our RT resources.
-        const MetalDescriptorSet* descriptorSet = raytracingDescriptorSets[0];
-
-        // Collect resources from descriptor set for TLAB construction.
-        MTL::Texture* outputTexture = nullptr;
-        MTL::AccelerationStructure* tlas = nullptr;
-        MTL::Buffer* constantBuffer = nullptr;
-        uint32_t tlasInstanceCount = 0;
-
-        if (descriptorSet != nullptr) {
-            for (size_t i = 0; i < descriptorSet->resourceEntries.size(); i++) {
-                const auto& entry = descriptorSet->resourceEntries[i];
-                if (entry.resource == nullptr) continue;
-
-                switch (entry.type) {
-                    case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
-                    case RenderDescriptorRangeType::TEXTURE:
-                        outputTexture = static_cast<MTL::Texture*>(entry.resource);
-                        break;
-                    case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
-                        tlas = static_cast<MTL::AccelerationStructure*>(entry.resource);
-                        tlasInstanceCount = entry.instanceCount;
-                        break;
-                    case RenderDescriptorRangeType::CONSTANT_BUFFER:
-                        constantBuffer = static_cast<MTL::Buffer*>(entry.resource);
-                        break;
-                    default:
-                        break;
-                }
-            }
-        }
-
-        // Ensure at least 1 instance for the contributions array.
-        if (tlasInstanceCount == 0) {
-            tlasInstanceCount = 1;
-        }
+        // Use const_cast since we need to update cached buffers.
+        MetalDescriptorSet* descriptorSet = raytracingDescriptorSets[0];
+        assert(descriptorSet != nullptr && "Raytracing descriptor set 0 must be bound");
 
         // ============================================================================
         // TLAB (Top-Level Argument Buffer) Construction
@@ -2778,68 +2763,123 @@ namespace plume {
         //   - Acceleration structures: IRRaytracingAccelerationStructureGPUHeader + instance contributions
         //   - Root CBVs: Direct GPU address (no wrapper needed)
         //
+        // These buffers are cached on the descriptor set and only rebuilt when resources change.
         // Reference: Apple's "Accelerating ray tracing using Metal" sample code.
         // ============================================================================
 
+        // Collect resources from descriptor set.
+        MTL::Texture* outputTexture = nullptr;
+        MTL::AccelerationStructure* tlas = nullptr;
+        MTL::Buffer* constantBuffer = nullptr;
+        uint32_t tlasInstanceCount = 0;
+
+        for (size_t i = 0; i < descriptorSet->resourceEntries.size(); i++) {
+            const auto& entry = descriptorSet->resourceEntries[i];
+            if (entry.resource == nullptr) continue;
+
+            switch (entry.type) {
+                case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
+                case RenderDescriptorRangeType::TEXTURE:
+                    outputTexture = static_cast<MTL::Texture*>(entry.resource);
+                    break;
+                case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
+                    tlas = static_cast<MTL::AccelerationStructure*>(entry.resource);
+                    tlasInstanceCount = entry.instanceCount;
+                    break;
+                case RenderDescriptorRangeType::CONSTANT_BUFFER:
+                    constantBuffer = static_cast<MTL::Buffer*>(entry.resource);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        // Ensure at least 1 instance for the contributions array.
+        if (tlasInstanceCount == 0) {
+            tlasInstanceCount = 1;
+        }
+
         MTL::Device* device = queue->device->mtl;
 
-        // TODO: Pool these temporary buffers using a ring buffer or frame-based allocator
-        // to avoid per-frame allocation overhead. Current implementation creates new buffers
-        // each frame which is inefficient for production use.
-
-        // Root parameter 0: UAV descriptor table for output texture.
-        MTL::Buffer* uavTableBuffer = nullptr;
-        if (outputTexture != nullptr) {
-            IRDescriptorTableEntry uavEntry = {};
-            IRDescriptorTableSetTexture(&uavEntry, outputTexture, 0, 0);
-            uavTableBuffer = device->newBuffer(&uavEntry, sizeof(uavEntry), MTL::ResourceStorageModeShared);
-            activeComputeEncoder->useResource(outputTexture, MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
-            activeComputeEncoder->useResource(uavTableBuffer, MTL::ResourceUsageRead);
-        }
-
-        // Root parameter 1: SRV for acceleration structure.
-        // This requires an IRRaytracingAccelerationStructureGPUHeader followed by an array
-        // of instance contribution indices (one uint32_t per TLAS instance).
-        MTL::Buffer* asSrvBuffer = nullptr;
-        if (tlas != nullptr) {
-            const size_t instanceContributionsSize = tlasInstanceCount * sizeof(uint32_t);
-            const size_t asSrvSize = sizeof(IRRaytracingAccelerationStructureGPUHeader) + instanceContributionsSize;
-            asSrvBuffer = device->newBuffer(asSrvSize, MTL::ResourceStorageModeShared);
-
-            // Fill the AS header.
-            auto* header = static_cast<IRRaytracingAccelerationStructureGPUHeader*>(asSrvBuffer->contents());
-            header->accelerationStructureID = tlas->gpuResourceID()._impl;
-            header->addressOfInstanceContributions = asSrvBuffer->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
-
-            // Fill instance contributions array. Each entry is the hit group offset for that instance.
-            // Currently initialized to 0 for all instances (single hit group).
-            // TODO: Support per-instance hit group offsets for multi-material scenes.
-            auto* instanceContributions = reinterpret_cast<uint32_t*>(
-                static_cast<uint8_t*>(asSrvBuffer->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
-            for (uint32_t i = 0; i < tlasInstanceCount; i++) {
-                instanceContributions[i] = 0;
+        // Rebuild cached TLAB buffers if resources have changed.
+        if (descriptorSet->rtBuffersDirty) {
+            // Release old buffers.
+            if (descriptorSet->rtASHeaderBuffer != nullptr) {
+                descriptorSet->rtASHeaderBuffer->release();
+                descriptorSet->rtASHeaderBuffer = nullptr;
+            }
+            if (descriptorSet->rtUAVTableBuffer != nullptr) {
+                descriptorSet->rtUAVTableBuffer->release();
+                descriptorSet->rtUAVTableBuffer = nullptr;
+            }
+            if (descriptorSet->rtTLABBuffer != nullptr) {
+                descriptorSet->rtTLABBuffer->release();
+                descriptorSet->rtTLABBuffer = nullptr;
             }
 
-            activeComputeEncoder->useResource(tlas, MTL::ResourceUsageRead);
-            activeComputeEncoder->useResource(asSrvBuffer, MTL::ResourceUsageRead);
+            // Root parameter 0: UAV descriptor table for output texture.
+            if (outputTexture != nullptr) {
+                IRDescriptorTableEntry uavEntry = {};
+                IRDescriptorTableSetTexture(&uavEntry, outputTexture, 0, 0);
+                descriptorSet->rtUAVTableBuffer = device->newBuffer(&uavEntry, sizeof(uavEntry), MTL::ResourceStorageModeShared);
+            }
+
+            // Root parameter 1: SRV for acceleration structure.
+            // This requires an IRRaytracingAccelerationStructureGPUHeader followed by an array
+            // of instance contribution indices (one uint32_t per TLAS instance).
+            if (tlas != nullptr) {
+                const size_t instanceContributionsSize = tlasInstanceCount * sizeof(uint32_t);
+                const size_t asSrvSize = sizeof(IRRaytracingAccelerationStructureGPUHeader) + instanceContributionsSize;
+                descriptorSet->rtASHeaderBuffer = device->newBuffer(asSrvSize, MTL::ResourceStorageModeShared);
+
+                // Fill the AS header.
+                auto* header = static_cast<IRRaytracingAccelerationStructureGPUHeader*>(descriptorSet->rtASHeaderBuffer->contents());
+                header->accelerationStructureID = tlas->gpuResourceID()._impl;
+                header->addressOfInstanceContributions = descriptorSet->rtASHeaderBuffer->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
+
+                // Fill instance contributions array. Each entry is the hit group offset for that instance.
+                // Currently initialized to 0 for all instances (single hit group).
+                // TODO: Support per-instance hit group offsets for multi-material scenes.
+                auto* instanceContributions = reinterpret_cast<uint32_t*>(
+                    static_cast<uint8_t*>(descriptorSet->rtASHeaderBuffer->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
+                for (uint32_t i = 0; i < tlasInstanceCount; i++) {
+                    instanceContributions[i] = 0;
+                }
+            }
+
+            // Root parameter 2: CBV (constant buffer) - direct GPU address, no wrapper needed.
+            uint64_t cbvAddress = constantBuffer ? constantBuffer->gpuAddress() : 0;
+
+            // Build the TLAB: array of GPU addresses for each root parameter.
+            uint64_t tlab[3] = {
+                descriptorSet->rtUAVTableBuffer ? descriptorSet->rtUAVTableBuffer->gpuAddress() : 0,
+                descriptorSet->rtASHeaderBuffer ? descriptorSet->rtASHeaderBuffer->gpuAddress() : 0,
+                cbvAddress
+            };
+
+            descriptorSet->rtTLABBuffer = device->newBuffer(tlab, sizeof(tlab), MTL::ResourceStorageModeShared);
+            descriptorSet->rtBuffersDirty = false;
         }
 
-        // Root parameter 2: CBV (constant buffer) - direct GPU address, no wrapper needed.
-        uint64_t cbvAddress = 0;
+        // Bind resources for the encoder.
+        if (outputTexture != nullptr) {
+            activeComputeEncoder->useResource(outputTexture, MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
+        }
+        if (descriptorSet->rtUAVTableBuffer != nullptr) {
+            activeComputeEncoder->useResource(descriptorSet->rtUAVTableBuffer, MTL::ResourceUsageRead);
+        }
+        if (tlas != nullptr) {
+            activeComputeEncoder->useResource(tlas, MTL::ResourceUsageRead);
+        }
+        if (descriptorSet->rtASHeaderBuffer != nullptr) {
+            activeComputeEncoder->useResource(descriptorSet->rtASHeaderBuffer, MTL::ResourceUsageRead);
+        }
         if (constantBuffer != nullptr) {
-            cbvAddress = constantBuffer->gpuAddress();
             activeComputeEncoder->useResource(constantBuffer, MTL::ResourceUsageRead);
         }
-
-        // Build the TLAB: array of GPU addresses for each root parameter.
-        uint64_t tlab[3] = {
-            uavTableBuffer ? uavTableBuffer->gpuAddress() : 0,
-            asSrvBuffer ? asSrvBuffer->gpuAddress() : 0,
-            cbvAddress
-        };
-
-        MTL::Buffer* tlabBuffer = device->newBuffer(tlab, sizeof(tlab), MTL::ResourceStorageModeShared);
-        activeComputeEncoder->useResource(tlabBuffer, MTL::ResourceUsageRead);
+        if (descriptorSet->rtTLABBuffer != nullptr) {
+            activeComputeEncoder->useResource(descriptorSet->rtTLABBuffer, MTL::ResourceUsageRead);
+        }
 
         // Bind push constants for raytracing.
         for (const PushConstantData &pushConstant : pushConstants) {
@@ -2886,7 +2926,7 @@ namespace plume {
         // Build the IRDispatchRaysArgument structure.
         IRDispatchRaysArgument dispatchArgs = {};
         dispatchArgs.DispatchRaysDesc = dispatchDesc;
-        dispatchArgs.GRS = tlabBuffer->gpuAddress();  // TLAB contains root parameter GPU addresses
+        dispatchArgs.GRS = descriptorSet->rtTLABBuffer->gpuAddress();  // TLAB contains root parameter GPU addresses
         dispatchArgs.ResDescHeap = 0;  // Not using bindless resource heap
         dispatchArgs.SmpDescHeap = 0;  // Not using sampler heap
         dispatchArgs.VisibleFunctionTable = activeRaytracingPipeline->visibleFunctionTable ? activeRaytracingPipeline->visibleFunctionTable->gpuResourceID() : MTL::ResourceID{0};
@@ -2919,14 +2959,6 @@ namespace plume {
         );
 
         activeComputeEncoder->dispatchThreadgroups(threadGroupCount, threadGroupSize);
-
-        // Note: Temporary buffers (uavTableBuffer, asSrvBuffer, tlabBuffer) are NOT released here.
-        // Metal retains resources referenced by the command encoder/buffer until completion.
-        // These buffers will be autoreleased when the autorelease pool is drained.
-        // For a production implementation, these should be managed via a ring buffer or pool.
-        if (uavTableBuffer) uavTableBuffer->autorelease();
-        if (asSrvBuffer) asSrvBuffer->autorelease();
-        if (tlabBuffer) tlabBuffer->autorelease();
 #else
         (void)width; (void)height; (void)depth; (void)shaderBindingTable; (void)shaderBindingGroupsInfo;
         fprintf(stderr, "Ray tracing not supported: Metal Shader Converter runtime not available.\n");
