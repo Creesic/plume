@@ -2,12 +2,15 @@
 // Compiles to DXIL for D3D12 and Metal via metal-shaderconverter
 
 // Output texture
+[[vk::binding(0)]]
 RWTexture2D<float4> outputTexture : register(u0);
 
 // Acceleration structure
+[[vk::binding(1)]]
 RaytracingAccelerationStructure scene : register(t0);
 
 // Camera constants
+[[vk::binding(2)]]
 cbuffer CameraConstants : register(b0)
 {
     float4x4 viewInverse;

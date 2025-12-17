@@ -25,7 +25,11 @@ namespace plume {
     // Forward declarations for interface creation
     extern std::unique_ptr<RenderInterface> CreateMetalInterface();
     extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
+    #if PLUME_SDL_VULKAN_ENABLED
+    extern std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow);
+    #else
     extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
+    #endif
 }
 
 using namespace plume;
@@ -368,7 +372,8 @@ void initializeRayTracing(RTContext& ctx) {
     RenderShaderBindingGroup hitGroupGroup(&hitGroupProgram, 1);
 
     RenderShaderBindingGroups sbtGroups(raygenGroup, missGroup, hitGroupGroup);
-    ctx.device->setShaderBindingTableInfo(ctx.sbtInfo, sbtGroups, ctx.rtPipeline.get(), nullptr, 0);
+    RenderDescriptorSet* descriptorSets[] = { ctx.descriptorSet.get() };
+    ctx.device->setShaderBindingTableInfo(ctx.sbtInfo, sbtGroups, ctx.rtPipeline.get(), descriptorSets, 1);
 
     // Create SBT buffer and upload data
     RenderBufferDesc sbtBufDesc = RenderBufferDesc::UploadBuffer(ctx.sbtInfo.tableBufferData.size());
@@ -526,7 +531,7 @@ void render(RTContext& ctx) {
     ctx.commandQueue->waitForCommandFence(ctx.commandFence.get());
 }
 
-std::unique_ptr<RenderInterface> CreateRenderInterface(std::string& apiName) {
+std::unique_ptr<RenderInterface> CreateRenderInterface(SDL_Window* window, std::string& apiName) {
 #if defined(__APPLE__)
     apiName = "Metal";
     return CreateMetalInterface();
@@ -535,7 +540,11 @@ std::unique_ptr<RenderInterface> CreateRenderInterface(std::string& apiName) {
     return CreateD3D12Interface();
 #else
     apiName = "Vulkan";
+#if PLUME_SDL_VULKAN_ENABLED
+    return CreateVulkanInterface(window);
+#else
     return CreateVulkanInterface();
+#endif
 #endif
 }
 
@@ -546,7 +555,9 @@ int main(int argc, char* argv[]) {
     }
 
     uint32_t flags = SDL_WINDOW_RESIZABLE;
-#if defined(__APPLE__)
+#if PLUME_SDL_VULKAN_ENABLED
+    flags |= SDL_WINDOW_VULKAN;
+#elif defined(__APPLE__)
     flags |= SDL_WINDOW_METAL;
 #endif
 
@@ -562,12 +573,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_SysWMinfo wmInfo;
-    SDL_VERSION(&wmInfo.version);
-    SDL_GetWindowWMInfo(window, &wmInfo);
-
     std::string apiName;
-    auto renderInterface = CreateRenderInterface(apiName);
+    auto renderInterface = CreateRenderInterface(window, apiName);
     if (!renderInterface) {
         std::cerr << "Failed to create render interface" << std::endl;
         SDL_DestroyWindow(window);
@@ -576,12 +583,23 @@ int main(int argc, char* argv[]) {
     }
 
     RTContext ctx;
-#if defined(__linux__)
+#if PLUME_SDL_VULKAN_ENABLED
+    createContext(ctx, renderInterface.get(), window, apiName);
+#elif defined(__linux__)
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
     createContext(ctx, renderInterface.get(), { wmInfo.info.x11.display, wmInfo.info.x11.window }, apiName);
 #elif defined(__APPLE__)
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
     SDL_MetalView view = SDL_Metal_CreateView(window);
     createContext(ctx, renderInterface.get(), { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) }, apiName);
 #elif defined(_WIN32)
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
     createContext(ctx, renderInterface.get(), { wmInfo.info.win.window }, apiName);
 #endif
 
