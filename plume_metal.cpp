@@ -1775,16 +1775,10 @@ namespace plume {
 
             const MetalShader *shader = static_cast<const MetalShader *>(library.shader);
 
-            // Try to find the RaygenIndirection kernel.
-            // First check if shader has a combined dispatch library (from combined RT metallib).
+            // Get the RaygenIndirection kernel from the dispatch library.
             if (raygenIndirectionFunction == nullptr && shader->dispatchLibrary != nullptr) {
                 NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
                 raygenIndirectionFunction = shader->dispatchLibrary->newFunction(indirectionName);
-            }
-            // Also check the main library (for backwards compatibility with separate dispatch libraries).
-            if (raygenIndirectionFunction == nullptr) {
-                NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
-                raygenIndirectionFunction = shader->library->newFunction(indirectionName);
             }
 
             // Find visible functions from symbols.
