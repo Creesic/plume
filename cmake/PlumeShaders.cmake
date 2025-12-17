@@ -34,6 +34,7 @@
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeFileToC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeDXC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeSpirvCross.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeRootSignature.cmake")
 
 # Initialize shader compilation infrastructure
 # Call this once before using other plume_compile_* functions
@@ -52,6 +53,11 @@ function(plume_shaders_init)
     # Fetch/build spirv-cross on Apple if not already provided
     if(APPLE AND NOT TARGET plume_spirv_cross_msl)
         plume_fetch_spirv_cross()
+    endif()
+
+    # Build root signature generator tool (Apple RT shaders)
+    if(APPLE)
+        plume_build_generate_root_signature()
     endif()
 
     plume_build_file_to_c()
@@ -413,7 +419,7 @@ endfunction()
 #
 # These are linked together at pipeline creation time in the Metal backend.
 function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    cmake_parse_arguments(ARG "" "OUTPUT_DIR;ROOT_SIGNATURE" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+    cmake_parse_arguments(ARG "" "OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
 
     # Check for metal-shaderconverter
     find_program(METAL_SHADER_CONVERTER metal-shaderconverter
@@ -436,11 +442,6 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
     endif()
     file(MAKE_DIRECTORY "${OUT_DIR}")
 
-    # Root signature is required for RT shader conversion
-    if(NOT ARG_ROOT_SIGNATURE)
-        message(FATAL_ERROR "ROOT_SIGNATURE is required for RT shader compilation on Metal. "
-                            "Provide a JSON file describing the root signature.")
-    endif()
 
     # Build include directory flags
     set(INCLUDE_FLAGS "")
@@ -465,6 +466,28 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
         VERBATIM
     )
 
+    # Step 1b: Generate root signature JSON from shader reflection
+    set(ROOT_SIG_FILE "${OUT_DIR}/${OUTPUT_NAME}_root_signature.json")
+    set(REFLECTION_FILE "${OUT_DIR}/${OUTPUT_NAME}_reflection.txt")
+    # Use -Fc (disassembly) which includes resource bindings as text comments
+    add_custom_command(
+        OUTPUT "${ROOT_SIG_FILE}"
+        COMMAND ${DXC_CMD}
+            ${PLUME_DXC_COMMON_OPTS}
+            ${INCLUDE_FLAGS}
+            -T lib_6_3
+            -D RT_SHADER
+            ${ARG_EXTRA_ARGS}
+            -Fc "${REFLECTION_FILE}"
+            "${SHADER_SOURCE}"
+        COMMAND plume_generate_root_signature
+            "${REFLECTION_FILE}"
+            "${ROOT_SIG_FILE}"
+        DEPENDS "${SHADER_SOURCE}" plume_generate_root_signature
+        COMMENT "Generating root signature for RT shader ${OUTPUT_NAME}"
+        VERBATIM
+    )
+
     # Step 2a: Convert DXIL to Metal visible functions (RayGen, ClosestHit, Miss, etc.)
     set(VISIBLE_FUNCS_METALLIB "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib")
     add_custom_command(
@@ -474,8 +497,8 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
             -o "${VISIBLE_FUNCS_METALLIB}"
             --deployment-os=macOS
             --minimum-gpu-family=Metal3
-            --root-signature=${ARG_ROOT_SIGNATURE}
-        DEPENDS "${DXIL_OUTPUT}" "${ARG_ROOT_SIGNATURE}"
+            --root-signature=${ROOT_SIG_FILE}
+        DEPENDS "${DXIL_OUTPUT}" "${ROOT_SIG_FILE}"
         COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal visible functions"
         VERBATIM
     )
@@ -489,10 +512,10 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
             -o "${DISPATCH_METALLIB}"
             --deployment-os=macOS
             --minimum-gpu-family=Metal3
-            --root-signature=${ARG_ROOT_SIGNATURE}
+            --root-signature=${ROOT_SIG_FILE}
             --synthesize-indirect-ray-dispatch
             --synthesize-indirect-intersection-function
-        DEPENDS "${DXIL_OUTPUT}" "${ARG_ROOT_SIGNATURE}"
+        DEPENDS "${DXIL_OUTPUT}" "${ROOT_SIG_FILE}"
         COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal dispatch kernel"
         VERBATIM
     )
@@ -550,7 +573,8 @@ endfunction()
 #   INCLUDE_DIRS <dirs>     - Additional include directories for DXC
 #   EXTRA_ARGS <args>       - Additional DXC arguments
 #   OUTPUT_DIR <dir>        - Custom output directory
-#   ROOT_SIGNATURE <file>   - (Apple only, required) JSON file describing the root signature
+#
+# Note: Root signature is auto-generated from shader reflection (Apple only).
 #
 # Output:
 #   Windows: {OUTPUT_NAME}BlobDXIL in shaders/{OUTPUT_NAME}.hlsl.dxil.h

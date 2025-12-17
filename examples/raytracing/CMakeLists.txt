@@ -33,7 +33,6 @@ plume_compile_rt_shader(plume_raytracing
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytracing.hlsl"
     rtShaders
     SHADER_MODEL 6_3
-    ROOT_SIGNATURE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_root_signature.json"
 )
 
 # Set output directory
