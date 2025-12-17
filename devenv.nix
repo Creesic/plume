@@ -18,9 +18,6 @@
       pkg-config
       git
 
-      # Development tools (system compiler will be used)
-      lldb
-
       # Graphics development dependencies
       vulkan-headers
       vulkan-loader
@@ -52,6 +49,7 @@
       #
       clang
       clang-tools
+      lldb
       libGL
       libxkbcommon
       wayland
@@ -88,44 +86,17 @@
   scripts = {
     configure.exec = ''
       echo "Configuring build with CMake..."
-      ${if pkgs.stdenv.isDarwin then ''
-        # Dynamically find active Xcode path
-        export DEVELOPER_DIR="$(xcode-select -p)"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-        # Clear ALL Nix environment variables that interfere with system toolchain
-        unset CPATH LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_LDFLAGS NIX_CPPFLAGS NIX_CXXSTDLIB_COMPILE \
-              CMAKE_PREFIX_PATH PKG_CONFIG_PATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH
-        echo "Using Xcode: $DEVELOPER_DIR"
-        echo "Using SDK: $SDKROOT"
-        echo "Using MoltenVK from nix: ${pkgs.moltenvk}"
-        # Use system compiler with deployment target for maximumFramesPerSecond support
-        cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPLUME_BUILD_EXAMPLES=ON \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
-          -DCMAKE_OSX_SYSROOT="$SDKROOT" \
-          -DCMAKE_C_COMPILER="/usr/bin/clang" \
-          -DCMAKE_CXX_COMPILER="/usr/bin/clang++" \
-          -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-          -DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
-      '' else ''
-        cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPLUME_BUILD_EXAMPLES=ON
-      ''}
+      cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Debug -DPLUME_BUILD_EXAMPLES=ON
     '';
 
     build.exec = ''
       echo "Building project..."
-      ${if pkgs.stdenv.isDarwin then ''
-        # Dynamically find active Xcode path
-        export DEVELOPER_DIR="$(xcode-select -p)"
-        export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
-        unset CPATH LIBRARY_PATH NIX_CFLAGS_COMPILE NIX_LDFLAGS NIX_CPPFLAGS NIX_CXXSTDLIB_COMPILE \
-              CMAKE_PREFIX_PATH PKG_CONFIG_PATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH
-      '' else ""}
       cmake --build build
     '';
 
     clean.exec = ''
       echo "Cleaning build directory..."
-      rm -rf build build-xcode
+      rm -rf build
     '';
 
     run-triangle.exec = ''
@@ -150,8 +121,19 @@
   };
 
   # https://devenv.sh/languages/
-  languages = {
+  # On macOS we use Xcode's clang via enterShell PATH override
+  languages = lib.optionalAttrs pkgs.stdenv.isLinux {
     c.enable = true;
     cplusplus.enable = true;
   };
+
+  # On macOS, use Xcode toolchain instead of Nix's
+  enterShell = lib.optionalString pkgs.stdenv.isDarwin ''
+    export DEVELOPER_DIR="$(/usr/bin/readlink /var/db/xcode_select_link)"
+    export SDKROOT="$DEVELOPER_DIR/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+    # Use system clang instead of Nix's clang-wrapper
+    export PATH="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/bin:$DEVELOPER_DIR/usr/bin:$PATH"
+    # Use system xcrun instead of Nix's xcbuild version (avoids Metal compiler warnings)
+    export PATH="${pkgs.runCommand "xcrun-wrapper" {} "mkdir -p $out/bin && ln -s /usr/bin/xcrun $out/bin/xcrun"}/bin:$PATH"
+  '';
 }
