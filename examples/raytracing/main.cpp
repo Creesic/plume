@@ -15,9 +15,10 @@
 // Shader blobs
 #ifdef _WIN64
 #include "shaders/rtShaders.hlsl.dxil.h"
-#endif
-#ifdef __APPLE__
+#elif defined(__APPLE__)
 #include "shaders/rtShaders.metallib.h"
+#elif defined(__linux__)
+#include "shaders/rtShaders.hlsl.spirv.h"
 #endif
 
 namespace plume {
@@ -57,17 +58,17 @@ void setIdentity(float* m) {
 // Given NDC (x,y) and z=1 (looking into screen), produces view-space direction
 void setPerspectiveInverse(float* m, float fovY, float aspect, float nearZ, float farZ) {
     (void)nearZ; (void)farZ; // Not needed for ray generation inverse
-    
+
     float tanHalfFov = tanf(fovY * 0.5f);
     memset(m, 0, 16 * sizeof(float));
-    
+
     // For ray generation, we just need to scale NDC to view-space angles
     // The shader does: target = projInverse * float4(ndc.x, ndc.y, 1, 1)
     // then normalizes target.xyz / target.w
     //
     // We want (ndc.x, ndc.y, 1, 1) -> (view_x, view_y, view_z, 1)
     // where view_x = ndc.x * tan(fov/2) * aspect
-    //       view_y = ndc.y * tan(fov/2)  
+    //       view_y = ndc.y * tan(fov/2)
     //       view_z = 1 (forward into screen)
     //       view_w = 1
     m[0] = tanHalfFov * aspect;  // scale x by aspect and fov
@@ -299,7 +300,9 @@ void initializeRayTracing(RTContext& ctx) {
 #ifdef __APPLE__
     ctx.rtShader = ctx.device->createShader(rtShadersBlobMetalLib, rtShadersBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
 #elif defined(_WIN64)
-    ctx.rtShader = ctx.device->createShader(rtShaders_blob, rtShaders_size, nullptr, RenderShaderFormat::DXIL);
+    ctx.rtShader = ctx.device->createShader(rtShadersBlobDXIL, rtShadersBlobDXIL_size, nullptr, RenderShaderFormat::DXIL);
+#elif defined(__linux__)
+    ctx.rtShader = ctx.device->createShader(rtShadersBlobSPIRV, rtShadersBlobSPIRV_size, nullptr, RenderShaderFormat::SPIRV);
 #endif
     ctx.rtShader->setName("RT Shader Library");
 
