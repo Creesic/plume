@@ -405,9 +405,15 @@ function(plume_compile_library_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
 endfunction()
 
 # Internal: Compile a ray tracing shader library using Metal Shader Converter (Apple only)
-# This converts DXIL ray tracing shaders to Metal visible functions
+# This converts DXIL ray tracing shaders to Metal visible functions + dispatch kernel
+#
+# Metal RT compilation requires two metallibs:
+# 1. Visible functions (RayGen, ClosestHit, Miss, etc.) - compiled without --synthesize-indirect-ray-dispatch
+# 2. Dispatch kernel (RaygenIndirection) - compiled with --synthesize-indirect-ray-dispatch
+#
+# These are linked together at pipeline creation time in the Metal backend.
 function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    cmake_parse_arguments(ARG "" "OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+    cmake_parse_arguments(ARG "" "OUTPUT_DIR;ROOT_SIGNATURE" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
 
     # Check for metal-shaderconverter
     find_program(METAL_SHADER_CONVERTER metal-shaderconverter
@@ -430,6 +436,12 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
     endif()
     file(MAKE_DIRECTORY "${OUT_DIR}")
 
+    # Root signature is required for RT shader conversion
+    if(NOT ARG_ROOT_SIGNATURE)
+        message(FATAL_ERROR "ROOT_SIGNATURE is required for RT shader compilation on Metal. "
+                            "Provide a JSON file describing the root signature.")
+    endif()
+
     # Build include directory flags
     set(INCLUDE_FLAGS "")
     foreach(INCLUDE_DIR ${ARG_INCLUDE_DIRS})
@@ -445,7 +457,6 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
             ${INCLUDE_FLAGS}
             -T lib_6_3
             -D RT_SHADER
-            -fspv-target-env=vulkan1.1spirv1.4
             ${ARG_EXTRA_ARGS}
             -Fo "${DXIL_OUTPUT}"
             "${SHADER_SOURCE}"
@@ -454,35 +465,61 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
         VERBATIM
     )
 
-    # Step 2: Convert DXIL to Metal using metal-shaderconverter
-    set(METALLIB_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib")
+    # Step 2a: Convert DXIL to Metal visible functions (RayGen, ClosestHit, Miss, etc.)
+    set(VISIBLE_FUNCS_METALLIB "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib")
     add_custom_command(
-        OUTPUT "${METALLIB_OUTPUT}"
+        OUTPUT "${VISIBLE_FUNCS_METALLIB}"
         COMMAND ${METAL_SHADER_CONVERTER}
             "${DXIL_OUTPUT}"
-            -o "${METALLIB_OUTPUT}"
+            -o "${VISIBLE_FUNCS_METALLIB}"
             --deployment-os=macOS
             --minimum-gpu-family=Metal3
+            --root-signature=${ARG_ROOT_SIGNATURE}
+        DEPENDS "${DXIL_OUTPUT}" "${ARG_ROOT_SIGNATURE}"
+        COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal visible functions"
+        VERBATIM
+    )
+
+    # Step 2b: Convert DXIL to Metal dispatch kernel (RaygenIndirection)
+    set(DISPATCH_METALLIB "${OUT_DIR}/${OUTPUT_NAME}_dispatch.metallib")
+    add_custom_command(
+        OUTPUT "${DISPATCH_METALLIB}"
+        COMMAND ${METAL_SHADER_CONVERTER}
+            "${DXIL_OUTPUT}"
+            -o "${DISPATCH_METALLIB}"
+            --deployment-os=macOS
+            --minimum-gpu-family=Metal3
+            --root-signature=${ARG_ROOT_SIGNATURE}
             --synthesize-indirect-ray-dispatch
             --synthesize-indirect-intersection-function
-            --rt-enable-function-groups
-        DEPENDS "${DXIL_OUTPUT}"
-        COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal"
+        DEPENDS "${DXIL_OUTPUT}" "${ARG_ROOT_SIGNATURE}"
+        COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal dispatch kernel"
         VERBATIM
     )
 
-    # Step 3: Generate C header
-    set(C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.c")
-    set(H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.h")
+    # Step 3a: Generate C header for visible functions
+    set(FUNCS_C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib.c")
+    set(FUNCS_H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib.h")
     add_custom_command(
-        OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
-        COMMAND plume_file_to_c "${METALLIB_OUTPUT}" "${OUTPUT_NAME}BlobMetalLib" "${C_OUTPUT}" "${H_OUTPUT}"
-        DEPENDS "${METALLIB_OUTPUT}" plume_file_to_c
-        COMMENT "Generating C header for RT Metal shader ${OUTPUT_NAME}"
+        OUTPUT "${FUNCS_C_OUTPUT}" "${FUNCS_H_OUTPUT}"
+        COMMAND plume_file_to_c "${VISIBLE_FUNCS_METALLIB}" "${OUTPUT_NAME}FunctionsBlobMetalLib" "${FUNCS_C_OUTPUT}" "${FUNCS_H_OUTPUT}"
+        DEPENDS "${VISIBLE_FUNCS_METALLIB}" plume_file_to_c
+        COMMENT "Generating C header for RT visible functions ${OUTPUT_NAME}"
         VERBATIM
     )
 
-    target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
+    # Step 3b: Generate C header for dispatch kernel
+    set(DISPATCH_C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_dispatch.metallib.c")
+    set(DISPATCH_H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_dispatch.metallib.h")
+    add_custom_command(
+        OUTPUT "${DISPATCH_C_OUTPUT}" "${DISPATCH_H_OUTPUT}"
+        COMMAND plume_file_to_c "${DISPATCH_METALLIB}" "${OUTPUT_NAME}DispatchBlobMetalLib" "${DISPATCH_C_OUTPUT}" "${DISPATCH_H_OUTPUT}"
+        DEPENDS "${DISPATCH_METALLIB}" plume_file_to_c
+        COMMENT "Generating C header for RT dispatch kernel ${OUTPUT_NAME}"
+        VERBATIM
+    )
+
+    target_sources(${TARGET_NAME} PRIVATE "${FUNCS_C_OUTPUT}" "${DISPATCH_C_OUTPUT}")
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
 
@@ -509,14 +546,16 @@ endfunction()
 #   OUTPUT_NAME - Base name for output files
 #
 # Options:
-#   SHADER_MODEL <ver>   - Shader model version (default: 6_3)
-#   INCLUDE_DIRS <dirs>  - Additional include directories for DXC
-#   EXTRA_ARGS <args>    - Additional DXC arguments
-#   OUTPUT_DIR <dir>     - Custom output directory
+#   SHADER_MODEL <ver>      - Shader model version (default: 6_3)
+#   INCLUDE_DIRS <dirs>     - Additional include directories for DXC
+#   EXTRA_ARGS <args>       - Additional DXC arguments
+#   OUTPUT_DIR <dir>        - Custom output directory
+#   ROOT_SIGNATURE <file>   - (Apple only, required) JSON file describing the root signature
 #
 # Output:
-#   Windows: {OUTPUT_NAME}_blob in shaders/{OUTPUT_NAME}.hlsl.dxil.h
-#   Apple:   {OUTPUT_NAME}BlobMetalLib in shaders/{OUTPUT_NAME}.metallib.h
+#   Windows: {OUTPUT_NAME}BlobDXIL in shaders/{OUTPUT_NAME}.hlsl.dxil.h
+#   Apple:   {OUTPUT_NAME}FunctionsBlobMetalLib in shaders/{OUTPUT_NAME}_functions.metallib.h
+#            {OUTPUT_NAME}DispatchBlobMetalLib in shaders/{OUTPUT_NAME}_dispatch.metallib.h
 function(plume_compile_rt_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     if(WIN32)
         plume_compile_library_shader(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME} ${ARGN})

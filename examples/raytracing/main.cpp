@@ -17,7 +17,9 @@
 #include "shaders/rtShaders.hlsl.dxil.h"
 #endif
 #ifdef __APPLE__
-#include "shaders/rtShaders.metallib.h"
+// Metal RT requires two metallibs: visible functions + dispatch kernel
+#include "shaders/rtShaders_functions.metallib.h"
+#include "shaders/rtShaders_dispatch.metallib.h"
 #endif
 
 namespace plume {
@@ -53,15 +55,27 @@ void setIdentity(float* m) {
     m[0] = m[5] = m[10] = m[15] = 1.0f;
 }
 
-// Simple perspective inverse matrix for camera
+// Inverse perspective projection matrix for ray generation
+// Given NDC (x,y) and z=1 (looking into screen), produces view-space direction
 void setPerspectiveInverse(float* m, float fovY, float aspect, float nearZ, float farZ) {
+    (void)nearZ; (void)farZ; // Not needed for ray generation inverse
+    
     float tanHalfFov = tanf(fovY * 0.5f);
     memset(m, 0, 16 * sizeof(float));
-    m[0] = tanHalfFov * aspect;
-    m[5] = tanHalfFov;
-    m[11] = 1.0f;
-    m[14] = (nearZ - farZ) / (2.0f * farZ * nearZ);
-    m[15] = (nearZ + farZ) / (2.0f * farZ * nearZ);
+    
+    // For ray generation, we just need to scale NDC to view-space angles
+    // The shader does: target = projInverse * float4(ndc.x, ndc.y, 1, 1)
+    // then normalizes target.xyz / target.w
+    //
+    // We want (ndc.x, ndc.y, 1, 1) -> (view_x, view_y, view_z, 1)
+    // where view_x = ndc.x * tan(fov/2) * aspect
+    //       view_y = ndc.y * tan(fov/2)  
+    //       view_z = 1 (forward into screen)
+    //       view_w = 1
+    m[0] = tanHalfFov * aspect;  // scale x by aspect and fov
+    m[5] = tanHalfFov;            // scale y by fov
+    m[10] = 1.0f;                 // z passes through
+    m[15] = 1.0f;                 // w = 1
 }
 
 // Simple look-at inverse (view inverse) matrix
@@ -95,7 +109,8 @@ struct RTContext {
     std::unique_ptr<RenderBuffer> sbtBuffer;
     std::unique_ptr<RenderAccelerationStructure> blas;
     std::unique_ptr<RenderAccelerationStructure> tlas;
-    std::unique_ptr<RenderShader> rtShader;
+    std::unique_ptr<RenderShader> rtFunctionsShader;  // Visible functions (RayGen, ClosestHit, Miss)
+    std::unique_ptr<RenderShader> rtDispatchShader;   // Dispatch kernel (RaygenIndirection) - Metal only
     std::unique_ptr<RenderPipeline> rtPipeline;
     std::unique_ptr<RenderPipelineLayout> rtPipelineLayout;
     std::unique_ptr<RenderTexture> outputTexture;
@@ -191,11 +206,13 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderBottomLevelASBuildInfo blasBuildInfo;
     ctx.device->setBottomLevelASBuildInfo(blasBuildInfo, &mesh, 1, false, true);
+    std::cout << "  BLAS size: " << blasBuildInfo.accelerationStructureSize << ", scratch: " << blasBuildInfo.scratchSize << std::endl;
 
     RenderAccelerationStructureDesc blasDesc;
     blasDesc.type = RenderAccelerationStructureType::BOTTOM_LEVEL;
     blasDesc.size = blasBuildInfo.accelerationStructureSize;
     ctx.blas = ctx.device->createAccelerationStructure(blasDesc);
+    std::cout << "  BLAS created: " << ctx.blas.get() << std::endl;
 
     // Create scratch buffer for BLAS build
     RenderBufferDesc scratchDesc = RenderBufferDesc::DefaultBuffer(blasBuildInfo.scratchSize);
@@ -231,11 +248,14 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderTopLevelASBuildInfo tlasBuildInfo;
     ctx.device->setTopLevelASBuildInfo(tlasBuildInfo, &instance, 1, false, true);
+    std::cout << "  TLAS size: " << tlasBuildInfo.accelerationStructureSize << ", scratch: " << tlasBuildInfo.scratchSize << std::endl;
+    std::cout << "  Instance buffer data size: " << tlasBuildInfo.instancesBufferData.size() << std::endl;
 
     RenderAccelerationStructureDesc tlasDesc;
     tlasDesc.type = RenderAccelerationStructureType::TOP_LEVEL;
     tlasDesc.size = tlasBuildInfo.accelerationStructureSize;
     ctx.tlas = ctx.device->createAccelerationStructure(tlasDesc);
+    std::cout << "  TLAS created: " << ctx.tlas.get() << std::endl;
 
     // Create instance buffer
     RenderBufferDesc instanceBufDesc = RenderBufferDesc::UploadBuffer(tlasBuildInfo.instancesBufferData.size());
@@ -271,13 +291,17 @@ void initializeRayTracing(RTContext& ctx) {
     ctx.constantBuffer = ctx.device->createBuffer(cbDesc);
     ctx.constantBuffer->setName("Camera Constants");
 
-    // 6. Create RT shader
+    // 6. Create RT shaders
 #ifdef __APPLE__
-    ctx.rtShader = ctx.device->createShader(rtShadersBlobMetalLib, rtShadersBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
+    // Metal requires two shader libraries: visible functions + dispatch kernel
+    ctx.rtFunctionsShader = ctx.device->createShader(rtShadersFunctionsBlobMetalLib, rtShadersFunctionsBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
+    ctx.rtFunctionsShader->setName("RT Visible Functions");
+    ctx.rtDispatchShader = ctx.device->createShader(rtShadersDispatchBlobMetalLib, rtShadersDispatchBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
+    ctx.rtDispatchShader->setName("RT Dispatch Kernel");
 #elif defined(_WIN64)
-    ctx.rtShader = ctx.device->createShader(rtShaders_blob, rtShaders_size, nullptr, RenderShaderFormat::DXIL);
+    ctx.rtFunctionsShader = ctx.device->createShader(rtShaders_blob, rtShaders_size, nullptr, RenderShaderFormat::DXIL);
+    ctx.rtFunctionsShader->setName("RT Shader Library");
 #endif
-    ctx.rtShader->setName("RT Shader Library");
 
     // 7. Create pipeline layout with descriptors for: output texture (UAV), TLAS (SRV), constants (CBV)
     std::vector<RenderDescriptorRange> ranges;
@@ -300,16 +324,29 @@ void initializeRayTracing(RTContext& ctx) {
     ctx.rtPipelineLayout = ctx.device->createPipelineLayout(layoutDesc);
 
     // 8. Create RT pipeline
-    RenderRaytracingPipelineLibrarySymbol symbols[] = {
+    RenderRaytracingPipelineLibrarySymbol functionsSymbols[] = {
         RenderRaytracingPipelineLibrarySymbol("RayGen", RenderRaytracingPipelineLibrarySymbolType::RAYGEN, "RayGen"),
         RenderRaytracingPipelineLibrarySymbol("ClosestHit", RenderRaytracingPipelineLibrarySymbolType::CLOSEST_HIT, "ClosestHit"),
         RenderRaytracingPipelineLibrarySymbol("Miss", RenderRaytracingPipelineLibrarySymbolType::MISS, "Miss")
     };
 
-    RenderRaytracingPipelineLibrary library;
-    library.shader = ctx.rtShader.get();
-    library.symbols = symbols;
-    library.symbolsCount = 3;
+    // Set up libraries - Metal needs both functions and dispatch, D3D12 just needs functions
+    std::vector<RenderRaytracingPipelineLibrary> libraries;
+    
+    RenderRaytracingPipelineLibrary functionsLibrary;
+    functionsLibrary.shader = ctx.rtFunctionsShader.get();
+    functionsLibrary.symbols = functionsSymbols;
+    functionsLibrary.symbolsCount = 3;
+    libraries.push_back(functionsLibrary);
+
+#ifdef __APPLE__
+    // Metal also needs the dispatch kernel library (no symbols - it's the compute kernel)
+    RenderRaytracingPipelineLibrary dispatchLibrary;
+    dispatchLibrary.shader = ctx.rtDispatchShader.get();
+    dispatchLibrary.symbols = nullptr;
+    dispatchLibrary.symbolsCount = 0;
+    libraries.push_back(dispatchLibrary);
+#endif
 
     RenderRaytracingPipelineHitGroup hitGroup;
     hitGroup.hitGroupName = "HitGroup";
@@ -318,8 +355,8 @@ void initializeRayTracing(RTContext& ctx) {
     hitGroup.intersectionName = nullptr;
 
     RenderRaytracingPipelineDesc rtPipelineDesc;
-    rtPipelineDesc.libraries = &library;
-    rtPipelineDesc.librariesCount = 1;
+    rtPipelineDesc.libraries = libraries.data();
+    rtPipelineDesc.librariesCount = static_cast<uint32_t>(libraries.size());
     rtPipelineDesc.hitGroups = &hitGroup;
     rtPipelineDesc.hitGroupsCount = 1;
     rtPipelineDesc.pipelineLayout = ctx.rtPipelineLayout.get();
@@ -334,6 +371,9 @@ void initializeRayTracing(RTContext& ctx) {
     RenderPipelineProgram raygenProgram = ctx.rtPipeline->getProgram("RayGen");
     RenderPipelineProgram missProgram = ctx.rtPipeline->getProgram("Miss");
     RenderPipelineProgram hitGroupProgram = ctx.rtPipeline->getProgram("HitGroup");
+    std::cout << "  Program indices - RayGen: " << raygenProgram.programIndex 
+              << ", Miss: " << missProgram.programIndex 
+              << ", HitGroup: " << hitGroupProgram.programIndex << std::endl;
 
     RenderShaderBindingGroup raygenGroup(&raygenProgram, 1);
     RenderShaderBindingGroup missGroup(&missProgram, 1);
@@ -341,6 +381,10 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderShaderBindingGroups sbtGroups(raygenGroup, missGroup, hitGroupGroup);
     ctx.device->setShaderBindingTableInfo(ctx.sbtInfo, sbtGroups, ctx.rtPipeline.get(), nullptr, 0);
+    std::cout << "  SBT table size: " << ctx.sbtInfo.tableBufferData.size() << std::endl;
+    std::cout << "  SBT groups - raygen offset: " << ctx.sbtInfo.groups.rayGen.offset 
+              << ", miss offset: " << ctx.sbtInfo.groups.miss.offset 
+              << ", hitGroup offset: " << ctx.sbtInfo.groups.hitGroup.offset << std::endl;
 
     // Create SBT buffer and upload data
     RenderBufferDesc sbtBufDesc = RenderBufferDesc::UploadBuffer(ctx.sbtInfo.tableBufferData.size());

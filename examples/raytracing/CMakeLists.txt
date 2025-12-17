@@ -28,10 +28,12 @@ target_include_directories(plume_raytracing PRIVATE
 # Compile ray tracing shaders for the current platform
 # - D3D12 (Windows): HLSL -> DXIL library shader
 # - Metal (Apple): HLSL -> DXIL -> metallib via Metal Shader Converter
+#   Produces two metallibs: visible functions + dispatch kernel
 plume_compile_rt_shader(plume_raytracing
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytracing.hlsl"
     rtShaders
     SHADER_MODEL 6_3
+    ROOT_SIGNATURE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_root_signature.json"
 )
 
 # Set output directory

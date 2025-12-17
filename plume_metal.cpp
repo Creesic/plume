@@ -1667,17 +1667,18 @@ namespace plume {
 
     // MetalRaytracingPipeline
     //
-    // When using Metal Shader Converter with --synthesize-indirect-ray-dispatch,
-    // all RT shaders (raygen, closesthit, miss, etc.) are compiled into a single
-    // function group within the RaygenIndirection compute kernel. The visible
-    // functions are NOT exported as separate MTL::Function objects - they are
-    // embedded as a function group that the kernel invokes based on the shader
-    // binding table indices stored in IRShaderIdentifier structures.
+    // Metal RT pipeline creation with Metal Shader Converter output:
     //
-    // The shader identifiers in the SBT contain function indices that the
-    // RaygenIndirection kernel uses to call the appropriate visible function
-    // from the VFT. We don't create the VFT manually - the pipeline automatically
-    // creates it from the function group metadata.
+    // Metal Shader Converter produces two metallibs:
+    // 1. Visible functions library: Contains RayGen, ClosestHit, Miss, etc. as visible functions
+    // 2. Dispatch kernel library: Contains RaygenIndirection compute kernel
+    //
+    // We need to:
+    // 1. Find the RaygenIndirection kernel function
+    // 2. Find all visible functions (RayGen, ClosestHit, Miss)
+    // 3. Link them together via MTL::LinkedFunctions
+    // 4. Create the compute pipeline
+    // 5. Create VFT and populate it with function handles from the pipeline
 
     MetalRaytracingPipeline::MetalRaytracingPipeline(MetalDevice *device, const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) : MetalPipeline(device, Type::Raytracing) {
         assert(device != nullptr);
@@ -1692,41 +1693,50 @@ namespace plume {
         NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
 
         MTL::Function *raygenIndirectionFunction = nullptr;
+        std::vector<MTL::Function *> visibleFunctions;
+        std::vector<std::string> visibleFunctionNames;
 
-        // With Metal Shader Converter's synthesized indirect dispatch model,
-        // we only need to find the RaygenIndirection kernel. All RT shader
-        // functions are embedded as a function group within it.
+        // Scan all libraries to find the dispatch kernel and visible functions.
         for (uint32_t i = 0; i < desc.librariesCount; i++) {
             const RenderRaytracingPipelineLibrary &library = desc.libraries[i];
             assert(library.shader != nullptr);
 
             const MetalShader *shader = static_cast<const MetalShader *>(library.shader);
 
-            // Look for the RaygenIndirection kernel (synthesized by Metal Shader Converter).
+            // Try to find the RaygenIndirection kernel (from dispatch library).
             if (raygenIndirectionFunction == nullptr) {
                 NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
                 raygenIndirectionFunction = shader->library->newFunction(indirectionName);
             }
 
-            // Map symbol names to program indices.
-            // The indices correspond to the order of shaders in the HLSL file:
-            // - Index 1: First raygen shader
-            // - Index 2: First closesthit/miss shader after raygen
-            // - etc.
-            // For Metal Shader Converter, the shader order in the DXIL determines the index.
+            // Find visible functions from symbols.
             for (uint32_t j = 0; j < library.symbolsCount; j++) {
                 const RenderRaytracingPipelineLibrarySymbol &symbol = library.symbols[j];
-                const char *exportName = (symbol.exportName != nullptr) ? symbol.exportName : symbol.importName;
-                // Assign indices starting at 1 (index 0 is reserved/null).
-                uint32_t functionIndex = j + 1;
-                nameProgramMap[std::string(exportName)] = functionIndex;
+                const char *functionName = symbol.importName;
+
+                NS::String *funcName = NS::String::string(functionName, NS::UTF8StringEncoding);
+                MTL::Function *func = shader->library->newFunction(funcName);
+
+                if (func != nullptr) {
+                    // Assign VFT index starting at 1 (index 0 is reserved/null function).
+                    uint32_t vftIndex = static_cast<uint32_t>(visibleFunctions.size()) + 1;
+                    visibleFunctions.push_back(func);
+                    visibleFunctionNames.push_back(functionName);
+
+                    // Map both import and export names to the VFT index.
+                    nameProgramMap[std::string(functionName)] = vftIndex;
+                    if (symbol.exportName != nullptr && symbol.exportName != symbol.importName) {
+                        nameProgramMap[std::string(symbol.exportName)] = vftIndex;
+                    }
+                } else {
+                    fprintf(stderr, "Warning: Could not find visible function '%s' in shader library.\n", functionName);
+                }
             }
         }
 
-        // Also map hit groups to program indices.
+        // Map hit groups to their closest hit shader's VFT index.
         for (uint32_t i = 0; i < desc.hitGroupsCount; i++) {
             const RenderRaytracingPipelineHitGroup &hitGroup = desc.hitGroups[i];
-            // For hit groups, use the closest hit shader's index.
             if (hitGroup.closestHitName != nullptr) {
                 auto it = nameProgramMap.find(std::string(hitGroup.closestHitName));
                 if (it != nameProgramMap.end()) {
@@ -1737,15 +1747,26 @@ namespace plume {
 
         if (raygenIndirectionFunction == nullptr) {
             fprintf(stderr, "Failed to find RaygenIndirection function. Make sure the shader was compiled with Metal Shader Converter using --synthesize-indirect-ray-dispatch.\n");
+            for (auto func : visibleFunctions) { func->release(); }
             releasePool->release();
             return;
         }
 
+        if (visibleFunctions.empty()) {
+            fprintf(stderr, "Warning: No visible functions found. Make sure visible functions library is provided.\n");
+        }
+
+        // Create linked functions descriptor with all visible functions.
+        MTL::LinkedFunctions *linkedFunctions = MTL::LinkedFunctions::alloc()->init();
+        if (!visibleFunctions.empty()) {
+            NS::Array *functionsArray = NS::Array::array((NS::Object **)visibleFunctions.data(), visibleFunctions.size());
+            linkedFunctions->setFunctions(functionsArray);
+        }
+
         // Create the compute pipeline descriptor.
-        // No need to set linked functions - with synthesized indirect dispatch,
-        // the function group is already embedded in the RaygenIndirection kernel.
         MTL::ComputePipelineDescriptor *pipelineDesc = MTL::ComputePipelineDescriptor::alloc()->init();
         pipelineDesc->setComputeFunction(raygenIndirectionFunction);
+        pipelineDesc->setLinkedFunctions(linkedFunctions);
         pipelineDesc->setMaxCallStackDepth(desc.maxRecursionDepth + 1);
 
         // Create the compute pipeline state.
@@ -1755,34 +1776,46 @@ namespace plume {
         if (error != nullptr || computePipeline == nullptr) {
             fprintf(stderr, "Failed to create raytracing compute pipeline: %s\n",
                     error ? error->localizedDescription()->utf8String() : "unknown error");
+            for (auto func : visibleFunctions) { func->release(); }
+            raygenIndirectionFunction->release();
+            linkedFunctions->release();
+            pipelineDesc->release();
             releasePool->release();
             return;
         }
 
-        // With synthesized indirect dispatch, the VFT and IFT are created from
-        // the function group metadata in the metallib. We need to query the
-        // pipeline for these tables.
-        //
-        // The function group metadata tells us how many functions are in each table.
-        // For now, we create tables based on the symbol count provided.
-        uint32_t totalSymbols = 0;
-        for (uint32_t i = 0; i < desc.librariesCount; i++) {
-            totalSymbols += desc.libraries[i].symbolsCount;
-        }
-
-        if (totalSymbols > 0) {
+        // Create and populate the Visible Function Table.
+        // VFT indices: 0 = null/reserved, 1+ = visible functions
+        if (!visibleFunctions.empty()) {
             MTL::VisibleFunctionTableDescriptor *vftDesc = MTL::VisibleFunctionTableDescriptor::alloc()->init();
-            // The function group in synthesized indirect dispatch already has the
-            // functions at their correct indices. We create a VFT large enough to
-            // hold all of them plus the reserved index 0.
-            vftDesc->setFunctionCount(static_cast<NS::UInteger>(totalSymbols) + 1);
+            vftDesc->setFunctionCount(visibleFunctions.size() + 1); // +1 for null at index 0
 
             visibleFunctionTable = computePipeline->newVisibleFunctionTable(vftDesc);
+            if (visibleFunctionTable == nullptr) {
+                fprintf(stderr, "Failed to create visible function table.\n");
+            } else {
+                // Populate VFT with function handles from the pipeline.
+                for (size_t i = 0; i < visibleFunctions.size(); i++) {
+                    MTL::FunctionHandle *handle = computePipeline->functionHandle(visibleFunctions[i]);
+                    if (handle != nullptr) {
+                        // VFT index is i+1 (index 0 is null).
+                        visibleFunctionTable->setFunction(handle, i + 1);
+                    } else {
+                        fprintf(stderr, "Warning: Could not get function handle for '%s'.\n", visibleFunctionNames[i].c_str());
+                    }
+                }
+            }
             vftDesc->release();
         }
 
+        fprintf(stderr, "RT Pipeline created: %zu visible functions linked, VFT %s.\n",
+                visibleFunctions.size(),
+                visibleFunctionTable ? "created" : "not created");
+
         // Release resources.
+        for (auto func : visibleFunctions) { func->release(); }
         raygenIndirectionFunction->release();
+        linkedFunctions->release();
         pipelineDesc->release();
         releasePool->release();
     }
@@ -1975,7 +2008,39 @@ namespace plume {
     }
 
     void MetalDescriptorSet::setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) {
-        // TODO: Unimplemented.
+        if (accelerationStructure == nullptr) {
+            // Clear the entry
+            if (descriptorIndex < resourceEntries.size()) {
+                if (resourceEntries[descriptorIndex].resource != nullptr) {
+                    resourceEntries[descriptorIndex].resource->release();
+                    resourceEntries[descriptorIndex].resource = nullptr;
+                }
+                resourceEntries[descriptorIndex].type = RenderDescriptorRangeType::UNKNOWN;
+            }
+            return;
+        }
+
+        const MetalAccelerationStructure *metalAS = static_cast<const MetalAccelerationStructure *>(accelerationStructure);
+        
+        // Store the acceleration structure in resourceEntries for later use during traceRays
+        if (descriptorIndex < resourceEntries.size()) {
+            // Release old resource if any
+            if (resourceEntries[descriptorIndex].resource != nullptr) {
+                resourceEntries[descriptorIndex].resource->release();
+            }
+            
+            // Store as MTL::Resource (MTL::AccelerationStructure inherits from MTL::Resource)
+            resourceEntries[descriptorIndex].resource = metalAS->mtl;
+            resourceEntries[descriptorIndex].type = RenderDescriptorRangeType::ACCELERATION_STRUCTURE;
+            metalAS->mtl->retain();
+            
+            // Add to residency set if available
+            if (residencySet != nullptr) {
+                std::lock_guard lock(residencySetWriteMutex);
+                residencySet->addAllocation(metalAS->mtl);
+                needsCommit = true;
+            }
+        }
     }
 
     void MetalDescriptorSet::setDescriptor(const uint32_t descriptorIndex, const Descriptor *descriptor) {
@@ -2663,13 +2728,101 @@ namespace plume {
         // Set the raytracing compute pipeline.
         activeComputeEncoder->setComputePipelineState(activeRaytracingPipeline->computePipeline);
 
-        // Bind descriptor sets for raytracing.
-        for (auto* descriptorSet : raytracingDescriptorSets) {
-            if (descriptorSet) {
-                descriptorSet->commit();
+        // Get the first descriptor set (set 0) which contains our RT resources
+        const MetalDescriptorSet* descriptorSet = raytracingDescriptorSets[0];
+        
+        // Build the TLAB (Top-Level Argument Buffer) for Metal Shader Converter runtime.
+        // The TLAB contains GPU addresses for each root parameter, matching the root signature layout.
+        // Our root signature has: [0] UAV descriptor table, [1] SRV (TLAS), [2] CBV (constants)
+        //
+        // Following Apple's RaytracingWithIFB sample pattern:
+        // 1. Create buffers for descriptor table entries and AS header
+        // 2. Build TLAB with GPU addresses pointing to these buffers
+        // 3. Set dispatchArgs.GRS to TLAB's GPU address
+        
+        // Collect resources from descriptor set
+        MTL::Texture* outputTexture = nullptr;
+        MTL::AccelerationStructure* tlas = nullptr;
+        MTL::Buffer* constantBuffer = nullptr;
+        
+        if (descriptorSet != nullptr) {
+            for (size_t i = 0; i < descriptorSet->resourceEntries.size(); i++) {
+                const auto& entry = descriptorSet->resourceEntries[i];
+                if (entry.resource == nullptr) continue;
+                
+                switch (entry.type) {
+                    case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
+                    case RenderDescriptorRangeType::TEXTURE:
+                        outputTexture = static_cast<MTL::Texture*>(entry.resource);
+                        break;
+                    case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
+                        tlas = static_cast<MTL::AccelerationStructure*>(entry.resource);
+                        break;
+                    case RenderDescriptorRangeType::CONSTANT_BUFFER:
+                        constantBuffer = static_cast<MTL::Buffer*>(entry.resource);
+                        break;
+                    default:
+                        break;
+                }
             }
         }
-        activeRaytracingPipelineLayout->bindDescriptorSets(activeComputeEncoder, raytracingDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, true, 0, currentEncoderDescriptorSets, mtl);
+        
+        // Create temporary buffers for Metal Shader Converter runtime structures.
+        // These buffers are created per-frame and will be autoreleased.
+        // In a production implementation, these should be pooled/cached.
+        
+        MTL::Device* device = queue->device->mtl;
+        
+        // Buffer 0: UAV descriptor table (IRDescriptorTableEntry for output texture)
+        MTL::Buffer* uavTableBuffer = nullptr;
+        if (outputTexture != nullptr) {
+            IRDescriptorTableEntry uavEntry = {};
+            IRDescriptorTableSetTexture(&uavEntry, outputTexture, 0, 0);
+            uavTableBuffer = device->newBuffer(&uavEntry, sizeof(uavEntry), MTL::ResourceStorageModeShared);
+            activeComputeEncoder->useResource(outputTexture, MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
+            activeComputeEncoder->useResource(uavTableBuffer, MTL::ResourceUsageRead);
+        }
+        
+        // Buffer 1: SRV for acceleration structure (IRRaytracingAccelerationStructureGPUHeader)
+        MTL::Buffer* asSrvBuffer = nullptr;
+        if (tlas != nullptr) {
+            // Size: header + instance contributions (1 instance for our simple case)
+            size_t asSrvSize = sizeof(IRRaytracingAccelerationStructureGPUHeader) + sizeof(uint32_t);
+            asSrvBuffer = device->newBuffer(asSrvSize, MTL::ResourceStorageModeShared);
+            
+            IRRaytracingAccelerationStructureGPUHeader* header = 
+                static_cast<IRRaytracingAccelerationStructureGPUHeader*>(asSrvBuffer->contents());
+            header->accelerationStructureID = tlas->gpuResourceID()._impl;
+            header->addressOfInstanceContributions = asSrvBuffer->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
+            
+            // Instance contribution for our single instance (index 0)
+            uint32_t* instanceContributions = reinterpret_cast<uint32_t*>(
+                static_cast<uint8_t*>(asSrvBuffer->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
+            instanceContributions[0] = 0;
+            
+            activeComputeEncoder->useResource(tlas, MTL::ResourceUsageRead);
+            activeComputeEncoder->useResource(asSrvBuffer, MTL::ResourceUsageRead);
+        }
+        
+        // Buffer 2: CBV is just the constant buffer's GPU address (no wrapper needed for root CBV)
+        uint64_t cbvAddress = 0;
+        if (constantBuffer != nullptr) {
+            cbvAddress = constantBuffer->gpuAddress();
+            activeComputeEncoder->useResource(constantBuffer, MTL::ResourceUsageRead);
+        }
+        
+        // Build TLAB: array of GPU addresses matching root signature parameter order
+        // [0] = UAV descriptor table GPU address
+        // [1] = AS SRV buffer GPU address  
+        // [2] = CBV direct GPU address
+        uint64_t tlab[3] = {
+            uavTableBuffer ? uavTableBuffer->gpuAddress() : 0,
+            asSrvBuffer ? asSrvBuffer->gpuAddress() : 0,
+            cbvAddress
+        };
+        
+        MTL::Buffer* tlabBuffer = device->newBuffer(tlab, sizeof(tlab), MTL::ResourceStorageModeShared);
+        activeComputeEncoder->useResource(tlabBuffer, MTL::ResourceUsageRead);
 
         // Bind push constants for raytracing.
         for (const PushConstantData &pushConstant : pushConstants) {
@@ -2714,15 +2867,14 @@ namespace plume {
         dispatchDesc.Depth = depth;
 
         // Build the IRDispatchRaysArgument structure.
-        // Note: For the minimal case, we set GRS/ResDescHeap/SmpDescHeap to 0 (handled by descriptor sets).
         IRDispatchRaysArgument dispatchArgs = {};
         dispatchArgs.DispatchRaysDesc = dispatchDesc;
-        dispatchArgs.GRS = 0; // Global root signature - handled via descriptor sets.
-        dispatchArgs.ResDescHeap = 0; // Resource descriptor heap - handled via descriptor sets.
-        dispatchArgs.SmpDescHeap = 0; // Sampler descriptor heap - handled via descriptor sets.
+        dispatchArgs.GRS = tlabBuffer->gpuAddress();  // TLAB contains root parameter GPU addresses
+        dispatchArgs.ResDescHeap = 0;  // Not using bindless resource heap
+        dispatchArgs.SmpDescHeap = 0;  // Not using sampler heap
         dispatchArgs.VisibleFunctionTable = activeRaytracingPipeline->visibleFunctionTable ? activeRaytracingPipeline->visibleFunctionTable->gpuResourceID() : MTL::ResourceID{0};
         dispatchArgs.IntersectionFunctionTable = activeRaytracingPipeline->intersectionFunctionTable ? activeRaytracingPipeline->intersectionFunctionTable->gpuResourceID() : MTL::ResourceID{0};
-        dispatchArgs.IntersectionFunctionTables = 0; // Multiple IFTs not supported yet.
+        dispatchArgs.IntersectionFunctionTables = 0;
 
         // Bind the dispatch arguments at the expected bind point.
         activeComputeEncoder->setBytes(&dispatchArgs, sizeof(dispatchArgs), kIRRayDispatchArgumentsBindPoint);
@@ -2751,8 +2903,13 @@ namespace plume {
 
         activeComputeEncoder->dispatchThreadgroups(threadGroupCount, threadGroupSize);
 
-        // Resource tracking for encoder.
-        bindEncoderResources(activeComputeEncoder, true);
+        // Note: Temporary buffers (uavTableBuffer, asSrvBuffer, tlabBuffer) are NOT released here.
+        // Metal retains resources referenced by the command encoder/buffer until completion.
+        // These buffers will be autoreleased when the autorelease pool is drained.
+        // For a production implementation, these should be managed via a ring buffer or pool.
+        if (uavTableBuffer) uavTableBuffer->autorelease();
+        if (asSrvBuffer) asSrvBuffer->autorelease();
+        if (tlabBuffer) tlabBuffer->autorelease();
 #else
         (void)width; (void)height; (void)depth; (void)shaderBindingTable; (void)shaderBindingGroupsInfo;
         fprintf(stderr, "Ray tracing not supported: Metal Shader Converter runtime not available.\n");
