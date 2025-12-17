@@ -103,7 +103,9 @@ struct RTContext {
     bool rtSupported = false;
     std::unique_ptr<RenderBuffer> vertexBuffer;
     std::unique_ptr<RenderBuffer> indexBuffer;
+    std::unique_ptr<RenderBuffer> blasBuffer;
     std::unique_ptr<RenderBuffer> blasScratchBuffer;
+    std::unique_ptr<RenderBuffer> tlasBuffer;
     std::unique_ptr<RenderBuffer> tlasScratchBuffer;
     std::unique_ptr<RenderBuffer> instanceBuffer;
     std::unique_ptr<RenderBuffer> sbtBuffer;
@@ -205,8 +207,15 @@ void initializeRayTracing(RTContext& ctx) {
     RenderBottomLevelASBuildInfo blasBuildInfo;
     ctx.device->setBottomLevelASBuildInfo(blasBuildInfo, &mesh, 1, false, true);
 
+    // Create buffer to back the BLAS (required for Vulkan/D3D12, ignored by Metal)
+    RenderBufferDesc blasBufDesc = RenderBufferDesc::DefaultBuffer(blasBuildInfo.accelerationStructureSize);
+    blasBufDesc.flags = RenderBufferFlag::ACCELERATION_STRUCTURE;
+    ctx.blasBuffer = ctx.device->createBuffer(blasBufDesc);
+    ctx.blasBuffer->setName("BLAS Buffer");
+
     RenderAccelerationStructureDesc blasDesc;
     blasDesc.type = RenderAccelerationStructureType::BOTTOM_LEVEL;
+    blasDesc.buffer = ctx.blasBuffer->at(0);
     blasDesc.size = blasBuildInfo.accelerationStructureSize;
     ctx.blas = ctx.device->createAccelerationStructure(blasDesc);
 
@@ -243,8 +252,15 @@ void initializeRayTracing(RTContext& ctx) {
     RenderTopLevelASBuildInfo tlasBuildInfo;
     ctx.device->setTopLevelASBuildInfo(tlasBuildInfo, &instance, 1, false, true);
 
+    // Create buffer to back the TLAS (required for Vulkan/D3D12, ignored by Metal)
+    RenderBufferDesc tlasBufDesc = RenderBufferDesc::DefaultBuffer(tlasBuildInfo.accelerationStructureSize);
+    tlasBufDesc.flags = RenderBufferFlag::ACCELERATION_STRUCTURE;
+    ctx.tlasBuffer = ctx.device->createBuffer(tlasBufDesc);
+    ctx.tlasBuffer->setName("TLAS Buffer");
+
     RenderAccelerationStructureDesc tlasDesc;
     tlasDesc.type = RenderAccelerationStructureType::TOP_LEVEL;
+    tlasDesc.buffer = ctx.tlasBuffer->at(0);
     tlasDesc.size = tlasBuildInfo.accelerationStructureSize;
     ctx.tlas = ctx.device->createAccelerationStructure(tlasDesc);
 

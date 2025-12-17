@@ -1149,6 +1149,13 @@ namespace plume {
         this->desc = desc;
         this->device = device;
 
+        // Metal manages acceleration structure storage internally, so buffers with
+        // ACCELERATION_STRUCTURE flag don't need actual GPU memory allocation.
+        if (desc.flags & RenderBufferFlag::ACCELERATION_STRUCTURE) {
+            this->mtl = nullptr;
+            return;
+        }
+
         this->mtl = device->mtl->newBuffer(desc.size, mapResourceOption(desc.heapType));
 
         if (desc.flags & RenderBufferFlag::DEVICE_ADDRESSABLE) {
@@ -1164,6 +1171,10 @@ namespace plume {
     }
 
     MetalBuffer::~MetalBuffer() {
+        if (mtl == nullptr) {
+            return;
+        }
+
         if (desc.flags & RenderBufferFlag::DEVICE_ADDRESSABLE) {
             std::lock_guard lock(device->gpuAddressableResourcesMutex);
             if (device->gpuAddressableResidencySet != nullptr) {
