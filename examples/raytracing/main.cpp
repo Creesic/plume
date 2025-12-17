@@ -162,8 +162,6 @@ void initializeRayTracing(RTContext& ctx) {
         return;
     }
 
-    std::cout << "Ray tracing supported! Initializing RT resources..." << std::endl;
-
     // 1. Create geometry buffers - simple triangle
     Vertex vertices[] = {
         {{ 0.0f,  0.5f, 2.0f}},  // Top
@@ -206,13 +204,11 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderBottomLevelASBuildInfo blasBuildInfo;
     ctx.device->setBottomLevelASBuildInfo(blasBuildInfo, &mesh, 1, false, true);
-    std::cout << "  BLAS size: " << blasBuildInfo.accelerationStructureSize << ", scratch: " << blasBuildInfo.scratchSize << std::endl;
 
     RenderAccelerationStructureDesc blasDesc;
     blasDesc.type = RenderAccelerationStructureType::BOTTOM_LEVEL;
     blasDesc.size = blasBuildInfo.accelerationStructureSize;
     ctx.blas = ctx.device->createAccelerationStructure(blasDesc);
-    std::cout << "  BLAS created: " << ctx.blas.get() << std::endl;
 
     // Create scratch buffer for BLAS build
     RenderBufferDesc scratchDesc = RenderBufferDesc::DefaultBuffer(blasBuildInfo.scratchSize);
@@ -248,14 +244,11 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderTopLevelASBuildInfo tlasBuildInfo;
     ctx.device->setTopLevelASBuildInfo(tlasBuildInfo, &instance, 1, false, true);
-    std::cout << "  TLAS size: " << tlasBuildInfo.accelerationStructureSize << ", scratch: " << tlasBuildInfo.scratchSize << std::endl;
-    std::cout << "  Instance buffer data size: " << tlasBuildInfo.instancesBufferData.size() << std::endl;
 
     RenderAccelerationStructureDesc tlasDesc;
     tlasDesc.type = RenderAccelerationStructureType::TOP_LEVEL;
     tlasDesc.size = tlasBuildInfo.accelerationStructureSize;
     ctx.tlas = ctx.device->createAccelerationStructure(tlasDesc);
-    std::cout << "  TLAS created: " << ctx.tlas.get() << std::endl;
 
     // Create instance buffer
     RenderBufferDesc instanceBufDesc = RenderBufferDesc::UploadBuffer(tlasBuildInfo.instancesBufferData.size());
@@ -371,9 +364,6 @@ void initializeRayTracing(RTContext& ctx) {
     RenderPipelineProgram raygenProgram = ctx.rtPipeline->getProgram("RayGen");
     RenderPipelineProgram missProgram = ctx.rtPipeline->getProgram("Miss");
     RenderPipelineProgram hitGroupProgram = ctx.rtPipeline->getProgram("HitGroup");
-    std::cout << "  Program indices - RayGen: " << raygenProgram.programIndex 
-              << ", Miss: " << missProgram.programIndex 
-              << ", HitGroup: " << hitGroupProgram.programIndex << std::endl;
 
     RenderShaderBindingGroup raygenGroup(&raygenProgram, 1);
     RenderShaderBindingGroup missGroup(&missProgram, 1);
@@ -381,10 +371,6 @@ void initializeRayTracing(RTContext& ctx) {
 
     RenderShaderBindingGroups sbtGroups(raygenGroup, missGroup, hitGroupGroup);
     ctx.device->setShaderBindingTableInfo(ctx.sbtInfo, sbtGroups, ctx.rtPipeline.get(), nullptr, 0);
-    std::cout << "  SBT table size: " << ctx.sbtInfo.tableBufferData.size() << std::endl;
-    std::cout << "  SBT groups - raygen offset: " << ctx.sbtInfo.groups.rayGen.offset 
-              << ", miss offset: " << ctx.sbtInfo.groups.miss.offset 
-              << ", hitGroup offset: " << ctx.sbtInfo.groups.hitGroup.offset << std::endl;
 
     // Create SBT buffer and upload data
     RenderBufferDesc sbtBufDesc = RenderBufferDesc::UploadBuffer(ctx.sbtInfo.tableBufferData.size());
@@ -395,8 +381,6 @@ void initializeRayTracing(RTContext& ctx) {
     void* sbtData = ctx.sbtBuffer->map();
     memcpy(sbtData, ctx.sbtInfo.tableBufferData.data(), ctx.sbtInfo.tableBufferData.size());
     ctx.sbtBuffer->unmap();
-
-    std::cout << "Ray tracing initialized successfully!" << std::endl;
 }
 
 void initializeRenderResources(RTContext& ctx, RenderInterface* renderInterface) {

@@ -210,6 +210,7 @@ namespace plume {
         struct ResourceEntry {
             MTL::Resource* resource = nullptr;
             RenderDescriptorRangeType type = RenderDescriptorRangeType::UNKNOWN;
+            uint32_t instanceCount = 0;  // For acceleration structures: TLAS instance count
         };
 
         MetalDevice *device = nullptr;
@@ -624,6 +625,7 @@ namespace plume {
         MTL::AccelerationStructure *mtl = nullptr;
         uint64_t size = 0;
         RenderAccelerationStructureType type = RenderAccelerationStructureType::UNKNOWN;
+        uint32_t instanceCount = 0;  // For TLAS: number of instances (set during build)
 
         MetalAccelerationStructure(MetalDevice *device, const RenderAccelerationStructureDesc &desc);
         ~MetalAccelerationStructure() override;
