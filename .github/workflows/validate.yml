@@ -39,6 +39,7 @@ jobs:
             -DPLUME_BUILD_EXAMPLES=ON
           cmake --build build --target plume
           cmake --build build --target plume_triangle
+          cmake --build build --target plume_cube
 
       - name: Upload Linux Build
         if: runner.os == 'Linux'
@@ -47,6 +48,7 @@ jobs:
           name: plume-linux-${{ matrix.type }}-${{ matrix.os }}
           path: |
             build/bin/plume_triangle
+            build/bin/plume_cube
 
       - name: Upload macOS Build
         if: runner.os == 'macOS'
@@ -55,6 +57,7 @@ jobs:
           name: plume-macos-${{ matrix.type }}-${{ matrix.os }}
           path: |
             build/bin/plume_triangle
+            build/bin/plume_cube
 
   build-windows:
     runs-on: windows-latest
@@ -95,6 +98,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DPLUME_BUILD_EXAMPLES=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER=clang-cl -DCMAKE_MAKE_PROGRAM=ninja -G Ninja -S . -B build
           cmake --build build --config ${{ matrix.type }} --target plume -j $cpuCores
           cmake --build build --config ${{ matrix.type }} --target plume_triangle -j $cpuCores
+          cmake --build build --config ${{ matrix.type }} --target plume_cube -j $cpuCores
 
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
@@ -102,3 +106,4 @@ jobs:
           name: plume-windows-${{ matrix.type }}
           path: |
             build/bin/plume_triangle.exe
+            build/bin/plume_cube.exe
