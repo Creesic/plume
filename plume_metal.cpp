@@ -18,8 +18,8 @@
 #include <mutex>
 
 #include "plume_metal.h"
-#include "plume_clear.metallib.h"
-#include "plume_resolve.metallib.h"
+#include "shaders/plume_clear.metal.h"
+#include "shaders/plume_resolve.metal.h"
 
 namespace plume {
     // MARK: - Constants
@@ -3996,8 +3996,8 @@ namespace plume {
     void MetalDevice::createResolvePipelineState() {
         // Load pre-compiled metallib from embedded data
         dispatch_data_t dispatchData = dispatch_data_create(
-            plume_resolve_metallib,
-            plume_resolve_metallib_size,
+            plume_resolveBlobMSL,
+            plume_resolveBlobMSL_size,
             nullptr,
             DISPATCH_DATA_DESTRUCTOR_DEFAULT
         );
@@ -4025,8 +4025,8 @@ namespace plume {
     void MetalDevice::createClearShaderLibrary() {
         // Load pre-compiled metallib from embedded data
         dispatch_data_t dispatchData = dispatch_data_create(
-            plume_clear_metallib,
-            plume_clear_metallib_size,
+            plume_clearBlobMSL,
+            plume_clearBlobMSL_size,
             nullptr,
             DISPATCH_DATA_DESTRUCTOR_DEFAULT
         );
