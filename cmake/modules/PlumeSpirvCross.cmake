@@ -1,35 +1,45 @@
 # PlumeSpirvCross.cmake
-# Fetches pre-built SPIRV-Cross and builds our spirv_cross_msl tool
+# Fetches and builds SPIRV-Cross from source, then builds our spirv_cross_msl tool
 
 include(FetchContent)
 
-# Build the spirv_cross_msl tool, fetching libraries if not provided
+# Build the spirv_cross_msl tool, fetching and compiling SPIRV-Cross if not provided
 function(plume_fetch_spirv_cross)
     if(TARGET plume_spirv_cross_msl)
         return()
     endif()
 
-    # Use provided paths or fetch pre-built binaries
+    # Use provided paths or fetch and build from source
     if(DEFINED PLUME_SPIRV_CROSS_LIB_DIR AND DEFINED PLUME_SPIRV_CROSS_INCLUDE_DIR)
+        # User provided prebuilt libraries
         set(SPIRV_CROSS_LIB_DIR "${PLUME_SPIRV_CROSS_LIB_DIR}")
         set(SPIRV_CROSS_INCLUDE_DIR "${PLUME_SPIRV_CROSS_INCLUDE_DIR}")
+        set(SPIRV_CROSS_USE_PREBUILT TRUE)
     else()
+        # Fetch and build from source
+        set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_SHARED OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_MSL ON CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+        set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+
         FetchContent_Declare(
-            plume_spirv_cross
-            GIT_REPOSITORY https://github.com/renderbag/spriv-cross-bin.git
-            GIT_TAG main
+            spirv_cross
+            GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Cross.git
+            GIT_TAG vulkan-sdk-1.4.335.0
+            GIT_SHALLOW TRUE
         )
-        FetchContent_MakeAvailable(plume_spirv_cross)
+        FetchContent_MakeAvailable(spirv_cross)
 
-        # Determine library path based on platform/architecture
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
-            set(SPIRV_CROSS_ARCH "x64")
-        else()
-            set(SPIRV_CROSS_ARCH "arm64")
-        endif()
-
-        set(SPIRV_CROSS_LIB_DIR "${plume_spirv_cross_SOURCE_DIR}/lib/${SPIRV_CROSS_ARCH}")
-        set(SPIRV_CROSS_INCLUDE_DIR "${plume_spirv_cross_SOURCE_DIR}/include")
+        set(SPIRV_CROSS_INCLUDE_DIR "${spirv_cross_SOURCE_DIR}")
+        set(SPIRV_CROSS_USE_PREBUILT FALSE)
     endif()
 
     # Build our custom spirv_cross_msl tool
@@ -41,20 +51,30 @@ function(plume_fetch_spirv_cross)
 
     add_executable(plume_spirv_cross_msl ${SPIRV_CROSS_MSL_SOURCE})
     target_include_directories(plume_spirv_cross_msl PRIVATE ${SPIRV_CROSS_INCLUDE_DIR})
+    set_target_properties(plume_spirv_cross_msl PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
-    # Link against pre-built static libraries
-    # Order matters: msl depends on glsl depends on core
-    if(WIN32)
-        target_link_libraries(plume_spirv_cross_msl PRIVATE
-            "${SPIRV_CROSS_LIB_DIR}/spirv-cross-msl.lib"
-            "${SPIRV_CROSS_LIB_DIR}/spirv-cross-glsl.lib"
-            "${SPIRV_CROSS_LIB_DIR}/spirv-cross-core.lib"
-        )
+    if(SPIRV_CROSS_USE_PREBUILT)
+        # Link against pre-built static libraries
+        # Order matters: msl depends on glsl depends on core
+        if(WIN32)
+            target_link_libraries(plume_spirv_cross_msl PRIVATE
+                "${SPIRV_CROSS_LIB_DIR}/spirv-cross-msl.lib"
+                "${SPIRV_CROSS_LIB_DIR}/spirv-cross-glsl.lib"
+                "${SPIRV_CROSS_LIB_DIR}/spirv-cross-core.lib"
+            )
+        else()
+            target_link_libraries(plume_spirv_cross_msl PRIVATE
+                "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-msl.a"
+                "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-glsl.a"
+                "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-core.a"
+            )
+        endif()
     else()
+        # Link against freshly built targets
         target_link_libraries(plume_spirv_cross_msl PRIVATE
-            "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-msl.a"
-            "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-glsl.a"
-            "${SPIRV_CROSS_LIB_DIR}/libspirv-cross-core.a"
+            spirv-cross-msl
+            spirv-cross-glsl
+            spirv-cross-core
         )
     endif()
 

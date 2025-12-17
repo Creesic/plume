@@ -17,6 +17,8 @@ function(plume_build_file_to_c)
     add_executable(plume_file_to_c ${FILE_TO_C_SOURCE})
     set_target_properties(plume_file_to_c PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plume_tools"
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
     )
 
     if(APPLE)
