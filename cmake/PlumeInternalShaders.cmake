@@ -7,7 +7,7 @@ function(plume_build_file_to_c)
         return()
     endif()
 
-    set(FILE_TO_C_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tools/file_to_c.cpp")
+    set(FILE_TO_C_SOURCE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/tools/file_to_c.cpp")
 
     add_executable(plume_file_to_c ${FILE_TO_C_SOURCE})
     set_target_properties(plume_file_to_c PROPERTIES
