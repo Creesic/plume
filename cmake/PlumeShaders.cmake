@@ -414,6 +414,109 @@ function(plume_compile_metal_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     endif()
 endfunction()
 
+# ============================================================================
+# Metal Shader Converter (Ray Tracing)
+# ============================================================================
+
+# Compile a ray tracing shader library using Metal Shader Converter (Apple only)
+# This converts DXIL ray tracing shaders to Metal visible functions
+#
+# Usage: plume_compile_rt_shader_metal(TARGET SOURCE OUTPUT_NAME [options])
+#   TARGET      - CMake target to add shader to
+#   SOURCE      - Path to HLSL shader source file
+#   OUTPUT_NAME - Base name for output files
+#
+# Options:
+#   ENTRY_POINTS <list>  - Entry points to export (e.g., "RayGen;ClosestHit;Miss")
+#   INCLUDE_DIRS <dirs>  - Additional include directories for DXC
+#   EXTRA_ARGS <args>    - Additional DXC arguments
+#   OUTPUT_DIR <dir>     - Custom output directory
+#
+# Output:
+#   {OUTPUT_NAME}BlobMetalLib in shaders/{OUTPUT_NAME}.metallib.h
+function(plume_compile_rt_shader_metal TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    if(NOT APPLE)
+        return()
+    endif()
+
+    cmake_parse_arguments(ARG "" "OUTPUT_DIR" "ENTRY_POINTS;INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+
+    # Check for metal-shaderconverter
+    find_program(METAL_SHADER_CONVERTER metal-shaderconverter
+        PATHS /usr/local/bin ENV PATH
+        DOC "Apple Metal Shader Converter for DXIL to Metal conversion"
+    )
+    if(NOT METAL_SHADER_CONVERTER)
+        message(WARNING "metal-shaderconverter not found. RT shaders will not be compiled for Metal. "
+                        "Install from: https://developer.apple.com/metal/shader-converter/")
+        return()
+    endif()
+
+    plume_get_dxc_command(DXC_CMD)
+
+    # Output directory
+    if(ARG_OUTPUT_DIR)
+        set(OUT_DIR "${ARG_OUTPUT_DIR}")
+    else()
+        set(OUT_DIR "${CMAKE_BINARY_DIR}/shaders")
+    endif()
+    file(MAKE_DIRECTORY "${OUT_DIR}")
+
+    # Build include directory flags
+    set(INCLUDE_FLAGS "")
+    foreach(INCLUDE_DIR ${ARG_INCLUDE_DIRS})
+        list(APPEND INCLUDE_FLAGS "-I${INCLUDE_DIR}")
+    endforeach()
+
+    # Step 1: Compile HLSL to DXIL using DXC (lib_6_3 profile for RT)
+    set(DXIL_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.dxil")
+    add_custom_command(
+        OUTPUT "${DXIL_OUTPUT}"
+        COMMAND ${DXC_CMD}
+            ${PLUME_DXC_COMMON_OPTS}
+            ${INCLUDE_FLAGS}
+            -T lib_6_3
+            -D RT_SHADER
+            -fspv-target-env=vulkan1.1spirv1.4
+            ${ARG_EXTRA_ARGS}
+            -Fo "${DXIL_OUTPUT}"
+            "${SHADER_SOURCE}"
+        DEPENDS "${SHADER_SOURCE}"
+        COMMENT "Compiling RT shader ${OUTPUT_NAME} to DXIL"
+        VERBATIM
+    )
+
+    # Step 2: Convert DXIL to Metal using metal-shaderconverter
+    set(METALLIB_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib")
+    add_custom_command(
+        OUTPUT "${METALLIB_OUTPUT}"
+        COMMAND ${METAL_SHADER_CONVERTER}
+            "${DXIL_OUTPUT}"
+            -o "${METALLIB_OUTPUT}"
+            --deployment-os=macOS
+            --minimum-gpu-family=Metal3
+            --synthesize-indirect-ray-dispatch
+            --synthesize-indirect-intersection-function
+        DEPENDS "${DXIL_OUTPUT}"
+        COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal"
+        VERBATIM
+    )
+
+    # Step 3: Generate C header
+    set(C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.c")
+    set(H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.h")
+    add_custom_command(
+        OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
+        COMMAND plume_file_to_c "${METALLIB_OUTPUT}" "${OUTPUT_NAME}BlobMetalLib" "${C_OUTPUT}" "${H_OUTPUT}"
+        DEPENDS "${METALLIB_OUTPUT}" plume_file_to_c
+        COMMENT "Generating C header for RT Metal shader ${OUTPUT_NAME}"
+        VERBATIM
+    )
+
+    target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
+    target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
+endfunction()
+
 # Preprocess a shader header file and embed it as text
 # Useful for runtime shader compilation where you need the preprocessed source
 # Usage: plume_preprocess_shader(TARGET SOURCE OUTPUT_NAME [INCLUDE_DIRS dirs] [OUTPUT_DIR dir] [VAR_NAME name])

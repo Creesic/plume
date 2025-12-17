@@ -13,3 +13,4 @@ plume_shaders_init()
 # Add example subdirectories
 add_subdirectory(triangle)
 add_subdirectory(cube)
+add_subdirectory(raytracing)
