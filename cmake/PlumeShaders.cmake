@@ -435,12 +435,22 @@ function(_plume_compile_library_shader_impl TARGET SOURCE OUTPUT_NAME)
     endif()
 
     if(WIN32)
-        # === Windows: DXIL library ===
+        # === Windows: DXIL library (D3D12) ===
         set(DXIL_FILE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.dxil")
         _plume_dxc(${TARGET} "${SOURCE}" "${DXIL_FILE}" ${PROFILE} "" "dxil" ${DXC_OPTS})
         _plume_embed(${TARGET} "${DXIL_FILE}" "${OUTPUT_NAME}BlobDXIL"
             "${OUT_DIR}/${OUTPUT_NAME}.hlsl.dxil.c"
             "${OUT_DIR}/${OUTPUT_NAME}.hlsl.dxil.h")
+
+        # === Windows: SPIRV library (Vulkan) ===
+        set(SPIRV_FILE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spv")
+        if(ARG_RAYTRACING)
+            list(APPEND DXC_OPTS SPIRV_RT)
+        endif()
+        _plume_dxc(${TARGET} "${SOURCE}" "${SPIRV_FILE}" ${PROFILE} "" "spirv" ${DXC_OPTS})
+        _plume_embed(${TARGET} "${SPIRV_FILE}" "${OUTPUT_NAME}BlobSPIRV"
+            "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spirv.c"
+            "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spirv.h")
 
     elseif(APPLE)
         # === Apple: DXIL -> Metal via metal-shaderconverter ===
@@ -654,9 +664,11 @@ endfunction()
 #   INCLUDE_DIRS <dirs> - Additional include directories
 #   EXTRA_ARGS <args>   - Additional DXC arguments
 #   OUTPUT_DIR <dir>    - Custom output directory
+# Compile a ray tracing shader library
 #
-# Output:
+# Outputs:
 #   Windows: {OUTPUT_NAME}BlobDXIL in shaders/{OUTPUT_NAME}.hlsl.dxil.h
+#            {OUTPUT_NAME}BlobSPIRV in shaders/{OUTPUT_NAME}.hlsl.spirv.h
 #   Apple:   {OUTPUT_NAME}BlobMetalLib in shaders/{OUTPUT_NAME}.metallib.h
 #   Linux:   {OUTPUT_NAME}BlobSPIRV in shaders/{OUTPUT_NAME}.hlsl.spirv.h
 function(plume_compile_rt_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
@@ -677,6 +689,7 @@ endfunction()
 #
 # Output:
 #   Windows: {OUTPUT_NAME}BlobDXIL in shaders/{OUTPUT_NAME}.hlsl.dxil.h
+#            {OUTPUT_NAME}BlobSPIRV in shaders/{OUTPUT_NAME}.hlsl.spirv.h
 #   Linux:   {OUTPUT_NAME}BlobSPIRV in shaders/{OUTPUT_NAME}.hlsl.spirv.h
 function(plume_compile_library_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     _plume_compile_library_shader_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME} ${ARGN})

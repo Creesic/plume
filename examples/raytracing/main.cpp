@@ -13,8 +13,9 @@
 #include <cmath>
 
 // Shader blobs
-#ifdef _WIN64
+#if defined(_WIN64)
 #include "shaders/rtShaders.hlsl.dxil.h"
+#include "shaders/rtShaders.hlsl.spirv.h"
 #elif defined(__APPLE__)
 #include "shaders/rtShaders.metallib.h"
 #elif defined(__linux__)
@@ -301,13 +302,26 @@ void initializeRayTracing(RTContext& ctx) {
     ctx.constantBuffer->setName("Camera Constants");
 
     // 6. Create RT shader
+    RenderShaderFormat shaderFormat = ctx.renderInterface->getCapabilities().shaderFormat;
+    switch (shaderFormat) {
 #ifdef __APPLE__
-    ctx.rtShader = ctx.device->createShader(rtShadersBlobMetalLib, rtShadersBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
-#elif defined(_WIN64)
-    ctx.rtShader = ctx.device->createShader(rtShadersBlobDXIL, rtShadersBlobDXIL_size, nullptr, RenderShaderFormat::DXIL);
-#elif defined(__linux__)
-    ctx.rtShader = ctx.device->createShader(rtShadersBlobSPIRV, rtShadersBlobSPIRV_size, nullptr, RenderShaderFormat::SPIRV);
+        case RenderShaderFormat::METAL:
+            ctx.rtShader = ctx.device->createShader(rtShadersBlobMetalLib, rtShadersBlobMetalLib_size, nullptr, shaderFormat);
+            break;
 #endif
+#ifdef _WIN64
+        case RenderShaderFormat::DXIL:
+            ctx.rtShader = ctx.device->createShader(rtShadersBlobDXIL, rtShadersBlobDXIL_size, nullptr, shaderFormat);
+            break;
+#endif
+#if defined(_WIN64) || defined(__linux__)
+        case RenderShaderFormat::SPIRV:
+            ctx.rtShader = ctx.device->createShader(rtShadersBlobSPIRV, rtShadersBlobSPIRV_size, nullptr, shaderFormat);
+            break;
+#endif
+        default:
+            break;
+    }
     ctx.rtShader->setName("RT Shader Library");
 
     // 7. Create pipeline layout with descriptors for: output texture (UAV), TLAS (SRV), constants (CBV)
@@ -531,13 +545,28 @@ void render(RTContext& ctx) {
     ctx.commandQueue->waitForCommandFence(ctx.commandFence.get());
 }
 
+// Platform-specific ray tracing API selection:
+// - macOS: Metal only (MoltenVK doesn't support ray tracing extensions)
+// - Windows: D3D12 by default, Vulkan optional (set useVulkan=true)
+// - Linux: Vulkan only
 std::unique_ptr<RenderInterface> CreateRenderInterface(SDL_Window* window, std::string& apiName) {
+    const bool useVulkan = false;
 #if defined(__APPLE__)
+    // macOS: Metal only (MVK doesn't support ray tracing)
     apiName = "Metal";
     return CreateMetalInterface();
 #elif defined(_WIN32)
-    apiName = "D3D12";
-    return CreateD3D12Interface();
+    if (useVulkan) {
+        apiName = "Vulkan";
+#if PLUME_SDL_VULKAN_ENABLED
+        return CreateVulkanInterface(window);
+#else
+        return CreateVulkanInterface();
+#endif
+    } else {
+        apiName = "D3D12";
+        return CreateD3D12Interface();
+    }
 #else
     apiName = "Vulkan";
 #if PLUME_SDL_VULKAN_ENABLED
