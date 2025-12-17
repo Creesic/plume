@@ -106,9 +106,33 @@ if(APPLE)
         target_compile_definitions(plume PRIVATE PLUME_APPLE_RETINA_ENABLED)
     endif()
 
+    # Find Metal Shader Converter runtime headers
+    # Prefer environment variable, fall back to default installation path
+    if(DEFINED ENV{METAL_SHADER_CONVERTER})
+        set(METAL_SHADER_CONVERTER_PATH "$ENV{METAL_SHADER_CONVERTER}")
+    else()
+        set(METAL_SHADER_CONVERTER_PATH "/usr/local/lib/metal_irconverter_runtime")
+    endif()
+
+    if(EXISTS "${METAL_SHADER_CONVERTER_PATH}/metal_irconverter_runtime")
+        set(METAL_SHADER_CONVERTER_INCLUDE "${METAL_SHADER_CONVERTER_PATH}")
+        message(STATUS "Plume - Metal Shader Converter runtime: ${METAL_SHADER_CONVERTER_INCLUDE}")
+    elseif(EXISTS "/usr/local/include/metal_irconverter_runtime")
+        set(METAL_SHADER_CONVERTER_INCLUDE "/usr/local/include")
+        message(STATUS "Plume - Metal Shader Converter runtime: ${METAL_SHADER_CONVERTER_INCLUDE}")
+    else()
+        message(WARNING "Plume - Metal Shader Converter runtime headers not found. Ray tracing will be disabled.")
+        set(METAL_SHADER_CONVERTER_INCLUDE "")
+    endif()
+
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
+
+    if(METAL_SHADER_CONVERTER_INCLUDE)
+        target_include_directories(plume PRIVATE ${METAL_SHADER_CONVERTER_INCLUDE})
+        target_compile_definitions(plume PRIVATE PLUME_METAL_RAYTRACING_ENABLED)
+    endif()
 
     # Compile and embed internal Metal shaders
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlumeShaders.cmake)

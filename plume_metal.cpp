@@ -14,6 +14,15 @@
 #include <QuartzCore/QuartzCore.hpp>
 #include <CoreFoundation/CoreFoundation.h>
 
+// Metal Shader Converter runtime header for ray tracing support.
+// IR_RUNTIME_METALCPP enables metal-cpp compatibility mode.
+// IR_PRIVATE_IMPLEMENTATION generates the implementation (define once).
+#ifdef PLUME_METAL_RAYTRACING_ENABLED
+#define IR_RUNTIME_METALCPP
+#define IR_PRIVATE_IMPLEMENTATION
+#include <metal_irconverter_runtime/metal_irconverter_runtime.h>
+#endif
+
 #include <algorithm>
 #include <mutex>
 
@@ -546,6 +555,29 @@ namespace plume {
             default:
                 assert(false && "Format is not supported as an index type.");
                 return MTL::IndexTypeUInt16;
+        }
+    }
+
+    // Maps RenderFormat to MTL::AttributeFormat for acceleration structure vertex data.
+    MTL::AttributeFormat mapAttributeFormat(RenderFormat format) {
+        switch (format) {
+            case RenderFormat::R32G32B32_FLOAT:
+                return MTL::AttributeFormatFloat3;
+            case RenderFormat::R32G32B32A32_FLOAT:
+                return MTL::AttributeFormatFloat4;
+            case RenderFormat::R32G32_FLOAT:
+                return MTL::AttributeFormatFloat2;
+            case RenderFormat::R16G16B16A16_FLOAT:
+                return MTL::AttributeFormatHalf4;
+            case RenderFormat::R16G16_FLOAT:
+                return MTL::AttributeFormatHalf2;
+            case RenderFormat::R16G16B16A16_SNORM:
+                return MTL::AttributeFormatShort4Normalized;
+            case RenderFormat::R16G16_SNORM:
+                return MTL::AttributeFormatShort2Normalized;
+            default:
+                assert(false && "Format is not supported as an acceleration structure attribute format.");
+                return MTL::AttributeFormatFloat3;
         }
     }
 
@@ -1284,13 +1316,26 @@ namespace plume {
 
     MetalAccelerationStructure::MetalAccelerationStructure(MetalDevice *device, const RenderAccelerationStructureDesc &desc) {
         assert(device != nullptr);
-        assert(desc.buffer.ref != nullptr);
+        assert(desc.size > 0);
 
         this->device = device;
         this->type = desc.type;
+        this->size = desc.size;
+
+        // Metal creates the acceleration structure internally with the specified size.
+        // Unlike Vulkan/D3D12, Metal does not use a user-provided buffer for AS storage.
+        mtl = device->mtl->newAccelerationStructure(desc.size);
+        if (mtl == nullptr) {
+            fprintf(stderr, "Failed to create Metal acceleration structure.\n");
+        }
     }
 
-    MetalAccelerationStructure::~MetalAccelerationStructure() { }
+    MetalAccelerationStructure::~MetalAccelerationStructure() {
+        if (mtl != nullptr) {
+            mtl->release();
+            mtl = nullptr;
+        }
+    }
 
     // MetalPool
 
@@ -1617,6 +1662,153 @@ namespace plume {
 
     RenderPipelineProgram MetalGraphicsPipeline::getProgram(const std::string &name) const {
         assert(false && "Graphics pipelines can't retrieve shader programs.");
+        return RenderPipelineProgram();
+    }
+
+    // MetalRaytracingPipeline
+    //
+    // When using Metal Shader Converter with --synthesize-indirect-ray-dispatch,
+    // all RT shaders (raygen, closesthit, miss, etc.) are compiled into a single
+    // function group within the RaygenIndirection compute kernel. The visible
+    // functions are NOT exported as separate MTL::Function objects - they are
+    // embedded as a function group that the kernel invokes based on the shader
+    // binding table indices stored in IRShaderIdentifier structures.
+    //
+    // The shader identifiers in the SBT contain function indices that the
+    // RaygenIndirection kernel uses to call the appropriate visible function
+    // from the VFT. We don't create the VFT manually - the pipeline automatically
+    // creates it from the function group metadata.
+
+    MetalRaytracingPipeline::MetalRaytracingPipeline(MetalDevice *device, const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) : MetalPipeline(device, Type::Raytracing) {
+        assert(device != nullptr);
+        assert(desc.pipelineLayout != nullptr);
+        assert(desc.librariesCount > 0);
+
+        this->device = device;
+        this->pipelineLayout = static_cast<const MetalPipelineLayout *>(desc.pipelineLayout);
+        this->maxPayloadSize = desc.maxPayloadSize;
+        this->maxAttributeSize = desc.maxAttributeSize;
+
+        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+
+        MTL::Function *raygenIndirectionFunction = nullptr;
+
+        // With Metal Shader Converter's synthesized indirect dispatch model,
+        // we only need to find the RaygenIndirection kernel. All RT shader
+        // functions are embedded as a function group within it.
+        for (uint32_t i = 0; i < desc.librariesCount; i++) {
+            const RenderRaytracingPipelineLibrary &library = desc.libraries[i];
+            assert(library.shader != nullptr);
+
+            const MetalShader *shader = static_cast<const MetalShader *>(library.shader);
+
+            // Look for the RaygenIndirection kernel (synthesized by Metal Shader Converter).
+            if (raygenIndirectionFunction == nullptr) {
+                NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
+                raygenIndirectionFunction = shader->library->newFunction(indirectionName);
+            }
+
+            // Map symbol names to program indices.
+            // The indices correspond to the order of shaders in the HLSL file:
+            // - Index 1: First raygen shader
+            // - Index 2: First closesthit/miss shader after raygen
+            // - etc.
+            // For Metal Shader Converter, the shader order in the DXIL determines the index.
+            for (uint32_t j = 0; j < library.symbolsCount; j++) {
+                const RenderRaytracingPipelineLibrarySymbol &symbol = library.symbols[j];
+                const char *exportName = (symbol.exportName != nullptr) ? symbol.exportName : symbol.importName;
+                // Assign indices starting at 1 (index 0 is reserved/null).
+                uint32_t functionIndex = j + 1;
+                nameProgramMap[std::string(exportName)] = functionIndex;
+            }
+        }
+
+        // Also map hit groups to program indices.
+        for (uint32_t i = 0; i < desc.hitGroupsCount; i++) {
+            const RenderRaytracingPipelineHitGroup &hitGroup = desc.hitGroups[i];
+            // For hit groups, use the closest hit shader's index.
+            if (hitGroup.closestHitName != nullptr) {
+                auto it = nameProgramMap.find(std::string(hitGroup.closestHitName));
+                if (it != nameProgramMap.end()) {
+                    nameProgramMap[std::string(hitGroup.hitGroupName)] = it->second;
+                }
+            }
+        }
+
+        if (raygenIndirectionFunction == nullptr) {
+            fprintf(stderr, "Failed to find RaygenIndirection function. Make sure the shader was compiled with Metal Shader Converter using --synthesize-indirect-ray-dispatch.\n");
+            releasePool->release();
+            return;
+        }
+
+        // Create the compute pipeline descriptor.
+        // No need to set linked functions - with synthesized indirect dispatch,
+        // the function group is already embedded in the RaygenIndirection kernel.
+        MTL::ComputePipelineDescriptor *pipelineDesc = MTL::ComputePipelineDescriptor::alloc()->init();
+        pipelineDesc->setComputeFunction(raygenIndirectionFunction);
+        pipelineDesc->setMaxCallStackDepth(desc.maxRecursionDepth + 1);
+
+        // Create the compute pipeline state.
+        NS::Error *error = nullptr;
+        computePipeline = device->mtl->newComputePipelineState(pipelineDesc, MTL::PipelineOptionNone, nullptr, &error);
+
+        if (error != nullptr || computePipeline == nullptr) {
+            fprintf(stderr, "Failed to create raytracing compute pipeline: %s\n",
+                    error ? error->localizedDescription()->utf8String() : "unknown error");
+            releasePool->release();
+            return;
+        }
+
+        // With synthesized indirect dispatch, the VFT and IFT are created from
+        // the function group metadata in the metallib. We need to query the
+        // pipeline for these tables.
+        //
+        // The function group metadata tells us how many functions are in each table.
+        // For now, we create tables based on the symbol count provided.
+        uint32_t totalSymbols = 0;
+        for (uint32_t i = 0; i < desc.librariesCount; i++) {
+            totalSymbols += desc.libraries[i].symbolsCount;
+        }
+
+        if (totalSymbols > 0) {
+            MTL::VisibleFunctionTableDescriptor *vftDesc = MTL::VisibleFunctionTableDescriptor::alloc()->init();
+            // The function group in synthesized indirect dispatch already has the
+            // functions at their correct indices. We create a VFT large enough to
+            // hold all of them plus the reserved index 0.
+            vftDesc->setFunctionCount(static_cast<NS::UInteger>(totalSymbols) + 1);
+
+            visibleFunctionTable = computePipeline->newVisibleFunctionTable(vftDesc);
+            vftDesc->release();
+        }
+
+        // Release resources.
+        raygenIndirectionFunction->release();
+        pipelineDesc->release();
+        releasePool->release();
+    }
+
+    MetalRaytracingPipeline::~MetalRaytracingPipeline() {
+        if (intersectionFunctionTable != nullptr) {
+            intersectionFunctionTable->release();
+        }
+        if (visibleFunctionTable != nullptr) {
+            visibleFunctionTable->release();
+        }
+        if (computePipeline != nullptr) {
+            computePipeline->release();
+        }
+    }
+
+    void MetalRaytracingPipeline::setName(const std::string &name) {
+        // ComputePipelineState doesn't support setLabel after creation.
+        // The label must be set on the descriptor before pipeline creation.
+    }
+
+    RenderPipelineProgram MetalRaytracingPipeline::getProgram(const std::string &name) const {
+        auto it = nameProgramMap.find(name);
+        if (it != nameProgramMap.end()) {
+            return RenderPipelineProgram(it->second);
+        }
         return RenderPipelineProgram();
     }
 
@@ -2447,7 +2639,124 @@ namespace plume {
     }
 
     void MetalCommandList::traceRays(uint32_t width, uint32_t height, uint32_t depth, RenderBufferReference shaderBindingTable, const RenderShaderBindingGroupsInfo &shaderBindingGroupsInfo) {
-        // TODO: Support Metal RT
+#ifdef PLUME_METAL_RAYTRACING_ENABLED
+        assert(activeRaytracingPipeline != nullptr && "Must set raytracing pipeline before traceRays");
+        assert(activeRaytracingPipelineLayout != nullptr && "Must set raytracing pipeline layout before traceRays");
+
+        const MetalBuffer *sbtBuffer = static_cast<const MetalBuffer *>(shaderBindingTable.ref);
+        assert(sbtBuffer != nullptr && "Shader binding table buffer is null");
+
+        // End other encoders and start compute encoder for raytracing.
+        endOtherEncoders(EncoderType::Compute);
+        activeType = EncoderType::Compute;
+
+        if (activeComputeEncoder == nullptr) {
+            NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+            activeComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
+            activeComputeEncoder->setLabel(MTLSTR("Raytracing Encoder"));
+            activeComputeEncoder->retain();
+            releasePool->release();
+            startedEncoding = true;
+            barrierWait(MetalBarrierStage::COMPUTE, activeComputeEncoder);
+        }
+
+        // Set the raytracing compute pipeline.
+        activeComputeEncoder->setComputePipelineState(activeRaytracingPipeline->computePipeline);
+
+        // Bind descriptor sets for raytracing.
+        for (auto* descriptorSet : raytracingDescriptorSets) {
+            if (descriptorSet) {
+                descriptorSet->commit();
+            }
+        }
+        activeRaytracingPipelineLayout->bindDescriptorSets(activeComputeEncoder, raytracingDescriptorSets, MAX_DESCRIPTOR_SET_BINDINGS, true, 0, currentEncoderDescriptorSets, mtl);
+
+        // Bind push constants for raytracing.
+        for (const PushConstantData &pushConstant : pushConstants) {
+            if (pushConstant.stageFlags & RenderShaderStageFlag::RAYGEN) {
+                const uint32_t bindIndex = PUSH_CONSTANTS_BINDING_INDEX + pushConstant.binding;
+                activeComputeEncoder->setBytes(pushConstant.data.data(), pushConstant.size, bindIndex);
+            }
+        }
+
+        // Build the IRDispatchRaysDescriptor from the shader binding groups info.
+        const uint64_t sbtBaseAddress = sbtBuffer->mtl->gpuAddress() + shaderBindingTable.offset;
+
+        const RenderShaderBindingGroupInfo &rayGen = shaderBindingGroupsInfo.rayGen;
+        const RenderShaderBindingGroupInfo &miss = shaderBindingGroupsInfo.miss;
+        const RenderShaderBindingGroupInfo &hitGroup = shaderBindingGroupsInfo.hitGroup;
+        const RenderShaderBindingGroupInfo &callable = shaderBindingGroupsInfo.callable;
+
+        IRDispatchRaysDescriptor dispatchDesc = {};
+
+        // Ray generation - single record, size equals stride.
+        dispatchDesc.RayGenerationShaderRecord.StartAddress = (rayGen.size > 0) ? (sbtBaseAddress + rayGen.offset + rayGen.startIndex * rayGen.stride) : 0;
+        dispatchDesc.RayGenerationShaderRecord.SizeInBytes = rayGen.stride;
+
+        // Miss shader table.
+        dispatchDesc.MissShaderTable.StartAddress = (miss.size > 0) ? (sbtBaseAddress + miss.offset + miss.startIndex * miss.stride) : 0;
+        dispatchDesc.MissShaderTable.SizeInBytes = miss.size;
+        dispatchDesc.MissShaderTable.StrideInBytes = miss.stride;
+
+        // Hit group table.
+        dispatchDesc.HitGroupTable.StartAddress = (hitGroup.size > 0) ? (sbtBaseAddress + hitGroup.offset + hitGroup.startIndex * hitGroup.stride) : 0;
+        dispatchDesc.HitGroupTable.SizeInBytes = hitGroup.size;
+        dispatchDesc.HitGroupTable.StrideInBytes = hitGroup.stride;
+
+        // Callable shader table.
+        dispatchDesc.CallableShaderTable.StartAddress = (callable.size > 0) ? (sbtBaseAddress + callable.offset + callable.startIndex * callable.stride) : 0;
+        dispatchDesc.CallableShaderTable.SizeInBytes = callable.size;
+        dispatchDesc.CallableShaderTable.StrideInBytes = callable.stride;
+
+        // Dispatch dimensions.
+        dispatchDesc.Width = width;
+        dispatchDesc.Height = height;
+        dispatchDesc.Depth = depth;
+
+        // Build the IRDispatchRaysArgument structure.
+        // Note: For the minimal case, we set GRS/ResDescHeap/SmpDescHeap to 0 (handled by descriptor sets).
+        IRDispatchRaysArgument dispatchArgs = {};
+        dispatchArgs.DispatchRaysDesc = dispatchDesc;
+        dispatchArgs.GRS = 0; // Global root signature - handled via descriptor sets.
+        dispatchArgs.ResDescHeap = 0; // Resource descriptor heap - handled via descriptor sets.
+        dispatchArgs.SmpDescHeap = 0; // Sampler descriptor heap - handled via descriptor sets.
+        dispatchArgs.VisibleFunctionTable = activeRaytracingPipeline->visibleFunctionTable ? activeRaytracingPipeline->visibleFunctionTable->gpuResourceID() : MTL::ResourceID{0};
+        dispatchArgs.IntersectionFunctionTable = activeRaytracingPipeline->intersectionFunctionTable ? activeRaytracingPipeline->intersectionFunctionTable->gpuResourceID() : MTL::ResourceID{0};
+        dispatchArgs.IntersectionFunctionTables = 0; // Multiple IFTs not supported yet.
+
+        // Bind the dispatch arguments at the expected bind point.
+        activeComputeEncoder->setBytes(&dispatchArgs, sizeof(dispatchArgs), kIRRayDispatchArgumentsBindPoint);
+
+        // Bind the visible function table.
+        if (activeRaytracingPipeline->visibleFunctionTable != nullptr) {
+            activeComputeEncoder->setVisibleFunctionTable(activeRaytracingPipeline->visibleFunctionTable, 0);
+        }
+
+        // Bind the intersection function table if present.
+        if (activeRaytracingPipeline->intersectionFunctionTable != nullptr) {
+            activeComputeEncoder->setIntersectionFunctionTable(activeRaytracingPipeline->intersectionFunctionTable, 0);
+        }
+
+        // Calculate thread group size from the pipeline.
+        NS::UInteger threadWidth = activeRaytracingPipeline->computePipeline->threadExecutionWidth();
+        NS::UInteger threadHeight = activeRaytracingPipeline->computePipeline->maxTotalThreadsPerThreadgroup() / threadWidth;
+        MTL::Size threadGroupSize = MTL::Size(threadWidth, threadHeight, 1);
+
+        // Calculate thread group count.
+        MTL::Size threadGroupCount = MTL::Size(
+            (width + threadGroupSize.width - 1) / threadGroupSize.width,
+            (height + threadGroupSize.height - 1) / threadGroupSize.height,
+            depth
+        );
+
+        activeComputeEncoder->dispatchThreadgroups(threadGroupCount, threadGroupSize);
+
+        // Resource tracking for encoder.
+        bindEncoderResources(activeComputeEncoder, true);
+#else
+        (void)width; (void)height; (void)depth; (void)shaderBindingTable; (void)shaderBindingGroupsInfo;
+        fprintf(stderr, "Ray tracing not supported: Metal Shader Converter runtime not available.\n");
+#endif
     }
 
     void MetalCommandList::prepareClearVertices(const RenderRect& rect, simd::float2* outVertices) {
@@ -2516,6 +2825,11 @@ namespace plume {
                     dirtyGraphicsState.rasterizer = 1;
                     dirtyGraphicsState.depthBias = 1;
                 }
+                break;
+            }
+            case MetalPipeline::Type::Raytracing: {
+                const MetalRaytracingPipeline *rtPipeline = static_cast<const MetalRaytracingPipeline *>(interfacePipeline);
+                activeRaytracingPipeline = rtPipeline;
                 break;
             }
             default:
@@ -2637,15 +2951,38 @@ namespace plume {
     }
 
     void MetalCommandList::setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) {
-        // TODO: Metal RT
+        assert(pipelineLayout != nullptr);
+
+        const MetalPipelineLayout *oldLayout = activeRaytracingPipelineLayout;
+        activeRaytracingPipelineLayout = static_cast<const MetalPipelineLayout *>(pipelineLayout);
+
+        if (oldLayout != activeRaytracingPipelineLayout) {
+            // Clear descriptor set bindings since they're no longer valid with the new layout.
+            for (uint32_t i = 0; i < MAX_DESCRIPTOR_SET_BINDINGS; i++) {
+                raytracingDescriptorSets[i] = nullptr;
+            }
+        }
     }
 
     void MetalCommandList::setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
-        // TODO: Metal RT
+        // Push constants for raytracing are handled similarly to compute.
+        // Store them for binding during traceRays.
+        assert(activeRaytracingPipelineLayout != nullptr);
+        assert(rangeIndex < activeRaytracingPipelineLayout->pushConstantRanges.size());
+
+        const RenderPushConstantRange &range = activeRaytracingPipelineLayout->pushConstantRanges[rangeIndex];
+        const uint32_t rangeSize = (size > 0) ? size : range.size;
+
+        if (pushConstants.size() < offset + rangeSize) {
+            pushConstants.resize(offset + rangeSize);
+        }
+
+        memcpy(pushConstants.data() + offset, data, rangeSize);
     }
 
     void MetalCommandList::setRaytracingDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) {
-        // TODO: Metal RT
+        assert(setIndex < MAX_DESCRIPTOR_SET_BINDINGS);
+        raytracingDescriptorSets[setIndex] = static_cast<MetalDescriptorSet *>(descriptorSet);
     }
 
     void MetalCommandList::setIndexBuffer(const RenderIndexBufferView *view) {
@@ -3064,10 +3401,11 @@ namespace plume {
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
 
-        const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
-        const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
+        // Use getTexture() to support both MetalTexture and MetalDrawable (swapchain textures).
+        const ExtendedRenderTexture *dst = static_cast<const ExtendedRenderTexture *>(dstTexture);
+        const ExtendedRenderTexture *src = static_cast<const ExtendedRenderTexture *>(srcTexture);
 
-        activeBlitEncoder->copyFromTexture(src->mtl, dst->mtl);
+        activeBlitEncoder->copyFromTexture(src->getTexture(), dst->getTexture());
     }
 
     void MetalCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
@@ -3169,11 +3507,72 @@ namespace plume {
     }
 
     void MetalCommandList::buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) {
-        // TODO: Unimplemented.
+        assert(dstAccelerationStructure != nullptr);
+        assert(scratchBuffer.ref != nullptr);
+        assert(!buildInfo.buildData.empty());
+
+        const MetalAccelerationStructure *dstAS = static_cast<const MetalAccelerationStructure *>(dstAccelerationStructure);
+        const MetalBuffer *scratch = static_cast<const MetalBuffer *>(scratchBuffer.ref);
+
+        // Retrieve the descriptor stored during setBottomLevelASBuildInfo.
+        MTL::PrimitiveAccelerationStructureDescriptor *primDesc = nullptr;
+        memcpy(&primDesc, buildInfo.buildData.data(), sizeof(void *));
+        assert(primDesc != nullptr);
+
+        // End any other encoders and create an acceleration structure encoder.
+        endOtherEncoders(EncoderType::None);
+
+        MTL::AccelerationStructureCommandEncoder *asEncoder = mtl->accelerationStructureCommandEncoder();
+        if (asEncoder == nullptr) {
+            fprintf(stderr, "Failed to create acceleration structure command encoder.\n");
+            return;
+        }
+
+        // Build the acceleration structure.
+        asEncoder->buildAccelerationStructure(dstAS->mtl, primDesc, scratch->mtl, scratchBuffer.offset);
+
+        asEncoder->endEncoding();
+
+        // Release the descriptor that was retained during setBottomLevelASBuildInfo.
+        primDesc->release();
     }
 
     void MetalCommandList::buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) {
-        // TODO: Unimplemented.
+        assert(dstAccelerationStructure != nullptr);
+        assert(scratchBuffer.ref != nullptr);
+        assert(instancesBuffer.ref != nullptr);
+        assert(!buildInfo.buildData.empty());
+
+        const MetalAccelerationStructure *dstAS = static_cast<const MetalAccelerationStructure *>(dstAccelerationStructure);
+        const MetalBuffer *scratch = static_cast<const MetalBuffer *>(scratchBuffer.ref);
+        const MetalBuffer *instances = static_cast<const MetalBuffer *>(instancesBuffer.ref);
+
+        // Retrieve the descriptor stored during setTopLevelASBuildInfo.
+        MTL::InstanceAccelerationStructureDescriptor *instDesc = nullptr;
+        memcpy(&instDesc, buildInfo.buildData.data(), sizeof(void *));
+        assert(instDesc != nullptr);
+
+        // Set the instance descriptor buffer.
+        instDesc->setInstanceDescriptorBuffer(instances->mtl);
+        instDesc->setInstanceDescriptorBufferOffset(instancesBuffer.offset);
+        instDesc->setInstanceDescriptorStride(sizeof(MTL::AccelerationStructureUserIDInstanceDescriptor));
+
+        // End any other encoders and create an acceleration structure encoder.
+        endOtherEncoders(EncoderType::None);
+
+        MTL::AccelerationStructureCommandEncoder *asEncoder = mtl->accelerationStructureCommandEncoder();
+        if (asEncoder == nullptr) {
+            fprintf(stderr, "Failed to create acceleration structure command encoder.\n");
+            return;
+        }
+
+        // Build the acceleration structure.
+        asEncoder->buildAccelerationStructure(dstAS->mtl, instDesc, scratch->mtl, scratchBuffer.offset);
+
+        asEncoder->endEncoding();
+
+        // Release the descriptor that was retained during setTopLevelASBuildInfo.
+        instDesc->release();
     }
 
     void MetalCommandList::discardTexture(const RenderTexture* texture) {
@@ -3809,8 +4208,7 @@ namespace plume {
 
         // Fill capabilities.
         // https://developer.apple.com/documentation/metal/device-inspection
-        // TODO: Support Raytracing.
-        // capabilities.raytracing = mtl->supportsRaytracing();
+        capabilities.raytracing = mtl->supportsRaytracing();
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
         capabilities.resolveModes = false;
@@ -3887,8 +4285,7 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
-        // TODO: Unimplemented (Raytracing).
-        return nullptr;
+        return std::make_unique<MetalRaytracingPipeline>(this, desc, previousPipeline);
     }
 
     std::unique_ptr<RenderCommandQueue> MetalDevice::createCommandQueue(RenderCommandListType type) {
@@ -3932,15 +4329,247 @@ namespace plume {
     }
 
     void MetalDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
-        // TODO: Unimplemented (Raytracing).
+        assert(meshes != nullptr);
+        assert(meshCount > 0);
+
+        // Create geometry descriptors for each mesh using a temporary vector.
+        std::vector<MTL::AccelerationStructureTriangleGeometryDescriptor *> geometryDescs;
+        geometryDescs.reserve(meshCount);
+        uint32_t primitiveCount = 0;
+
+        for (uint32_t i = 0; i < meshCount; i++) {
+            const RenderBottomLevelASMesh &mesh = meshes[i];
+
+            auto *geometryDesc = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+
+            // Set vertex buffer.
+            const MetalBuffer *vertexBuffer = static_cast<const MetalBuffer *>(mesh.vertexBuffer.ref);
+            if (vertexBuffer != nullptr) {
+                geometryDesc->setVertexBuffer(vertexBuffer->mtl);
+                geometryDesc->setVertexBufferOffset(mesh.vertexBuffer.offset);
+                geometryDesc->setVertexStride(mesh.vertexStride);
+                geometryDesc->setVertexFormat(mapAttributeFormat(mesh.vertexFormat));
+            }
+
+            // Set index buffer if present.
+            const MetalBuffer *indexBuffer = static_cast<const MetalBuffer *>(mesh.indexBuffer.ref);
+            uint32_t triangleCount = 0;
+            if (indexBuffer != nullptr) {
+                geometryDesc->setIndexBuffer(indexBuffer->mtl);
+                geometryDesc->setIndexBufferOffset(mesh.indexBuffer.offset);
+                geometryDesc->setIndexType(mapIndexFormat(mesh.indexFormat));
+                triangleCount = mesh.indexCount / 3;
+            } else {
+                triangleCount = mesh.vertexCount / 3;
+            }
+
+            geometryDesc->setTriangleCount(triangleCount);
+            geometryDesc->setOpaque(mesh.isOpaque);
+
+            geometryDescs.push_back(geometryDesc);
+            primitiveCount += triangleCount;
+        }
+
+        // Create NS::Array from the geometry descriptors.
+        NS::Array *geometryDescriptors = NS::Array::array(
+            reinterpret_cast<const NS::Object *const *>(geometryDescs.data()),
+            static_cast<NS::UInteger>(geometryDescs.size())
+        );
+
+        // Create primitive acceleration structure descriptor.
+        auto *primDesc = MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
+        primDesc->setGeometryDescriptors(geometryDescriptors);
+
+        // Set usage flags.
+        MTL::AccelerationStructureUsage usage = MTL::AccelerationStructureUsageNone;
+        if (preferFastBuild) {
+            usage |= MTL::AccelerationStructureUsagePreferFastBuild;
+        }
+        primDesc->setUsage(usage);
+
+        // Query sizes from the device.
+        MTL::AccelerationStructureSizes sizes = mtl->accelerationStructureSizes(primDesc);
+
+        // Fill build info.
+        buildInfo.meshCount = meshCount;
+        buildInfo.primitiveCount = primitiveCount;
+        buildInfo.preferFastBuild = preferFastBuild;
+        buildInfo.preferFastTrace = preferFastTrace;
+        buildInfo.scratchSize = sizes.buildScratchBufferSize;
+        buildInfo.accelerationStructureSize = sizes.accelerationStructureSize;
+
+        // Store the descriptor in buildData for use during the actual build.
+        // We store the pointer as raw bytes (the descriptor is retained).
+        primDesc->retain();
+        buildInfo.buildData.resize(sizeof(void *));
+        memcpy(buildInfo.buildData.data(), &primDesc, sizeof(void *));
+
+        // Release geometry descriptors (the primDesc retains the array).
+        for (auto *desc : geometryDescs) {
+            desc->release();
+        }
     }
 
     void MetalDevice::setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) {
-        // TODO: Unimplemented (Raytracing).
+        assert(instances != nullptr);
+        assert(instanceCount > 0);
+
+        // Build the instance descriptor buffer data.
+        // Metal uses MTL::AccelerationStructureInstanceDescriptor or the UserID variant.
+        buildInfo.instancesBufferData.resize(sizeof(MTL::AccelerationStructureUserIDInstanceDescriptor) * instanceCount, 0);
+        auto *bufferInstances = reinterpret_cast<MTL::AccelerationStructureUserIDInstanceDescriptor *>(buildInfo.instancesBufferData.data());
+
+        // Collect BLAS references for the instanced acceleration structures array.
+        std::vector<MTL::AccelerationStructure *> blasArray;
+        blasArray.reserve(instanceCount);
+
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            const RenderTopLevelASInstance &instance = instances[i];
+            MTL::AccelerationStructureUserIDInstanceDescriptor &desc = bufferInstances[i];
+
+            // Copy transform (3x4 row-major matrix).
+            // RenderAffineTransform is a 3x4 matrix stored as float[3][4].
+            // Metal's PackedFloat4x3 is column-major, so we need to transpose.
+            for (int row = 0; row < 3; row++) {
+                for (int col = 0; col < 4; col++) {
+                    desc.transformationMatrix.columns[col][row] = instance.transform.m[row][col];
+                }
+            }
+
+            // Set instance options.
+            MTL::AccelerationStructureInstanceOptions options = MTL::AccelerationStructureInstanceOptionNone;
+            if (instance.cullDisable) {
+                options |= MTL::AccelerationStructureInstanceOptionDisableTriangleCulling;
+            }
+            desc.options = options;
+
+            desc.mask = instance.instanceMask;
+            desc.intersectionFunctionTableOffset = instance.instanceContributionToHitGroupIndex;
+            desc.userID = instance.instanceID;
+
+            // The accelerationStructureIndex references into the BLAS array we build.
+            desc.accelerationStructureIndex = i;
+
+            // Get the BLAS from the bottomLevelAS reference.
+            // The RenderBufferReference.ref is actually a MetalAccelerationStructure* cast to RenderBuffer*.
+            const MetalAccelerationStructure *blas = reinterpret_cast<const MetalAccelerationStructure *>(instance.bottomLevelAS.ref);
+            if (blas != nullptr && blas->mtl != nullptr) {
+                blasArray.push_back(blas->mtl);
+            } else {
+                blasArray.push_back(nullptr);
+            }
+        }
+
+        // Create instance acceleration structure descriptor to query sizes.
+        auto *instDesc = MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
+        instDesc->setInstanceCount(instanceCount);
+        instDesc->setInstanceDescriptorType(MTL::AccelerationStructureInstanceDescriptorTypeUserID);
+
+        // Set the instanced acceleration structures array.
+        if (!blasArray.empty()) {
+            NS::Array *blasNSArray = NS::Array::array(
+                reinterpret_cast<const NS::Object *const *>(blasArray.data()),
+                static_cast<NS::UInteger>(blasArray.size())
+            );
+            instDesc->setInstancedAccelerationStructures(blasNSArray);
+        }
+
+        // Set usage flags.
+        MTL::AccelerationStructureUsage usage = MTL::AccelerationStructureUsageNone;
+        if (preferFastBuild) {
+            usage |= MTL::AccelerationStructureUsagePreferFastBuild;
+        }
+        instDesc->setUsage(usage);
+
+        // Query sizes from the device.
+        MTL::AccelerationStructureSizes sizes = mtl->accelerationStructureSizes(instDesc);
+
+        // Fill build info.
+        buildInfo.instanceCount = instanceCount;
+        buildInfo.preferFastBuild = preferFastBuild;
+        buildInfo.preferFastTrace = preferFastTrace;
+        buildInfo.scratchSize = sizes.buildScratchBufferSize;
+        buildInfo.accelerationStructureSize = sizes.accelerationStructureSize;
+
+        // Store the descriptor in buildData for use during the actual build.
+        instDesc->retain();
+        buildInfo.buildData.resize(sizeof(void *));
+        memcpy(buildInfo.buildData.data(), &instDesc, sizeof(void *));
     }
 
     void MetalDevice::setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) {
-        // TODO: Unimplemented (Raytracing).
+#ifdef PLUME_METAL_RAYTRACING_ENABLED
+        assert(pipeline != nullptr);
+        const MetalRaytracingPipeline *rtPipeline = static_cast<const MetalRaytracingPipeline *>(pipeline);
+
+        // IRShaderIdentifier is 32 bytes (4 x uint64_t).
+        // Each shader record = IRShaderIdentifier + local root signature data.
+        // For simplicity, we use a fixed stride that accommodates the identifier.
+        // Local root signature data would follow the identifier if needed.
+        constexpr uint32_t shaderIdentifierSize = sizeof(IRShaderIdentifier);
+
+        // Calculate stride for each group (must be aligned to D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT = 32).
+        constexpr uint32_t recordAlignment = 32;
+        auto alignStride = [](uint32_t size) -> uint32_t {
+            return (size + recordAlignment - 1) & ~(recordAlignment - 1);
+        };
+
+        // Helper to set up a group's info.
+        auto setGroup = [&](RenderShaderBindingGroupInfo &groupInfo, const RenderShaderBindingGroup &renderGroup, uint32_t &currentOffset) {
+            if (renderGroup.pipelineProgramsCount == 0) {
+                groupInfo.offset = 0;
+                groupInfo.size = 0;
+                groupInfo.stride = 0;
+                groupInfo.startIndex = 0;
+                return;
+            }
+
+            groupInfo.stride = alignStride(shaderIdentifierSize);
+            groupInfo.offset = currentOffset;
+            groupInfo.size = groupInfo.stride * renderGroup.pipelineProgramsCount;
+            groupInfo.startIndex = 0;
+
+            currentOffset += groupInfo.size;
+        };
+
+        // Calculate total size and set up group info.
+        uint32_t currentOffset = 0;
+        setGroup(tableInfo.groups.rayGen, groups.rayGen, currentOffset);
+        setGroup(tableInfo.groups.miss, groups.miss, currentOffset);
+        setGroup(tableInfo.groups.hitGroup, groups.hitGroup, currentOffset);
+        setGroup(tableInfo.groups.callable, groups.callable, currentOffset);
+
+        // Allocate table buffer data.
+        tableInfo.tableBufferData.resize(currentOffset);
+        memset(tableInfo.tableBufferData.data(), 0, currentOffset);
+
+        // Helper to copy shader identifiers into the table.
+        auto copyGroupData = [&](const RenderShaderBindingGroupInfo &groupInfo, const RenderShaderBindingGroup &renderGroup) {
+            if (renderGroup.pipelineProgramsCount == 0) {
+                return;
+            }
+
+            uint8_t *groupData = tableInfo.tableBufferData.data() + groupInfo.offset;
+
+            for (uint32_t i = 0; i < renderGroup.pipelineProgramsCount; i++) {
+                const RenderPipelineProgram &program = renderGroup.pipelinePrograms[i];
+                IRShaderIdentifier *identifier = reinterpret_cast<IRShaderIdentifier *>(groupData + i * groupInfo.stride);
+
+                // Initialize the shader identifier.
+                // program.programIndex is the index into the visible function table (1-based, 0 = null).
+                IRShaderIdentifierInit(identifier, program.programIndex);
+            }
+        };
+
+        // Copy shader identifiers for each group.
+        copyGroupData(tableInfo.groups.rayGen, groups.rayGen);
+        copyGroupData(tableInfo.groups.miss, groups.miss);
+        copyGroupData(tableInfo.groups.hitGroup, groups.hitGroup);
+        copyGroupData(tableInfo.groups.callable, groups.callable);
+#else
+        (void)tableInfo; (void)groups; (void)pipeline; (void)descriptorSets; (void)descriptorSetCount;
+        fprintf(stderr, "Ray tracing not supported: Metal Shader Converter runtime not available.\n");
+#endif
     }
 
     const RenderDeviceCapabilities &MetalDevice::getCapabilities() const {

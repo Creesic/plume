@@ -13,4 +13,15 @@ plume_shaders_init()
 # Add example subdirectories
 add_subdirectory(triangle)
 add_subdirectory(cube)
-add_subdirectory(raytracing)
+
+# Raytracing example requires Metal Shader Converter on Apple platforms
+if(APPLE)
+    if(METAL_SHADER_CONVERTER_INCLUDE)
+        add_subdirectory(raytracing)
+    else()
+        message(STATUS "Skipping raytracing example: Metal Shader Converter not found")
+    endif()
+else()
+    # D3D12 raytracing doesn't need special tools
+    add_subdirectory(raytracing)
+endif()

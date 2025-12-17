@@ -377,12 +377,11 @@ endfunction()
 # Usage: plume_compile_library_shader(TARGET SOURCE OUTPUT_NAME [options])
 # Options: SHADER_MODEL, INCLUDE_DIRS, EXTRA_ARGS, OUTPUT_DIR
 function(plume_compile_library_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    # Parse optional arguments
-    cmake_parse_arguments(ARG "" "SHADER_MODEL;OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
-
     if(NOT WIN32)
         return()
     endif()
+
+    cmake_parse_arguments(ARG "" "SHADER_MODEL;OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
 
     # Build optional args to pass to impl
     set(IMPL_ARGS "")
@@ -405,41 +404,10 @@ function(plume_compile_library_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
     _plume_compile_hlsl_impl(${TARGET_NAME} "${SHADER_SOURCE}" "library" ${OUTPUT_NAME} "dxil" "" ${IMPL_ARGS})
 endfunction()
 
-# Compile a native Metal shader (Apple only, no-op on other platforms)
-# Use this for handwritten .metal files, not for cross-compiled HLSL
-# Usage: plume_compile_metal_shader(TARGET SOURCE OUTPUT_NAME)
-function(plume_compile_metal_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    if(APPLE)
-        _plume_compile_metal_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME})
-    endif()
-endfunction()
-
-# ============================================================================
-# Metal Shader Converter (Ray Tracing)
-# ============================================================================
-
-# Compile a ray tracing shader library using Metal Shader Converter (Apple only)
+# Internal: Compile a ray tracing shader library using Metal Shader Converter (Apple only)
 # This converts DXIL ray tracing shaders to Metal visible functions
-#
-# Usage: plume_compile_rt_shader_metal(TARGET SOURCE OUTPUT_NAME [options])
-#   TARGET      - CMake target to add shader to
-#   SOURCE      - Path to HLSL shader source file
-#   OUTPUT_NAME - Base name for output files
-#
-# Options:
-#   ENTRY_POINTS <list>  - Entry points to export (e.g., "RayGen;ClosestHit;Miss")
-#   INCLUDE_DIRS <dirs>  - Additional include directories for DXC
-#   EXTRA_ARGS <args>    - Additional DXC arguments
-#   OUTPUT_DIR <dir>     - Custom output directory
-#
-# Output:
-#   {OUTPUT_NAME}BlobMetalLib in shaders/{OUTPUT_NAME}.metallib.h
-function(plume_compile_rt_shader_metal TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-    if(NOT APPLE)
-        return()
-    endif()
-
-    cmake_parse_arguments(ARG "" "OUTPUT_DIR" "ENTRY_POINTS;INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
+function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    cmake_parse_arguments(ARG "" "OUTPUT_DIR" "INCLUDE_DIRS;EXTRA_ARGS" ${ARGN})
 
     # Check for metal-shaderconverter
     find_program(METAL_SHADER_CONVERTER metal-shaderconverter
@@ -497,6 +465,7 @@ function(plume_compile_rt_shader_metal TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
             --minimum-gpu-family=Metal3
             --synthesize-indirect-ray-dispatch
             --synthesize-indirect-intersection-function
+            --rt-enable-function-groups
         DEPENDS "${DXIL_OUTPUT}"
         COMMENT "Converting RT shader ${OUTPUT_NAME} to Metal"
         VERBATIM
@@ -515,6 +484,45 @@ function(plume_compile_rt_shader_metal TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
 
     target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
+endfunction()
+
+# Compile a native Metal shader (Apple only, no-op on other platforms)
+# Use this for handwritten .metal files, not for cross-compiled HLSL
+# Usage: plume_compile_metal_shader(TARGET SOURCE OUTPUT_NAME)
+function(plume_compile_metal_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    if(APPLE)
+        _plume_compile_metal_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME})
+    endif()
+endfunction()
+
+# ============================================================================
+# Ray Tracing Shader Compilation
+# ============================================================================
+
+# Compile a ray tracing shader library for the current platform
+# On Windows: Compiles HLSL to DXIL library shader
+# On Apple: Compiles HLSL to DXIL, then converts to Metal via Metal Shader Converter
+#
+# Usage: plume_compile_rt_shader(TARGET SOURCE OUTPUT_NAME [options])
+#   TARGET      - CMake target to add shader to
+#   SOURCE      - Path to HLSL shader source file
+#   OUTPUT_NAME - Base name for output files
+#
+# Options:
+#   SHADER_MODEL <ver>   - Shader model version (default: 6_3)
+#   INCLUDE_DIRS <dirs>  - Additional include directories for DXC
+#   EXTRA_ARGS <args>    - Additional DXC arguments
+#   OUTPUT_DIR <dir>     - Custom output directory
+#
+# Output:
+#   Windows: {OUTPUT_NAME}_blob in shaders/{OUTPUT_NAME}.hlsl.dxil.h
+#   Apple:   {OUTPUT_NAME}BlobMetalLib in shaders/{OUTPUT_NAME}.metallib.h
+function(plume_compile_rt_shader TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
+    if(WIN32)
+        plume_compile_library_shader(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME} ${ARGN})
+    elseif(APPLE)
+        _plume_compile_rt_shader_metal_impl(${TARGET_NAME} "${SHADER_SOURCE}" ${OUTPUT_NAME} ${ARGN})
+    endif()
 endfunction()
 
 # Preprocess a shader header file and embed it as text

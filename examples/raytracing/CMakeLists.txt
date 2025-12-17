@@ -25,27 +25,14 @@ target_include_directories(plume_raytracing PRIVATE
     ${CMAKE_BINARY_DIR}/shaders
 )
 
-# Ray tracing shaders are compiled differently per platform:
-# - D3D12: HLSL -> DXIL (library shader)
-# - Vulkan: HLSL -> SPIR-V (library shader)
-# - Metal: HLSL -> DXIL -> metallib (via Metal Shader Converter)
-
-# For D3D12: Compile as DXIL library
-if(WIN32)
-    plume_compile_library_shader(plume_raytracing
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytracing.hlsl"
-        rtShaders
-        SHADER_MODEL 6_3
-    )
-endif()
-
-# For Metal: HLSL -> DXIL -> metallib via Metal Shader Converter
-if(APPLE)
-    plume_compile_rt_shader_metal(plume_raytracing
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytracing.hlsl"
-        rtShadersMetal
-    )
-endif()
+# Compile ray tracing shaders for the current platform
+# - D3D12 (Windows): HLSL -> DXIL library shader
+# - Metal (Apple): HLSL -> DXIL -> metallib via Metal Shader Converter
+plume_compile_rt_shader(plume_raytracing
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raytracing.hlsl"
+    rtShaders
+    SHADER_MODEL 6_3
+)
 
 # Set output directory
 set_target_properties(plume_raytracing PROPERTIES

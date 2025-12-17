@@ -54,6 +54,7 @@ namespace plume {
     struct MetalBufferFormattedView;
     struct MetalPipelineLayout;
     struct MetalGraphicsPipeline;
+    struct MetalRaytracingPipeline;
     struct MetalPool;
     struct MetalDrawable;
 
@@ -446,10 +447,13 @@ namespace plume {
         const MetalFramebuffer *targetFramebuffer = nullptr;
         const MetalPipelineLayout *activeComputePipelineLayout = nullptr;
         const MetalPipelineLayout *activeGraphicsPipelineLayout = nullptr;
+        const MetalPipelineLayout *activeRaytracingPipelineLayout = nullptr;
         const MetalRenderState *activeRenderState = nullptr;
         const MetalComputeState *activeComputeState = nullptr;
+        const MetalRaytracingPipeline *activeRaytracingPipeline = nullptr;
         MetalDescriptorSet* renderDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
         MetalDescriptorSet* computeDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
+        MetalDescriptorSet* raytracingDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
 
         MTL::Fence *timestampQueryFence = nullptr;
 
@@ -617,8 +621,7 @@ namespace plume {
 
     struct MetalAccelerationStructure : RenderAccelerationStructure {
         MetalDevice *device = nullptr;
-        const MetalBuffer *buffer = nullptr;
-        uint64_t offset = 0;
+        MTL::AccelerationStructure *mtl = nullptr;
         uint64_t size = 0;
         RenderAccelerationStructureType type = RenderAccelerationStructureType::UNKNOWN;
 
@@ -685,6 +688,22 @@ namespace plume {
 
         MetalGraphicsPipeline(const MetalDevice *device, const RenderGraphicsPipelineDesc &desc);
         ~MetalGraphicsPipeline() override;
+        void setName(const std::string &name) override;
+        RenderPipelineProgram getProgram(const std::string &name) const override;
+    };
+
+    struct MetalRaytracingPipeline : MetalPipeline {
+        const MetalDevice *device = nullptr;
+        MTL::ComputePipelineState *computePipeline = nullptr;
+        MTL::VisibleFunctionTable *visibleFunctionTable = nullptr;
+        MTL::IntersectionFunctionTable *intersectionFunctionTable = nullptr;
+        std::unordered_map<std::string, uint32_t> nameProgramMap;
+        const MetalPipelineLayout *pipelineLayout = nullptr;
+        uint32_t maxPayloadSize = 0;
+        uint32_t maxAttributeSize = 0;
+
+        MetalRaytracingPipeline(MetalDevice *device, const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline);
+        ~MetalRaytracingPipeline() override;
         void setName(const std::string &name) override;
         RenderPipelineProgram getProgram(const std::string &name) const override;
     };
