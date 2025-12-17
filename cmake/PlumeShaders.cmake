@@ -35,6 +35,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeFileToC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeDXC.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeSpirvCross.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeRootSignature.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/modules/PlumeCombineRTMetallibs.cmake")
 
 # Initialize shader compilation infrastructure
 # Call this once before using other plume_compile_* functions
@@ -58,6 +59,7 @@ function(plume_shaders_init)
     # Build root signature generator tool (Apple RT shaders)
     if(APPLE)
         plume_build_generate_root_signature()
+        plume_build_combine_rt_metallibs()
     endif()
 
     plume_build_file_to_c()
@@ -520,29 +522,28 @@ function(_plume_compile_rt_shader_metal_impl TARGET_NAME SHADER_SOURCE OUTPUT_NA
         VERBATIM
     )
 
-    # Step 3a: Generate C header for visible functions
-    set(FUNCS_C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib.c")
-    set(FUNCS_H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_functions.metallib.h")
+    # Step 3: Combine both metallibs into a single blob
+    set(COMBINED_METALLIB "${OUT_DIR}/${OUTPUT_NAME}.metallib")
     add_custom_command(
-        OUTPUT "${FUNCS_C_OUTPUT}" "${FUNCS_H_OUTPUT}"
-        COMMAND plume_file_to_c "${VISIBLE_FUNCS_METALLIB}" "${OUTPUT_NAME}FunctionsBlobMetalLib" "${FUNCS_C_OUTPUT}" "${FUNCS_H_OUTPUT}"
-        DEPENDS "${VISIBLE_FUNCS_METALLIB}" plume_file_to_c
-        COMMENT "Generating C header for RT visible functions ${OUTPUT_NAME}"
+        OUTPUT "${COMBINED_METALLIB}"
+        COMMAND plume_combine_rt_metallibs "${VISIBLE_FUNCS_METALLIB}" "${DISPATCH_METALLIB}" "${COMBINED_METALLIB}"
+        DEPENDS "${VISIBLE_FUNCS_METALLIB}" "${DISPATCH_METALLIB}" plume_combine_rt_metallibs
+        COMMENT "Combining RT metallibs for ${OUTPUT_NAME}"
         VERBATIM
     )
 
-    # Step 3b: Generate C header for dispatch kernel
-    set(DISPATCH_C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_dispatch.metallib.c")
-    set(DISPATCH_H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}_dispatch.metallib.h")
+    # Step 4: Generate C header for combined metallib
+    set(COMBINED_C_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.c")
+    set(COMBINED_H_OUTPUT "${OUT_DIR}/${OUTPUT_NAME}.metallib.h")
     add_custom_command(
-        OUTPUT "${DISPATCH_C_OUTPUT}" "${DISPATCH_H_OUTPUT}"
-        COMMAND plume_file_to_c "${DISPATCH_METALLIB}" "${OUTPUT_NAME}DispatchBlobMetalLib" "${DISPATCH_C_OUTPUT}" "${DISPATCH_H_OUTPUT}"
-        DEPENDS "${DISPATCH_METALLIB}" plume_file_to_c
-        COMMENT "Generating C header for RT dispatch kernel ${OUTPUT_NAME}"
+        OUTPUT "${COMBINED_C_OUTPUT}" "${COMBINED_H_OUTPUT}"
+        COMMAND plume_file_to_c "${COMBINED_METALLIB}" "${OUTPUT_NAME}BlobMetalLib" "${COMBINED_C_OUTPUT}" "${COMBINED_H_OUTPUT}"
+        DEPENDS "${COMBINED_METALLIB}" plume_file_to_c
+        COMMENT "Generating C header for RT shader ${OUTPUT_NAME}"
         VERBATIM
     )
 
-    target_sources(${TARGET_NAME} PRIVATE "${FUNCS_C_OUTPUT}" "${DISPATCH_C_OUTPUT}")
+    target_sources(${TARGET_NAME} PRIVATE "${COMBINED_C_OUTPUT}")
     target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
 endfunction()
 

@@ -17,9 +17,7 @@
 #include "shaders/rtShaders.hlsl.dxil.h"
 #endif
 #ifdef __APPLE__
-// Metal RT requires two metallibs: visible functions + dispatch kernel
-#include "shaders/rtShaders_functions.metallib.h"
-#include "shaders/rtShaders_dispatch.metallib.h"
+#include "shaders/rtShaders.metallib.h"
 #endif
 
 namespace plume {
@@ -111,8 +109,7 @@ struct RTContext {
     std::unique_ptr<RenderBuffer> sbtBuffer;
     std::unique_ptr<RenderAccelerationStructure> blas;
     std::unique_ptr<RenderAccelerationStructure> tlas;
-    std::unique_ptr<RenderShader> rtFunctionsShader;  // Visible functions (RayGen, ClosestHit, Miss)
-    std::unique_ptr<RenderShader> rtDispatchShader;   // Dispatch kernel (RaygenIndirection) - Metal only
+    std::unique_ptr<RenderShader> rtShader;
     std::unique_ptr<RenderPipeline> rtPipeline;
     std::unique_ptr<RenderPipelineLayout> rtPipelineLayout;
     std::unique_ptr<RenderTexture> outputTexture;
@@ -298,17 +295,13 @@ void initializeRayTracing(RTContext& ctx) {
     ctx.constantBuffer = ctx.device->createBuffer(cbDesc);
     ctx.constantBuffer->setName("Camera Constants");
 
-    // 6. Create RT shaders
+    // 6. Create RT shader
 #ifdef __APPLE__
-    // Metal requires two shader libraries: visible functions + dispatch kernel
-    ctx.rtFunctionsShader = ctx.device->createShader(rtShadersFunctionsBlobMetalLib, rtShadersFunctionsBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
-    ctx.rtFunctionsShader->setName("RT Visible Functions");
-    ctx.rtDispatchShader = ctx.device->createShader(rtShadersDispatchBlobMetalLib, rtShadersDispatchBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
-    ctx.rtDispatchShader->setName("RT Dispatch Kernel");
+    ctx.rtShader = ctx.device->createShader(rtShadersBlobMetalLib, rtShadersBlobMetalLib_size, nullptr, RenderShaderFormat::METAL);
 #elif defined(_WIN64)
-    ctx.rtFunctionsShader = ctx.device->createShader(rtShaders_blob, rtShaders_size, nullptr, RenderShaderFormat::DXIL);
-    ctx.rtFunctionsShader->setName("RT Shader Library");
+    ctx.rtShader = ctx.device->createShader(rtShaders_blob, rtShaders_size, nullptr, RenderShaderFormat::DXIL);
 #endif
+    ctx.rtShader->setName("RT Shader Library");
 
     // 7. Create pipeline layout with descriptors for: output texture (UAV), TLAS (SRV), constants (CBV)
     std::vector<RenderDescriptorRange> ranges;
@@ -337,23 +330,11 @@ void initializeRayTracing(RTContext& ctx) {
         RenderRaytracingPipelineLibrarySymbol("Miss", RenderRaytracingPipelineLibrarySymbolType::MISS, "Miss")
     };
 
-    // Set up libraries - Metal needs both functions and dispatch, D3D12 just needs functions
-    std::vector<RenderRaytracingPipelineLibrary> libraries;
-    
-    RenderRaytracingPipelineLibrary functionsLibrary;
-    functionsLibrary.shader = ctx.rtFunctionsShader.get();
-    functionsLibrary.symbols = functionsSymbols;
-    functionsLibrary.symbolsCount = 3;
-    libraries.push_back(functionsLibrary);
-
-#ifdef __APPLE__
-    // Metal also needs the dispatch kernel library (no symbols - it's the compute kernel)
-    RenderRaytracingPipelineLibrary dispatchLibrary;
-    dispatchLibrary.shader = ctx.rtDispatchShader.get();
-    dispatchLibrary.symbols = nullptr;
-    dispatchLibrary.symbolsCount = 0;
-    libraries.push_back(dispatchLibrary);
-#endif
+    // Set up shader library
+    RenderRaytracingPipelineLibrary shaderLibrary;
+    shaderLibrary.shader = ctx.rtShader.get();
+    shaderLibrary.symbols = functionsSymbols;
+    shaderLibrary.symbolsCount = 3;
 
     RenderRaytracingPipelineHitGroup hitGroup;
     hitGroup.hitGroupName = "HitGroup";
@@ -362,8 +343,8 @@ void initializeRayTracing(RTContext& ctx) {
     hitGroup.intersectionName = nullptr;
 
     RenderRaytracingPipelineDesc rtPipelineDesc;
-    rtPipelineDesc.libraries = libraries.data();
-    rtPipelineDesc.librariesCount = static_cast<uint32_t>(libraries.size());
+    rtPipelineDesc.libraries = &shaderLibrary;
+    rtPipelineDesc.librariesCount = 1;
     rtPipelineDesc.hitGroups = &hitGroup;
     rtPipelineDesc.hitGroupsCount = 1;
     rtPipelineDesc.pipelineLayout = ctx.rtPipelineLayout.get();

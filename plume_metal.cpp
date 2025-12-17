@@ -1370,6 +1370,28 @@ namespace plume {
 
     // MetalShader
 
+    // Combined RT metallib header format:
+    //   [4 bytes] Magic: "PLRT"
+    //   [4 bytes] Version: 1
+    //   [4 bytes] Functions metallib size (little-endian)
+    //   [4 bytes] Dispatch metallib size (little-endian)
+    //   [N bytes] Functions metallib data
+    //   [M bytes] Dispatch metallib data
+    static const char PLRT_MAGIC[4] = {'P', 'L', 'R', 'T'};
+
+    static uint32_t readUint32LE(const uint8_t* data) {
+        return static_cast<uint32_t>(data[0]) |
+               (static_cast<uint32_t>(data[1]) << 8) |
+               (static_cast<uint32_t>(data[2]) << 16) |
+               (static_cast<uint32_t>(data[3]) << 24);
+    }
+
+    static bool isCombinedRTMetallib(const void* data, uint64_t size) {
+        if (size < 16) return false;
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        return bytes[0] == 'P' && bytes[1] == 'L' && bytes[2] == 'R' && bytes[3] == 'T';
+    }
+
     MetalShader::MetalShader(const MetalDevice *device, const void *data, uint64_t size, const char *entryPointName, const RenderShaderFormat format) {
         assert(device != nullptr);
         assert(data != nullptr);
@@ -1380,18 +1402,57 @@ namespace plume {
         this->functionName = (entryPointName != nullptr) ? NS::String::string(entryPointName, NS::UTF8StringEncoding) : MTLSTR("");
 
         NS::Error *error = nullptr;
-        const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
-        library = device->mtl->newLibrary(dispatchData, &error);
 
-        if (error != nullptr) {
-            fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
-            return;
+        // Check if this is a combined RT metallib (functions + dispatch kernel)
+        if (isCombinedRTMetallib(data, size)) {
+            const auto* bytes = static_cast<const uint8_t*>(data);
+            uint32_t version = readUint32LE(bytes + 4);
+            if (version != 1) {
+                fprintf(stderr, "Unsupported combined RT metallib version: %u\n", version);
+                return;
+            }
+
+            uint32_t functionsSize = readUint32LE(bytes + 8);
+            uint32_t dispatchSize = readUint32LE(bytes + 12);
+            const void* functionsData = bytes + 16;
+            const void* dispatchData = bytes + 16 + functionsSize;
+
+            // Load functions library
+            dispatch_data_t functionsDispatchData = dispatch_data_create(functionsData, functionsSize, dispatch_get_main_queue(), ^{});
+            library = device->mtl->newLibrary(functionsDispatchData, &error);
+            if (error != nullptr) {
+                fprintf(stderr, "Failed to load RT functions metallib: %s\n", error->localizedDescription()->utf8String());
+                return;
+            }
+
+            // Load dispatch library
+            error = nullptr;
+            dispatch_data_t dispatchDispatchData = dispatch_data_create(dispatchData, dispatchSize, dispatch_get_main_queue(), ^{});
+            dispatchLibrary = device->mtl->newLibrary(dispatchDispatchData, &error);
+            if (error != nullptr) {
+                fprintf(stderr, "Failed to load RT dispatch metallib: %s\n", error->localizedDescription()->utf8String());
+                return;
+            }
+        } else {
+            // Regular single metallib
+            const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
+            library = device->mtl->newLibrary(dispatchData, &error);
+
+            if (error != nullptr) {
+                fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
+                return;
+            }
         }
     }
 
     MetalShader::~MetalShader() {
         functionName->release();
-        library->release();
+        if (library) {
+            library->release();
+        }
+        if (dispatchLibrary) {
+            dispatchLibrary->release();
+        }
         if (debugName) {
             debugName->release();
         }
@@ -1714,7 +1775,13 @@ namespace plume {
 
             const MetalShader *shader = static_cast<const MetalShader *>(library.shader);
 
-            // Try to find the RaygenIndirection kernel (from dispatch library).
+            // Try to find the RaygenIndirection kernel.
+            // First check if shader has a combined dispatch library (from combined RT metallib).
+            if (raygenIndirectionFunction == nullptr && shader->dispatchLibrary != nullptr) {
+                NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
+                raygenIndirectionFunction = shader->dispatchLibrary->newFunction(indirectionName);
+            }
+            // Also check the main library (for backwards compatibility with separate dispatch libraries).
             if (raygenIndirectionFunction == nullptr) {
                 NS::String *indirectionName = NS::String::string("RaygenIndirection", NS::UTF8StringEncoding);
                 raygenIndirectionFunction = shader->library->newFunction(indirectionName);
