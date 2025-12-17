@@ -233,9 +233,7 @@ void initializeRayTracing(RTContext& ctx) {
     transform.m[2][0] = 0.0f; transform.m[2][1] = 0.0f; transform.m[2][2] = 1.0f; transform.m[2][3] = 0.0f;
 
     RenderTopLevelASInstance instance;
-    // For the BLAS reference, we use a RenderBufferReference with the AS pointer cast to RenderBuffer*.
-    // This is how the cross-platform API bridges Metal's separate AS objects.
-    instance.bottomLevelAS = RenderBufferReference(reinterpret_cast<const RenderBuffer*>(ctx.blas.get()), 0);
+    instance.bottomLevelAS = ctx.blas.get();
     instance.transform = transform;
     instance.instanceID = 0;
     instance.instanceMask = 0xFF;

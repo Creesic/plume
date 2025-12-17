@@ -1648,8 +1648,10 @@ namespace plume {
         std::vector<uint8_t> buildData;
     };
 
+    struct RenderAccelerationStructure;
+
     struct RenderTopLevelASInstance {
-        RenderBufferReference bottomLevelAS;
+        const RenderAccelerationStructure *bottomLevelAS = nullptr;
         uint32_t instanceID = 0;
         uint32_t instanceMask = 0;
         uint32_t instanceContributionToHitGroupIndex = 0;
@@ -1658,7 +1660,7 @@ namespace plume {
 
         RenderTopLevelASInstance() = default;
 
-        RenderTopLevelASInstance(RenderBufferReference bottomLevelAS, uint32_t instanceID, uint32_t instanceMask, uint32_t instanceContributionToHitGroupIndex, bool cullDisable, RenderAffineTransform transform) {
+        RenderTopLevelASInstance(const RenderAccelerationStructure *bottomLevelAS, uint32_t instanceID, uint32_t instanceMask, uint32_t instanceContributionToHitGroupIndex, bool cullDisable, RenderAffineTransform transform) {
             this->bottomLevelAS = bottomLevelAS;
             this->instanceID = instanceID;
             this->instanceMask = instanceMask;

@@ -1119,6 +1119,9 @@ namespace plume {
         this->type = desc.type;
 
         const VulkanBuffer *interfaceBuffer = static_cast<const VulkanBuffer *>(desc.buffer.ref);
+        this->backingBuffer = interfaceBuffer;
+        this->backingBufferOffset = desc.buffer.offset;
+
         VkAccelerationStructureCreateInfoKHR createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
         createInfo.buffer = interfaceBuffer->vk;
@@ -4291,8 +4294,9 @@ namespace plume {
         VkAccelerationStructureInstanceKHR *bufferInstances = reinterpret_cast<VkAccelerationStructureInstanceKHR *>(buildInfo.instancesBufferData.data());
         for (uint32_t i = 0; i < instanceCount; i++) {
             const RenderTopLevelASInstance &instance = instances[i];
-            const VulkanBuffer *interfaceBottomLevelAS = static_cast<const VulkanBuffer *>(instance.bottomLevelAS.ref);
-            assert(interfaceBottomLevelAS != nullptr);
+            const VulkanAccelerationStructure *blasAS = static_cast<const VulkanAccelerationStructure *>(instance.bottomLevelAS);
+            assert(blasAS != nullptr);
+            assert(blasAS->backingBuffer != nullptr);
 
             VkAccelerationStructureInstanceKHR &bufferInstance = bufferInstances[i];
             bufferInstance.instanceCustomIndex = instance.instanceID;
@@ -4303,8 +4307,8 @@ namespace plume {
 
             VkBufferDeviceAddressInfo blasAddressInfo = {};
             blasAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-            blasAddressInfo.buffer = interfaceBottomLevelAS->vk;
-            bufferInstance.accelerationStructureReference = vkGetBufferDeviceAddress(vk, &blasAddressInfo) + instance.bottomLevelAS.offset;
+            blasAddressInfo.buffer = blasAS->backingBuffer->vk;
+            bufferInstance.accelerationStructureReference = vkGetBufferDeviceAddress(vk, &blasAddressInfo) + blasAS->backingBufferOffset;
         }
 
         // Retrieve the size the TLAS will require.

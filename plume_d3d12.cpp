@@ -3997,15 +3997,16 @@ namespace plume {
         D3D12_RAYTRACING_INSTANCE_DESC *instanceDescs = reinterpret_cast<D3D12_RAYTRACING_INSTANCE_DESC *>(buildInfo.instancesBufferData.data());
         for (uint32_t i = 0; i < instanceCount; i++) {
             const RenderTopLevelASInstance &instance = instances[i];
-            const D3D12Buffer *interfaceBottomLevelAS = static_cast<const D3D12Buffer *>(instance.bottomLevelAS.ref);
-            assert(interfaceBottomLevelAS != nullptr);
+            const D3D12AccelerationStructure *blasAS = static_cast<const D3D12AccelerationStructure *>(instance.bottomLevelAS);
+            assert(blasAS != nullptr);
+            assert(blasAS->buffer != nullptr);
 
             D3D12_RAYTRACING_INSTANCE_DESC &instanceDesc = instanceDescs[i];
             instanceDesc.InstanceID = instance.instanceID;
             instanceDesc.InstanceMask = instance.instanceMask;
             instanceDesc.InstanceContributionToHitGroupIndex = instance.instanceContributionToHitGroupIndex;
             instanceDesc.Flags = instance.cullDisable ? D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-            instanceDesc.AccelerationStructure = interfaceBottomLevelAS->d3d->GetGPUVirtualAddress() + instance.bottomLevelAS.offset;
+            instanceDesc.AccelerationStructure = blasAS->buffer->d3d->GetGPUVirtualAddress() + blasAS->offset;
             memcpy(instanceDesc.Transform, instance.transform.m, sizeof(instanceDesc.Transform));
         }
 

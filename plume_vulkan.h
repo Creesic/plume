@@ -112,6 +112,8 @@ namespace plume {
         VkAccelerationStructureKHR vk = VK_NULL_HANDLE;
         VulkanDevice *device = nullptr;
         RenderAccelerationStructureType type = RenderAccelerationStructureType::UNKNOWN;
+        const VulkanBuffer *backingBuffer = nullptr;
+        uint64_t backingBufferOffset = 0;
 
         VulkanAccelerationStructure(VulkanDevice *device, const RenderAccelerationStructureDesc &desc);
         ~VulkanAccelerationStructure() override;

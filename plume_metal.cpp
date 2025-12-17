@@ -4675,8 +4675,7 @@ namespace plume {
             desc.accelerationStructureIndex = i;
 
             // Get the BLAS from the bottomLevelAS reference.
-            // The RenderBufferReference.ref is actually a MetalAccelerationStructure* cast to RenderBuffer*.
-            const MetalAccelerationStructure *blas = reinterpret_cast<const MetalAccelerationStructure *>(instance.bottomLevelAS.ref);
+            const MetalAccelerationStructure *blas = static_cast<const MetalAccelerationStructure *>(instance.bottomLevelAS);
             if (blas != nullptr && blas->mtl != nullptr) {
                 blasArray.push_back(blas->mtl);
             } else {
