@@ -7,11 +7,11 @@ RWTexture2D<float4> outputTexture : register(u0);
 
 // Acceleration structure
 [[vk::binding(1)]]
-RaytracingAccelerationStructure scene : register(t0);
+RaytracingAccelerationStructure scene : register(t1);
 
 // Camera constants
 [[vk::binding(2)]]
-cbuffer CameraConstants : register(b0)
+cbuffer CameraConstants : register(b2)
 {
     float4x4 viewInverse;
     float4x4 projInverse;

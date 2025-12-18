@@ -2711,7 +2711,14 @@ namespace plume {
 
         D3D12_RESOURCE_DESC resourceDesc = {};
         resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        resourceDesc.Width = desc.size;
+        
+        // Constant buffers must be aligned to D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT (256 bytes)
+        // to allow creating CBVs that cover the full aligned size.
+        if (desc.flags & RenderBufferFlag::CONSTANT) {
+            resourceDesc.Width = roundUp(desc.size, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+        } else {
+            resourceDesc.Width = desc.size;
+        }
         resourceDesc.Height = 1;
         resourceDesc.DepthOrArraySize = 1;
         resourceDesc.MipLevels = 1;
