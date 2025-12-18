@@ -2317,17 +2317,23 @@ namespace plume {
         // Destroy any image view references to the current swap chain.
         releaseImageViews();
 
-        // We don't actually need to query the surface capabilities but the validation layer seems to cache the valid extents from this call.
+        // Query surface capabilities to get the valid extent bounds.
         VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
+
+        // Clamp the extent to the surface capabilities' min/max bounds.
+        // This is required because the window size may differ from the valid surface extent
+        // (e.g., due to window decorations, compositor behavior, or timing issues).
+        uint32_t clampedWidth = std::clamp(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+        uint32_t clampedHeight = std::clamp(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
 
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         createInfo.surface = surface;
         createInfo.minImageCount = textureCount;
         createInfo.imageFormat = pickedSurfaceFormat.format;
         createInfo.imageColorSpace = pickedSurfaceFormat.colorSpace;
-        createInfo.imageExtent.width = width;
-        createInfo.imageExtent.height = height;
+        createInfo.imageExtent.width = clampedWidth;
+        createInfo.imageExtent.height = clampedHeight;
         createInfo.imageArrayLayers = 1;
         createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -2374,12 +2380,16 @@ namespace plume {
         // Assign the swap chain images to the buffer resources.
         textures.resize(textureCount);
 
+        // Update the stored width/height to reflect the actual swapchain extent.
+        width = clampedWidth;
+        height = clampedHeight;
+
         for (uint32_t i = 0; i < textureCount; i++) {
             textures[i] = VulkanTexture(commandQueue->device, images[i]);
             textures[i].desc.dimension = RenderTextureDimension::TEXTURE_2D;
             textures[i].desc.format = format;
-            textures[i].desc.width = width;
-            textures[i].desc.height = height;
+            textures[i].desc.width = clampedWidth;
+            textures[i].desc.height = clampedHeight;
             textures[i].desc.depth = 1;
             textures[i].desc.mipLevels = 1;
             textures[i].desc.arraySize = 1;
