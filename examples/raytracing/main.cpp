@@ -141,8 +141,16 @@ void createFramebuffers(RTContext& ctx) {
 }
 
 void createOutputTexture(RTContext& ctx, uint32_t width, uint32_t height) {
+    // Use backend-specific formats:
+    // - Vulkan/D3D12: R32G32B32A32_FLOAT (required for shader format matching)
+    // - Metal: R8G8B8A8_UNORM (compatible with swapchain copy)
+    RenderFormat outputFormat = RenderFormat::R8G8B8A8_UNORM;
+    if (ctx.apiName == "Vulkan" || ctx.apiName == "D3D12") {
+        outputFormat = RenderFormat::R32G32B32A32_FLOAT;
+    }
+
     RenderTextureDesc texDesc = RenderTextureDesc::Texture2D(
-        width, height, 1, RenderFormat::R8G8B8A8_UNORM,
+        width, height, 1, outputFormat,
         RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS
     );
 
@@ -150,7 +158,7 @@ void createOutputTexture(RTContext& ctx, uint32_t width, uint32_t height) {
     ctx.outputTexture->setName("RT Output Texture");
 
     RenderTextureViewDesc viewDesc;
-    viewDesc.format = RenderFormat::R8G8B8A8_UNORM;
+    viewDesc.format = outputFormat;
     viewDesc.dimension = RenderTextureViewDimension::TEXTURE_2D;
     viewDesc.mipLevels = 1;
     viewDesc.mipSlice = 0;
