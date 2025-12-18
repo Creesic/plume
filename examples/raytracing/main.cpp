@@ -350,6 +350,7 @@ void initializeRayTracing(RTContext& ctx) {
     RenderPipelineLayoutDesc layoutDesc;
     layoutDesc.descriptorSetDescsCount = 1;
     layoutDesc.descriptorSetDescs = &descSetDesc;
+    layoutDesc.isLocal = true;
     ctx.rtPipelineLayout = ctx.device->createPipelineLayout(layoutDesc);
 
     // 8. Create RT pipeline
