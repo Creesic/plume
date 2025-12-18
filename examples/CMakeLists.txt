@@ -7,7 +7,7 @@ set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "Enable SDL Vulkan integration" FORCE
 find_package(SDL2 REQUIRED)
 
 # Initialize shader compilation
-include(${CMAKE_SOURCE_DIR}/cmake/PlumeShaders.cmake)
+include(${CMAKE_SOURCE_DIR}/examples/cmake/PlumeShaders.cmake)
 plume_shaders_init()
 
 # Add example subdirectories
