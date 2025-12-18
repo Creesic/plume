@@ -293,36 +293,28 @@ namespace plume {
         ctx.m_commandQueue->waitForCommandFence(ctx.m_fence.get());
     }
 
-    void RenderInterfaceTest(RenderInterface* renderInterface, const std::string &apiName) {
-        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-            fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
-            return;
-        }
-
-        uint32_t flags = SDL_WINDOW_RESIZABLE;
-#if defined(__APPLE__)
-        flags |= SDL_WINDOW_METAL;
-#endif
-
+    void RenderInterfaceTest(RenderInterface* renderInterface, SDL_Window* window, const std::string &apiName) {
         std::string windowTitle = "Plume Example (" + apiName + ")";
-        SDL_Window* window = SDL_CreateWindow(windowTitle.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
-        if (!window) {
-            fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
-            SDL_Quit();
-            return;
-        }
+        SDL_SetWindowTitle(window, windowTitle.c_str());
 
+        TestContext ctx;
+#if PLUME_SDL_VULKAN_ENABLED
+        createContext(ctx, renderInterface, window, apiName);
+#elif defined(__linux__)
         SDL_SysWMinfo wmInfo;
         SDL_VERSION(&wmInfo.version);
         SDL_GetWindowWMInfo(window, &wmInfo);
-
-        TestContext ctx;
-#if defined(__linux__)
         createContext(ctx, renderInterface, { wmInfo.info.x11.display, wmInfo.info.x11.window }, apiName);
 #elif defined(__APPLE__)
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        SDL_GetWindowWMInfo(window, &wmInfo);
         SDL_MetalView view = SDL_Metal_CreateView(window);
         createContext(ctx, renderInterface, { wmInfo.info.cocoa.window, SDL_Metal_GetLayer(view) }, apiName);
 #elif defined(WIN32)
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        SDL_GetWindowWMInfo(window, &wmInfo);
         createContext(ctx, renderInterface, { wmInfo.info.win.window }, apiName);
 #endif
 
@@ -365,17 +357,19 @@ namespace plume {
 #if defined(__APPLE__)
         SDL_Metal_DestroyView(view);
 #endif
-        SDL_DestroyWindow(window);
-        SDL_Quit();
     }
 }
 
-std::unique_ptr<plume::RenderInterface> CreateRenderInterface(std::string &apiName) {
+std::unique_ptr<plume::RenderInterface> CreateRenderInterface(SDL_Window* window, std::string &apiName) {
     const bool useVulkan = false;
 #if defined(_WIN32)
     if (useVulkan) {
         apiName = "Vulkan";
+#if PLUME_SDL_VULKAN_ENABLED
+        return plume::CreateVulkanInterface(window);
+#else
         return plume::CreateVulkanInterface();
+#endif
     }
     else {
         apiName = "D3D12";
@@ -384,7 +378,11 @@ std::unique_ptr<plume::RenderInterface> CreateRenderInterface(std::string &apiNa
 #elif defined(__APPLE__)
     if (useVulkan) {
         apiName = "Vulkan";
+#if PLUME_SDL_VULKAN_ENABLED
+        return plume::CreateVulkanInterface(window);
+#else
         return plume::CreateVulkanInterface();
+#endif
     }
     else {
         apiName = "Metal";
@@ -392,13 +390,46 @@ std::unique_ptr<plume::RenderInterface> CreateRenderInterface(std::string &apiNa
     }
 #else
     apiName = "Vulkan";
+#if PLUME_SDL_VULKAN_ENABLED
+    return plume::CreateVulkanInterface(window);
+#else
     return plume::CreateVulkanInterface();
+#endif
 #endif
 }
 
 int main(int argc, char* argv[]) {
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    uint32_t flags = SDL_WINDOW_RESIZABLE;
+#if PLUME_SDL_VULKAN_ENABLED
+    flags |= SDL_WINDOW_VULKAN;
+#elif defined(__APPLE__)
+    flags |= SDL_WINDOW_METAL;
+#endif
+
+    SDL_Window* window = SDL_CreateWindow("Plume Example", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, flags);
+    if (!window) {
+        fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
     std::string apiName = "Unknown";
-    auto renderInterface = CreateRenderInterface(apiName);
-    plume::RenderInterfaceTest(renderInterface.get(), apiName);
+    auto renderInterface = CreateRenderInterface(window, apiName);
+    if (!renderInterface) {
+        fprintf(stderr, "Failed to create render interface\n");
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    plume::RenderInterfaceTest(renderInterface.get(), window, apiName);
+
+    SDL_DestroyWindow(window);
+    SDL_Quit();
     return 0;
 }
