@@ -50,7 +50,7 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
     plume_get_dxc_command(DXC_CMD)
 
     if(OUTPUT_FORMAT STREQUAL "spirv")
-        set(OUTPUT_EXT "spv")
+        set(OUTPUT_EXT "spirv")
         set(BLOB_SUFFIX "SPIRV")
         set(FORMAT_FLAGS ${PLUME_DXC_SPV_OPTS})
     elseif(OUTPUT_FORMAT STREQUAL "dxil")
@@ -74,8 +74,10 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
     file(MAKE_DIRECTORY "${OUT_DIR}")
 
     set(PROFILE "")
+    set(DXC_TYPE_ARGS "")
     if(SHADER_TYPE STREQUAL "vertex")
         set(PROFILE "vs_${SHADER_MODEL}")
+        set(DXC_TYPE_ARGS "-fvk-invert-y")
     elseif(SHADER_TYPE STREQUAL "pixel" OR SHADER_TYPE STREQUAL "fragment")
         set(PROFILE "ps_${SHADER_MODEL}")
     elseif(SHADER_TYPE STREQUAL "compute")
@@ -105,6 +107,7 @@ function(_plume_compile_hlsl_impl TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_N
         COMMAND ${DXC_CMD}
             ${PLUME_DXC_COMMON_OPTS}
             ${INCLUDE_FLAGS}
+            ${DXC_TYPE_ARGS}
             ${ARG_EXTRA_ARGS}
             ${ENTRY_ARGS}
             -T ${PROFILE}
@@ -247,7 +250,7 @@ function(plume_compile_shader TARGET_NAME SHADER_SOURCE SHADER_TYPE OUTPUT_NAME 
         endif()
 
         if(APPLE AND TARGET plume_spirv_cross_msl)
-            set(SPIRV_FILE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spv")
+            set(SPIRV_FILE "${OUT_DIR}/${OUTPUT_NAME}.hlsl.spirv")
             _plume_compile_spirv_to_metal_impl(${TARGET_NAME} "${SPIRV_FILE}" ${OUTPUT_NAME} OUTPUT_DIR "${OUT_DIR}")
         endif()
     else()
