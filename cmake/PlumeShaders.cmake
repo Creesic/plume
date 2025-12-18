@@ -543,7 +543,7 @@ function(_plume_compile_rt_metal TARGET SOURCE OUTPUT_NAME)
     set(COMBINED_METALLIB "${OUT_DIR}/${OUTPUT_NAME}.metallib")
     add_custom_command(
         OUTPUT "${COMBINED_METALLIB}"
-        COMMAND plume_combine_rt_metallibs "${VISIBLE_FUNCS_METALLIB}" "${DISPATCH_METALLIB}" "${COMBINED_METALLIB}"
+        COMMAND plume_combine_rt_metallibs "${VISIBLE_FUNCS_METALLIB}" "${DISPATCH_METALLIB}" "${COMBINED_METALLIB}" "${ROOT_SIG_FILE}"
         DEPENDS "${VISIBLE_FUNCS_METALLIB}" "${DISPATCH_METALLIB}" plume_combine_rt_metallibs
         COMMENT "Combine RT metallibs: ${OUTPUT_NAME}"
         VERBATIM

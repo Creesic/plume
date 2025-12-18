@@ -147,6 +147,7 @@ namespace plume {
     struct BufferDescriptor: Descriptor {
         MTL::Buffer *buffer;
         uint32_t offset = 0;
+        uint64_t size = 0;
     };
 
     struct TextureDescriptor: Descriptor {
@@ -168,6 +169,7 @@ namespace plume {
         MetalDevice *device = nullptr;
         std::vector<DescriptorSetLayoutBinding> setBindings;
         std::vector<int32_t> bindingToIndex;
+        std::vector<int32_t> bindingDescriptorIndexBase;
         MTL::ArgumentEncoder *argumentEncoder = nullptr;
         std::vector<MTL::ArgumentDescriptor *> argumentDescriptors;
         std::vector<uint32_t> descriptorIndexBases;
@@ -209,9 +211,12 @@ namespace plume {
     struct MetalDescriptorSet : RenderDescriptorSet {
         struct ResourceEntry {
             MTL::Resource* resource = nullptr;
+            MTL::SamplerState* sampler = nullptr;
             RenderDescriptorRangeType type = RenderDescriptorRangeType::UNKNOWN;
+            uint64_t bufferOffset = 0;
+            uint64_t bufferSize = 0;
             uint32_t instanceCount = 0;  // For acceleration structures: TLAS instance count
-            const uint32_t* instanceContributions = nullptr;  // For acceleration structures: per-instance hit group offsets
+            std::vector<uint32_t> instanceContributions;  // For acceleration structures: per-instance hit group offsets
         };
 
         MetalDevice *device = nullptr;
@@ -223,10 +228,6 @@ namespace plume {
         std::mutex residencySetWriteMutex;
         bool needsCommit = false;
 
-        // Cached buffers for raytracing TLAB construction
-        MTL::Buffer* rtASHeaderBuffer = nullptr;       // IRRaytracingAccelerationStructureGPUHeader + instance contributions
-        MTL::Buffer* rtUAVTableBuffer = nullptr;       // IRDescriptorTableEntry for output UAV texture
-        MTL::Buffer* rtTLABBuffer = nullptr;           // Top-Level Argument Buffer (array of GPU addresses)
         bool rtBuffersDirty = true;                    // Set when resources change, cleared after TLAB rebuild
 
         MetalDescriptorSet(MetalDevice *device, const RenderDescriptorSetDesc &desc);
@@ -463,6 +464,13 @@ namespace plume {
         MetalDescriptorSet* computeDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
         MetalDescriptorSet* raytracingDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
 
+        std::vector<MTL::Buffer*> rtDescriptorTableBuffers;
+        std::vector<size_t> rtDescriptorTableBufferSizes;
+        std::vector<MTL::Buffer*> rtASHeaderBuffers;
+        std::vector<size_t> rtASHeaderBufferSizes;
+        MTL::Buffer* rtTLABBuffer = nullptr;
+        size_t rtTLABBufferSize = 0;
+
         MTL::Fence *timestampQueryFence = nullptr;
 
         std::unordered_set<MetalDescriptorSet*> currentEncoderDescriptorSets;
@@ -655,11 +663,42 @@ namespace plume {
         MTL::Library *library = nullptr;
         MTL::Library *dispatchLibrary = nullptr;  // For combined RT shaders: dispatch kernel library
         NS::String *debugName = nullptr;
+        std::string rtRootSignatureJson;
 
         MetalShader(const MetalDevice *device, const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format);
         ~MetalShader() override;
         virtual void setName(const std::string &name) override;
         MTL::Function* createFunction(const RenderSpecConstant *specConstants, uint32_t specConstantsCount) const;
+    };
+
+    enum class MetalRTDescriptorRangeType {
+        Unknown,
+        SRV,
+        UAV,
+        Sampler
+    };
+
+    enum class MetalRTRootParameterType {
+        Unknown,
+        DescriptorTable,
+        RootCBV,
+        RootSRV,
+        RootUAV
+    };
+
+    struct MetalRTDescriptorRange {
+        MetalRTDescriptorRangeType type = MetalRTDescriptorRangeType::Unknown;
+        uint32_t baseRegister = 0;
+        uint32_t registerSpace = 0;
+        uint32_t numDescriptors = 0;
+        uint32_t offset = 0;
+    };
+
+    struct MetalRTRootParameter {
+        MetalRTRootParameterType type = MetalRTRootParameterType::Unknown;
+        uint32_t shaderRegister = 0;
+        uint32_t registerSpace = 0;
+        std::vector<MetalRTDescriptorRange> ranges;
     };
 
     struct MetalSampler : RenderSampler {
@@ -710,6 +749,7 @@ namespace plume {
         MTL::IntersectionFunctionTable *intersectionFunctionTable = nullptr;
         std::unordered_map<std::string, uint32_t> nameProgramMap;
         const MetalPipelineLayout *pipelineLayout = nullptr;
+        std::vector<MetalRTRootParameter> rootSignatureParameters;
         uint32_t maxPayloadSize = 0;
         uint32_t maxAttributeSize = 0;
 

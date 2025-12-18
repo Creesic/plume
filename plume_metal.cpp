@@ -24,7 +24,10 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <mutex>
+#include <string_view>
 
 #include "plume_metal.h"
 #include "shaders/plume_clear.metal.h"
@@ -1005,6 +1008,7 @@ namespace plume {
 
         // Initialize binding vector with -1 (invalid index)
         bindingToIndex.resize(MAX_BINDING_NUMBER, -1);
+        bindingDescriptorIndexBase.resize(MAX_BINDING_NUMBER, -1);
 
         // Pre-allocate vectors with known size
         const uint32_t totalDescriptors = desc.descriptorRangesCount + (desc.lastRangeIsBoundless ? desc.boundlessRangeSize : 0);
@@ -1020,6 +1024,7 @@ namespace plume {
 
             descriptorIndexBases.resize(descriptorIndexBases.size() + range.count, indexBase);
             descriptorBindingIndices.resize(descriptorBindingIndices.size() + range.count, range.binding);
+            bindingDescriptorIndexBase[range.binding] = static_cast<int32_t>(indexBase);
         }
 
         // Sort ranges by binding due to how spirv-cross orders them
@@ -1375,8 +1380,10 @@ namespace plume {
     //   [4 bytes] Version: 1
     //   [4 bytes] Functions metallib size (little-endian)
     //   [4 bytes] Dispatch metallib size (little-endian)
+    //   [4 bytes] Root signature JSON size
     //   [N bytes] Functions metallib data
     //   [M bytes] Dispatch metallib data
+    //   [K bytes] Root signature JSON
     static const char PLRT_MAGIC[4] = {'P', 'L', 'R', 'T'};
 
     static uint32_t readUint32LE(const uint8_t* data) {
@@ -1412,10 +1419,23 @@ namespace plume {
                 return;
             }
 
-            uint32_t functionsSize = readUint32LE(bytes + 8);
-            uint32_t dispatchSize = readUint32LE(bytes + 12);
-            const void* functionsData = bytes + 16;
-            const void* dispatchData = bytes + 16 + functionsSize;
+            const uint32_t functionsSize = readUint32LE(bytes + 8);
+            const uint32_t dispatchSize = readUint32LE(bytes + 12);
+            const uint32_t rootSignatureSize = readUint32LE(bytes + 16);
+            const uint32_t headerSize = 20;
+
+            if (size < headerSize + functionsSize + dispatchSize + rootSignatureSize) {
+                fprintf(stderr, "Combined RT metallib is truncated.\n");
+                return;
+            }
+            if (rootSignatureSize == 0) {
+                fprintf(stderr, "Combined RT metallib missing root signature JSON.\n");
+                return;
+            }
+
+            const void* functionsData = bytes + headerSize;
+            const void* dispatchData = bytes + headerSize + functionsSize;
+            const void* rootSignatureData = bytes + headerSize + functionsSize + dispatchSize;
 
             // Load functions library
             dispatch_data_t functionsDispatchData = dispatch_data_create(functionsData, functionsSize, dispatch_get_main_queue(), ^{});
@@ -1433,6 +1453,8 @@ namespace plume {
                 fprintf(stderr, "Failed to load RT dispatch metallib: %s\n", error->localizedDescription()->utf8String());
                 return;
             }
+
+            rtRootSignatureJson.assign(static_cast<const char*>(rootSignatureData), rootSignatureSize);
         } else {
             // Regular single metallib
             const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
@@ -1488,6 +1510,483 @@ namespace plume {
         }
 
         return function;
+    }
+
+    namespace {
+        enum class JsonTokenType {
+            End,
+            LBrace,
+            RBrace,
+            LBracket,
+            RBracket,
+            Colon,
+            Comma,
+            String,
+            Number
+        };
+
+        struct JsonToken {
+            JsonTokenType type = JsonTokenType::End;
+            std::string_view text;
+        };
+
+        class JsonTokenizer {
+        public:
+            explicit JsonTokenizer(std::string_view input) : input(input) {}
+
+            JsonToken peek() {
+                if (!hasCached) {
+                    cached = nextInternal();
+                    hasCached = true;
+                }
+                return cached;
+            }
+
+            JsonToken next() {
+                if (hasCached) {
+                    hasCached = false;
+                    return cached;
+                }
+                return nextInternal();
+            }
+
+        private:
+            JsonToken nextInternal() {
+                skipWhitespace();
+                if (pos >= input.size()) {
+                    return {};
+                }
+
+                const char c = input[pos];
+                switch (c) {
+                    case '{': pos++; return {JsonTokenType::LBrace, {}};
+                    case '}': pos++; return {JsonTokenType::RBrace, {}};
+                    case '[': pos++; return {JsonTokenType::LBracket, {}};
+                    case ']': pos++; return {JsonTokenType::RBracket, {}};
+                    case ':': pos++; return {JsonTokenType::Colon, {}};
+                    case ',': pos++; return {JsonTokenType::Comma, {}};
+                    case '"': return parseString();
+                    default:
+                        if (c == '-' || std::isdigit(static_cast<unsigned char>(c))) {
+                            return parseNumber();
+                        }
+                        break;
+                }
+
+                pos++;
+                return {};
+            }
+
+            JsonToken parseString() {
+                pos++;
+                const size_t start = pos;
+                while (pos < input.size()) {
+                    const char c = input[pos];
+                    if (c == '\\') {
+                        pos += 2;
+                        continue;
+                    }
+                    if (c == '"') {
+                        break;
+                    }
+                    pos++;
+                }
+                const size_t end = pos;
+                if (pos < input.size() && input[pos] == '"') {
+                    pos++;
+                }
+                return {JsonTokenType::String, input.substr(start, end - start)};
+            }
+
+            JsonToken parseNumber() {
+                const size_t start = pos;
+                if (input[pos] == '-') {
+                    pos++;
+                }
+                while (pos < input.size() && std::isdigit(static_cast<unsigned char>(input[pos]))) {
+                    pos++;
+                }
+                return {JsonTokenType::Number, input.substr(start, pos - start)};
+            }
+
+            void skipWhitespace() {
+                while (pos < input.size() && std::isspace(static_cast<unsigned char>(input[pos]))) {
+                    pos++;
+                }
+            }
+
+            std::string_view input;
+            size_t pos = 0;
+            JsonToken cached{};
+            bool hasCached = false;
+        };
+
+        bool skipValue(JsonTokenizer &tokenizer);
+
+        bool expect(JsonTokenizer &tokenizer, JsonTokenType type) {
+            return tokenizer.next().type == type;
+        }
+
+        bool skipObject(JsonTokenizer &tokenizer) {
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                if (!skipValue(tokenizer)) {
+                    return false;
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool skipArray(JsonTokenizer &tokenizer) {
+            while (true) {
+                JsonToken token = tokenizer.peek();
+                if (token.type == JsonTokenType::RBracket) {
+                    tokenizer.next();
+                    return true;
+                }
+                if (!skipValue(tokenizer)) {
+                    return false;
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool skipValue(JsonTokenizer &tokenizer) {
+            JsonToken token = tokenizer.next();
+            switch (token.type) {
+                case JsonTokenType::LBrace:
+                    return skipObject(tokenizer);
+                case JsonTokenType::LBracket:
+                    return skipArray(tokenizer);
+                case JsonTokenType::String:
+                case JsonTokenType::Number:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        MetalRTRootParameterType parseRootParameterType(std::string_view value) {
+            if (value == "IRRootParameterTypeDescriptorTable") {
+                return MetalRTRootParameterType::DescriptorTable;
+            }
+            if (value == "IRRootParameterTypeCBV") {
+                return MetalRTRootParameterType::RootCBV;
+            }
+            if (value == "IRRootParameterTypeSRV") {
+                return MetalRTRootParameterType::RootSRV;
+            }
+            if (value == "IRRootParameterTypeUAV") {
+                return MetalRTRootParameterType::RootUAV;
+            }
+            return MetalRTRootParameterType::Unknown;
+        }
+
+        MetalRTDescriptorRangeType parseDescriptorRangeType(std::string_view value) {
+            if (value == "IRDescriptorRangeTypeSRV") {
+                return MetalRTDescriptorRangeType::SRV;
+            }
+            if (value == "IRDescriptorRangeTypeUAV") {
+                return MetalRTDescriptorRangeType::UAV;
+            }
+            if (value == "IRDescriptorRangeTypeSampler") {
+                return MetalRTDescriptorRangeType::Sampler;
+            }
+            return MetalRTDescriptorRangeType::Unknown;
+        }
+
+        uint32_t parseUint32(std::string_view text) {
+            uint32_t value = 0;
+            for (char c : text) {
+                if (c < '0' || c > '9') {
+                    break;
+                }
+                value = value * 10 + static_cast<uint32_t>(c - '0');
+            }
+            return value;
+        }
+
+        bool parseDescriptorObject(JsonTokenizer &tokenizer, MetalRTRootParameter &param) {
+            if (!expect(tokenizer, JsonTokenType::LBrace)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                JsonToken value = tokenizer.next();
+                if (key == "ShaderRegister" && value.type == JsonTokenType::Number) {
+                    param.shaderRegister = parseUint32(value.text);
+                } else if (key == "RegisterSpace" && value.type == JsonTokenType::Number) {
+                    param.registerSpace = parseUint32(value.text);
+                } else {
+                    if (value.type == JsonTokenType::LBrace) {
+                        if (!skipObject(tokenizer)) return false;
+                    } else if (value.type == JsonTokenType::LBracket) {
+                        if (!skipArray(tokenizer)) return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseDescriptorRangeObject(JsonTokenizer &tokenizer, MetalRTDescriptorRange &range) {
+            if (!expect(tokenizer, JsonTokenType::LBrace)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                JsonToken value = tokenizer.next();
+                if (key == "RangeType" && value.type == JsonTokenType::String) {
+                    range.type = parseDescriptorRangeType(value.text);
+                } else if (key == "NumDescriptors" && value.type == JsonTokenType::Number) {
+                    range.numDescriptors = parseUint32(value.text);
+                } else if (key == "BaseShaderRegister" && value.type == JsonTokenType::Number) {
+                    range.baseRegister = parseUint32(value.text);
+                } else if (key == "RegisterSpace" && value.type == JsonTokenType::Number) {
+                    range.registerSpace = parseUint32(value.text);
+                } else if (key == "OffsetInDescriptorsFromTableStart" && value.type == JsonTokenType::Number) {
+                    range.offset = parseUint32(value.text);
+                } else {
+                    if (value.type == JsonTokenType::LBrace) {
+                        if (!skipObject(tokenizer)) return false;
+                    } else if (value.type == JsonTokenType::LBracket) {
+                        if (!skipArray(tokenizer)) return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseDescriptorRanges(JsonTokenizer &tokenizer, std::vector<MetalRTDescriptorRange> &ranges) {
+            if (!expect(tokenizer, JsonTokenType::LBracket)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.peek();
+                if (token.type == JsonTokenType::RBracket) {
+                    tokenizer.next();
+                    return true;
+                }
+                MetalRTDescriptorRange range;
+                if (!parseDescriptorRangeObject(tokenizer, range)) {
+                    return false;
+                }
+                ranges.push_back(range);
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseDescriptorTableObject(JsonTokenizer &tokenizer, MetalRTRootParameter &param) {
+            if (!expect(tokenizer, JsonTokenType::LBrace)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                if (key == "DescriptorRanges") {
+                    if (!parseDescriptorRanges(tokenizer, param.ranges)) {
+                        return false;
+                    }
+                } else {
+                    if (!skipValue(tokenizer)) {
+                        return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseRootParameterObject(JsonTokenizer &tokenizer, MetalRTRootParameter &param) {
+            if (!expect(tokenizer, JsonTokenType::LBrace)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                if (key == "ParameterType") {
+                    JsonToken value = tokenizer.next();
+                    if (value.type == JsonTokenType::String) {
+                        param.type = parseRootParameterType(value.text);
+                    } else {
+                        return false;
+                    }
+                } else if (key == "DescriptorTable") {
+                    if (!parseDescriptorTableObject(tokenizer, param)) {
+                        return false;
+                    }
+                } else if (key == "Descriptor") {
+                    if (!parseDescriptorObject(tokenizer, param)) {
+                        return false;
+                    }
+                } else {
+                    if (!skipValue(tokenizer)) {
+                        return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseParametersArray(JsonTokenizer &tokenizer, std::vector<MetalRTRootParameter> &params) {
+            if (!expect(tokenizer, JsonTokenType::LBracket)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.peek();
+                if (token.type == JsonTokenType::RBracket) {
+                    tokenizer.next();
+                    return true;
+                }
+                MetalRTRootParameter param;
+                if (!parseRootParameterObject(tokenizer, param)) {
+                    return false;
+                }
+                if (param.type != MetalRTRootParameterType::Unknown) {
+                    params.push_back(std::move(param));
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseRootSignatureObject(JsonTokenizer &tokenizer, std::vector<MetalRTRootParameter> &params) {
+            if (!expect(tokenizer, JsonTokenType::LBrace)) {
+                return false;
+            }
+            while (true) {
+                JsonToken token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    return true;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                if (key == "Parameters") {
+                    if (!parseParametersArray(tokenizer, params)) {
+                        return false;
+                    }
+                } else {
+                    if (!skipValue(tokenizer)) {
+                        return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+        }
+
+        bool parseRootSignatureJson(const std::string &json, std::vector<MetalRTRootParameter> &params) {
+            if (json.empty()) {
+                return false;
+            }
+            JsonTokenizer tokenizer(json);
+            JsonToken token = tokenizer.next();
+            if (token.type != JsonTokenType::LBrace) {
+                return false;
+            }
+            while (true) {
+                token = tokenizer.next();
+                if (token.type == JsonTokenType::RBrace) {
+                    break;
+                }
+                if (token.type != JsonTokenType::String) {
+                    return false;
+                }
+                std::string_view key = token.text;
+                if (!expect(tokenizer, JsonTokenType::Colon)) {
+                    return false;
+                }
+                if (key == "RootSignature") {
+                    if (!parseRootSignatureObject(tokenizer, params)) {
+                        return false;
+                    }
+                } else {
+                    if (!skipValue(tokenizer)) {
+                        return false;
+                    }
+                }
+                token = tokenizer.peek();
+                if (token.type == JsonTokenType::Comma) {
+                    tokenizer.next();
+                }
+            }
+            return !params.empty();
+        }
     }
 
     // MetalSampler
@@ -1767,6 +2266,8 @@ namespace plume {
         MTL::Function *raygenIndirectionFunction = nullptr;
         std::vector<MTL::Function *> visibleFunctions;
         std::vector<std::string> visibleFunctionNames;
+        std::string rootSignatureJson;
+        bool rootSignatureMismatch = false;
 
         // Scan all libraries to find the dispatch kernel and visible functions.
         for (uint32_t i = 0; i < desc.librariesCount; i++) {
@@ -1774,6 +2275,13 @@ namespace plume {
             assert(library.shader != nullptr);
 
             const MetalShader *shader = static_cast<const MetalShader *>(library.shader);
+            if (!shader->rtRootSignatureJson.empty()) {
+                if (rootSignatureJson.empty()) {
+                    rootSignatureJson = shader->rtRootSignatureJson;
+                } else if (rootSignatureJson != shader->rtRootSignatureJson) {
+                    rootSignatureMismatch = true;
+                }
+            }
 
             // Get the RaygenIndirection kernel from the dispatch library.
             if (raygenIndirectionFunction == nullptr && shader->dispatchLibrary != nullptr) {
@@ -1814,6 +2322,16 @@ namespace plume {
                 if (it != nameProgramMap.end()) {
                     nameProgramMap[std::string(hitGroup.hitGroupName)] = it->second;
                 }
+            }
+        }
+
+        if (rootSignatureMismatch) {
+            fprintf(stderr, "Warning: Raytracing pipeline libraries have mismatched root signatures. Using the first one.\n");
+        }
+        if (!rootSignatureJson.empty()) {
+            if (!parseRootSignatureJson(rootSignatureJson, rootSignatureParameters)) {
+                fprintf(stderr, "Warning: Failed to parse Metal root signature JSON for raytracing pipeline.\n");
+                rootSignatureParameters.clear();
             }
         }
 
@@ -1980,22 +2498,15 @@ namespace plume {
             if (entry.resource != nullptr) {
                 entry.resource->release();
             }
+            if (entry.sampler != nullptr) {
+                entry.sampler->release();
+            }
         }
 
         if (argumentBuffer.mtl != nullptr) {
             argumentBuffer.mtl->release();
         }
 
-        // Release cached raytracing buffers.
-        if (rtASHeaderBuffer != nullptr) {
-            rtASHeaderBuffer->release();
-        }
-        if (rtUAVTableBuffer != nullptr) {
-            rtUAVTableBuffer->release();
-        }
-        if (rtTLABBuffer != nullptr) {
-            rtTLABBuffer->release();
-        }
     }
 
     void MetalDescriptorSet::bindImmutableSamplers() const {
@@ -2050,7 +2561,12 @@ namespace plume {
                 offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
             }
 
-            const BufferDescriptor descriptor = { .buffer = interfaceBuffer->mtl, .offset = offset };
+            uint64_t bufferViewSize = bufferSize;
+            if (bufferViewSize == 0) {
+                bufferViewSize = interfaceBuffer->desc.size;
+            }
+
+            const BufferDescriptor descriptor = { .buffer = interfaceBuffer->mtl, .offset = offset, .size = bufferViewSize };
             setDescriptor(descriptorIndex, &descriptor);
         }
     }
@@ -2097,7 +2613,15 @@ namespace plume {
                     resourceEntries[descriptorIndex].resource->release();
                     resourceEntries[descriptorIndex].resource = nullptr;
                 }
+                if (resourceEntries[descriptorIndex].sampler != nullptr) {
+                    resourceEntries[descriptorIndex].sampler->release();
+                    resourceEntries[descriptorIndex].sampler = nullptr;
+                }
                 resourceEntries[descriptorIndex].type = RenderDescriptorRangeType::UNKNOWN;
+                resourceEntries[descriptorIndex].instanceCount = 0;
+                resourceEntries[descriptorIndex].instanceContributions.clear();
+                resourceEntries[descriptorIndex].bufferOffset = 0;
+                resourceEntries[descriptorIndex].bufferSize = 0;
             }
             return;
         }
@@ -2108,14 +2632,25 @@ namespace plume {
         if (descriptorIndex < resourceEntries.size()) {
             // Release old resource if any.
             if (resourceEntries[descriptorIndex].resource != nullptr) {
+                if (residencySet != nullptr) {
+                    std::lock_guard lock(residencySetWriteMutex);
+                    residencySet->removeAllocation(resourceEntries[descriptorIndex].resource);
+                    needsCommit = true;
+                }
                 resourceEntries[descriptorIndex].resource->release();
+            }
+            if (resourceEntries[descriptorIndex].sampler != nullptr) {
+                resourceEntries[descriptorIndex].sampler->release();
+                resourceEntries[descriptorIndex].sampler = nullptr;
             }
 
             // Store as MTL::Resource (MTL::AccelerationStructure inherits from MTL::Resource).
             resourceEntries[descriptorIndex].resource = metalAS->mtl;
             resourceEntries[descriptorIndex].type = RenderDescriptorRangeType::ACCELERATION_STRUCTURE;
             resourceEntries[descriptorIndex].instanceCount = metalAS->instanceCount;
-            resourceEntries[descriptorIndex].instanceContributions = metalAS->instanceContributions.empty() ? nullptr : metalAS->instanceContributions.data();
+            resourceEntries[descriptorIndex].instanceContributions = metalAS->instanceContributions;
+            resourceEntries[descriptorIndex].bufferOffset = 0;
+            resourceEntries[descriptorIndex].bufferSize = 0;
             metalAS->mtl->retain();
 
             // Add to residency set if available.
@@ -2138,19 +2673,27 @@ namespace plume {
         const auto &setLayoutBinding = setLayout->setBindings[indexBase];
         const MTL::DataType dtype = mapDataType(setLayoutBinding.descriptorType);
         MTL::Resource *nativeResource = nullptr;
+        MTL::SamplerState *nativeSampler = nullptr;
         RenderDescriptorRangeType descriptorType = getDescriptorType(bindingIndex);
 
-        if (dtype != MTL::DataTypeSampler) {
-            if (resourceEntries[descriptorIndex].resource != nullptr) {
-                if (residencySet != nullptr) {
-                    std::lock_guard lock(residencySetWriteMutex);
-                    residencySet->removeAllocation(resourceEntries[descriptorIndex].resource);
-                    needsCommit = true;
-                }
-                resourceEntries[descriptorIndex].resource->release();
-                resourceEntries[descriptorIndex].resource = nullptr;
+        auto &entry = resourceEntries[descriptorIndex];
+        if (entry.resource != nullptr) {
+            if (residencySet != nullptr) {
+                std::lock_guard lock(residencySetWriteMutex);
+                residencySet->removeAllocation(entry.resource);
+                needsCommit = true;
             }
+            entry.resource->release();
+            entry.resource = nullptr;
         }
+        if (entry.sampler != nullptr) {
+            entry.sampler->release();
+            entry.sampler = nullptr;
+        }
+        entry.bufferOffset = 0;
+        entry.bufferSize = 0;
+        entry.instanceCount = 0;
+        entry.instanceContributions.clear();
 
         if (descriptor != nullptr) {
             const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
@@ -2183,6 +2726,8 @@ namespace plume {
                 case MTL::DataTypePointer: {
                     const BufferDescriptor *bufferDescriptor = static_cast<const BufferDescriptor *>(descriptor);
                     nativeResource = bufferDescriptor->buffer;
+                    entry.bufferOffset = bufferDescriptor->offset;
+                    entry.bufferSize = bufferDescriptor->size;
                     MTL::Buffer *nativeBuffer = static_cast<MTL::Buffer *>(nativeResource);
                     if (residencySet != nullptr) {
                         std::lock_guard lock(residencySetWriteMutex);
@@ -2200,11 +2745,13 @@ namespace plume {
                 }
                 case MTL::DataTypeSampler: {
                     const SamplerDescriptor *samplerDescriptor = static_cast<const SamplerDescriptor *>(descriptor);
+                    nativeSampler = samplerDescriptor->state;
                     if (device->useArgumentBuffersTier2) {
                         *reinterpret_cast<MTL::ResourceID*>(bufferPtr + argumentOffset) = samplerDescriptor->state->gpuResourceID();
                     } else {
                         argumentBuffer.argumentEncoder->setSamplerState(samplerDescriptor->state, argumentIndex);
                     }
+                    samplerDescriptor->state->retain();
                     break;
                 }
 
@@ -2217,8 +2764,10 @@ namespace plume {
             argumentBuffer.mtl->didModifyRange(NS::Range(argumentBuffer.offset, argumentBuffer.mtl->length() - argumentBuffer.offset));
         }
 
-        resourceEntries[descriptorIndex].resource = nativeResource;
-        resourceEntries[descriptorIndex].type = descriptorType;
+        entry.resource = nativeResource;
+        entry.sampler = nativeSampler;
+        entry.type = descriptorType;
+        rtBuffersDirty = true;
     }
 
     RenderDescriptorRangeType MetalDescriptorSet::getDescriptorType(const uint32_t binding) const {
@@ -2585,6 +3134,20 @@ namespace plume {
     MetalCommandList::~MetalCommandList() {
         mtl->release();
 
+        for (auto* buffer : rtDescriptorTableBuffers) {
+            if (buffer != nullptr) {
+                buffer->release();
+            }
+        }
+        for (auto* buffer : rtASHeaderBuffers) {
+            if (buffer != nullptr) {
+                buffer->release();
+            }
+        }
+        if (rtTLABBuffer != nullptr) {
+            rtTLABBuffer->release();
+        }
+
         for (auto& fenceSet : fences) {
             for (auto* fence : fenceSet) {
                 fence->release();
@@ -2815,148 +3378,246 @@ namespace plume {
         // Set the raytracing compute pipeline.
         activeComputeEncoder->setComputePipelineState(activeRaytracingPipeline->computePipeline);
 
-        // Get the first descriptor set (set 0) which contains our RT resources.
-        // Use const_cast since we need to update cached buffers.
-        MetalDescriptorSet* descriptorSet = raytracingDescriptorSets[0];
-        assert(descriptorSet != nullptr && "Raytracing descriptor set 0 must be bound");
+        const auto &rootParams = activeRaytracingPipeline->rootSignatureParameters;
+        if (rootParams.empty()) {
+            fprintf(stderr, "Ray tracing root signature data missing. Rebuild shaders with updated Metal RT tools.\n");
+            return;
+        }
 
-        // ============================================================================
-        // TLAB (Top-Level Argument Buffer) Construction
-        // ============================================================================
-        //
-        // Metal Shader Converter uses a TLAB to pass root signature parameters to shaders.
-        // The TLAB is an array of GPU addresses, one per root parameter, matching the
-        // root signature layout order. For our raytracing shader:
-        //   [0] UAV descriptor table GPU address (output texture)
-        //   [1] SRV buffer GPU address (acceleration structure header)
-        //   [2] CBV direct GPU address (constants)
-        //
-        // Each root parameter type requires different wrapping:
-        //   - Descriptor tables: IRDescriptorTableEntry array
-        //   - Acceleration structures: IRRaytracingAccelerationStructureGPUHeader + instance contributions
-        //   - Root CBVs: Direct GPU address (no wrapper needed)
-        //
-        // These buffers are cached on the descriptor set and only rebuilt when resources change.
-        // Reference: Apple's "Accelerating ray tracing using Metal" sample code.
-        // ============================================================================
+        MTL::Device* device = queue->device->mtl;
 
-        // Collect resources from descriptor set.
-        MTL::Texture* outputTexture = nullptr;
-        MTL::AccelerationStructure* tlas = nullptr;
-        MTL::Buffer* constantBuffer = nullptr;
-        uint32_t tlasInstanceCount = 0;
-        const uint32_t* tlasInstanceContributions = nullptr;
+        if (rtDescriptorTableBuffers.size() > rootParams.size()) {
+            for (size_t i = rootParams.size(); i < rtDescriptorTableBuffers.size(); i++) {
+                if (rtDescriptorTableBuffers[i] != nullptr) {
+                    rtDescriptorTableBuffers[i]->release();
+                }
+            }
+            rtDescriptorTableBuffers.resize(rootParams.size(), nullptr);
+            rtDescriptorTableBufferSizes.resize(rootParams.size(), 0);
+        } else if (rtDescriptorTableBuffers.size() < rootParams.size()) {
+            rtDescriptorTableBuffers.resize(rootParams.size(), nullptr);
+            rtDescriptorTableBufferSizes.resize(rootParams.size(), 0);
+        }
 
-        for (size_t i = 0; i < descriptorSet->resourceEntries.size(); i++) {
-            const auto& entry = descriptorSet->resourceEntries[i];
-            if (entry.resource == nullptr) continue;
+        if (rtASHeaderBuffers.size() > rootParams.size()) {
+            for (size_t i = rootParams.size(); i < rtASHeaderBuffers.size(); i++) {
+                if (rtASHeaderBuffers[i] != nullptr) {
+                    rtASHeaderBuffers[i]->release();
+                }
+            }
+            rtASHeaderBuffers.resize(rootParams.size(), nullptr);
+            rtASHeaderBufferSizes.resize(rootParams.size(), 0);
+        } else if (rtASHeaderBuffers.size() < rootParams.size()) {
+            rtASHeaderBuffers.resize(rootParams.size(), nullptr);
+            rtASHeaderBufferSizes.resize(rootParams.size(), 0);
+        }
+
+        std::vector<uint64_t> tlabAddresses(rootParams.size(), 0);
+
+        auto setDescriptorTableEntry = [&](IRDescriptorTableEntry &tableEntry, const MetalDescriptorSet::ResourceEntry &entry, const MetalDescriptorSetLayout::DescriptorSetLayoutBinding *binding, uint32_t elementIndex) {
+            if (entry.type == RenderDescriptorRangeType::SAMPLER) {
+                MTL::SamplerState *sampler = entry.sampler;
+                if (sampler == nullptr && binding != nullptr && elementIndex < binding->immutableSamplers.size()) {
+                    sampler = binding->immutableSamplers[elementIndex];
+                }
+                if (sampler != nullptr) {
+                    IRDescriptorTableSetSampler(&tableEntry, sampler, 0.0f);
+                }
+                return;
+            }
+
+            if (entry.resource == nullptr) {
+                return;
+            }
 
             switch (entry.type) {
-                case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
                 case RenderDescriptorRangeType::TEXTURE:
-                    outputTexture = static_cast<MTL::Texture*>(entry.resource);
+                case RenderDescriptorRangeType::READ_WRITE_TEXTURE:
+                case RenderDescriptorRangeType::FORMATTED_BUFFER:
+                case RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER: {
+                    auto *texture = static_cast<MTL::Texture *>(entry.resource);
+                    IRDescriptorTableSetTexture(&tableEntry, texture, 0, 0);
                     break;
-                case RenderDescriptorRangeType::ACCELERATION_STRUCTURE:
-                    tlas = static_cast<MTL::AccelerationStructure*>(entry.resource);
-                    tlasInstanceCount = entry.instanceCount;
-                    tlasInstanceContributions = entry.instanceContributions;
+                }
+                case RenderDescriptorRangeType::STRUCTURED_BUFFER:
+                case RenderDescriptorRangeType::READ_WRITE_STRUCTURED_BUFFER:
+                case RenderDescriptorRangeType::BYTE_ADDRESS_BUFFER:
+                case RenderDescriptorRangeType::READ_WRITE_BYTE_ADDRESS_BUFFER:
+                case RenderDescriptorRangeType::CONSTANT_BUFFER: {
+                    auto *buffer = static_cast<MTL::Buffer *>(entry.resource);
+                    IRBufferView bufferView = {};
+                    bufferView.buffer = buffer;
+                    bufferView.bufferOffset = entry.bufferOffset;
+                    bufferView.bufferSize = entry.bufferSize;
+                    bufferView.textureBufferView = nullptr;
+                    bufferView.textureViewOffsetInElements = 0;
+                    bufferView.typedBuffer = false;
+
+                    if (bufferView.bufferSize == 0) {
+                        bufferView.bufferSize = buffer->length();
+                    }
+
+                    IRDescriptorTableSetBufferView(&tableEntry, &bufferView);
                     break;
-                case RenderDescriptorRangeType::CONSTANT_BUFFER:
-                    constantBuffer = static_cast<MTL::Buffer*>(entry.resource);
+                }
+                default:
                     break;
+            }
+        };
+
+        auto useResourceEntry = [&](const MetalDescriptorSet::ResourceEntry &entry) {
+            if (entry.resource != nullptr) {
+                activeComputeEncoder->useResource(entry.resource, mapResourceUsage(entry.type));
+            }
+        };
+
+        for (size_t paramIndex = 0; paramIndex < rootParams.size(); paramIndex++) {
+            const MetalRTRootParameter &param = rootParams[paramIndex];
+            switch (param.type) {
+                case MetalRTRootParameterType::DescriptorTable: {
+                    uint32_t totalDescriptors = 0;
+                    for (const auto &range : param.ranges) {
+                        totalDescriptors = std::max(totalDescriptors, range.offset + range.numDescriptors);
+                    }
+                    if (totalDescriptors == 0) {
+                        break;
+                    }
+
+                    const size_t tableSize = totalDescriptors * sizeof(IRDescriptorTableEntry);
+                    if (rtDescriptorTableBuffers[paramIndex] == nullptr || rtDescriptorTableBufferSizes[paramIndex] < tableSize) {
+                        if (rtDescriptorTableBuffers[paramIndex] != nullptr) {
+                            rtDescriptorTableBuffers[paramIndex]->release();
+                        }
+                        rtDescriptorTableBuffers[paramIndex] = device->newBuffer(tableSize, MTL::ResourceStorageModeShared);
+                        rtDescriptorTableBufferSizes[paramIndex] = tableSize;
+                    }
+
+                    auto *entries = static_cast<IRDescriptorTableEntry *>(rtDescriptorTableBuffers[paramIndex]->contents());
+                    memset(entries, 0, tableSize);
+
+                    for (const auto &range : param.ranges) {
+                        if (range.numDescriptors == 0) {
+                            continue;
+                        }
+                        if (range.registerSpace >= MAX_DESCRIPTOR_SET_BINDINGS) {
+                            continue;
+                        }
+                        if (range.baseRegister >= MAX_BINDING_NUMBER) {
+                            continue;
+                        }
+
+                        MetalDescriptorSet *descriptorSet = raytracingDescriptorSets[range.registerSpace];
+                        if (descriptorSet == nullptr) {
+                            continue;
+                        }
+
+                        const auto *binding = descriptorSet->setLayout->getBinding(range.baseRegister);
+                        const int32_t baseIndex = descriptorSet->setLayout->bindingDescriptorIndexBase[range.baseRegister];
+                        if (binding == nullptr || baseIndex < 0) {
+                            continue;
+                        }
+
+                        const uint32_t rangeCount = std::min(range.numDescriptors, binding->descriptorCount);
+                        for (uint32_t i = 0; i < rangeCount; i++) {
+                            const uint32_t descriptorIndex = static_cast<uint32_t>(baseIndex) + i;
+                            if (descriptorIndex >= descriptorSet->resourceEntries.size()) {
+                                continue;
+                            }
+                            auto &entry = descriptorSet->resourceEntries[descriptorIndex];
+                            setDescriptorTableEntry(entries[range.offset + i], entry, binding, i);
+                            useResourceEntry(entry);
+                        }
+                    }
+
+                    tlabAddresses[paramIndex] = rtDescriptorTableBuffers[paramIndex]->gpuAddress();
+                    activeComputeEncoder->useResource(rtDescriptorTableBuffers[paramIndex], MTL::ResourceUsageRead);
+                    break;
+                }
+                case MetalRTRootParameterType::RootCBV:
+                case MetalRTRootParameterType::RootSRV:
+                case MetalRTRootParameterType::RootUAV: {
+                    if (param.registerSpace >= MAX_DESCRIPTOR_SET_BINDINGS) {
+                        break;
+                    }
+                    if (param.shaderRegister >= MAX_BINDING_NUMBER) {
+                        break;
+                    }
+                    MetalDescriptorSet *descriptorSet = raytracingDescriptorSets[param.registerSpace];
+                    if (descriptorSet == nullptr) {
+                        break;
+                    }
+
+                    const int32_t baseIndex = descriptorSet->setLayout->bindingDescriptorIndexBase[param.shaderRegister];
+                    if (baseIndex < 0 || static_cast<size_t>(baseIndex) >= descriptorSet->resourceEntries.size()) {
+                        break;
+                    }
+                    const auto &entry = descriptorSet->resourceEntries[baseIndex];
+                    if (entry.type == RenderDescriptorRangeType::ACCELERATION_STRUCTURE) {
+                        auto *tlas = static_cast<MTL::AccelerationStructure *>(entry.resource);
+                        if (tlas == nullptr) {
+                            break;
+                        }
+
+                        uint32_t instanceCount = entry.instanceCount;
+                        if (instanceCount == 0) {
+                            instanceCount = 1;
+                        }
+
+                        const size_t contributionsSize = instanceCount * sizeof(uint32_t);
+                        const size_t asSize = sizeof(IRRaytracingAccelerationStructureGPUHeader) + contributionsSize;
+                        if (rtASHeaderBuffers[paramIndex] == nullptr || rtASHeaderBufferSizes[paramIndex] < asSize) {
+                            if (rtASHeaderBuffers[paramIndex] != nullptr) {
+                                rtASHeaderBuffers[paramIndex]->release();
+                            }
+                            rtASHeaderBuffers[paramIndex] = device->newBuffer(asSize, MTL::ResourceStorageModeShared);
+                            rtASHeaderBufferSizes[paramIndex] = asSize;
+                        }
+
+                        auto *header = static_cast<IRRaytracingAccelerationStructureGPUHeader *>(rtASHeaderBuffers[paramIndex]->contents());
+                        header->accelerationStructureID = tlas->gpuResourceID()._impl;
+                        header->addressOfInstanceContributions = rtASHeaderBuffers[paramIndex]->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
+
+                        auto *instanceContributions = reinterpret_cast<uint32_t *>(
+                            static_cast<uint8_t *>(rtASHeaderBuffers[paramIndex]->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
+                        if (!entry.instanceContributions.empty()) {
+                            const uint32_t copyCount = std::min(instanceCount, static_cast<uint32_t>(entry.instanceContributions.size()));
+                            memcpy(instanceContributions, entry.instanceContributions.data(), copyCount * sizeof(uint32_t));
+                            if (copyCount < instanceCount) {
+                                memset(instanceContributions + copyCount, 0, (instanceCount - copyCount) * sizeof(uint32_t));
+                            }
+                        } else {
+                            memset(instanceContributions, 0, instanceCount * sizeof(uint32_t));
+                        }
+
+                        tlabAddresses[paramIndex] = rtASHeaderBuffers[paramIndex]->gpuAddress();
+                        activeComputeEncoder->useResource(tlas, MTL::ResourceUsageRead);
+                        activeComputeEncoder->useResource(rtASHeaderBuffers[paramIndex], MTL::ResourceUsageRead);
+                    } else {
+                        auto *buffer = static_cast<MTL::Buffer *>(entry.resource);
+                        if (buffer != nullptr) {
+                            tlabAddresses[paramIndex] = buffer->gpuAddress() + entry.bufferOffset;
+                            useResourceEntry(entry);
+                        }
+                    }
+                    break;
+                }
                 default:
                     break;
             }
         }
 
-        // Ensure at least 1 instance for the contributions array.
-        if (tlasInstanceCount == 0) {
-            tlasInstanceCount = 1;
-        }
-
-        MTL::Device* device = queue->device->mtl;
-
-        // Rebuild cached TLAB buffers if resources have changed.
-        if (descriptorSet->rtBuffersDirty) {
-            // Release old buffers.
-            if (descriptorSet->rtASHeaderBuffer != nullptr) {
-                descriptorSet->rtASHeaderBuffer->release();
-                descriptorSet->rtASHeaderBuffer = nullptr;
+        const size_t tlabSize = tlabAddresses.size() * sizeof(uint64_t);
+        if (rtTLABBuffer == nullptr || rtTLABBufferSize < tlabSize) {
+            if (rtTLABBuffer != nullptr) {
+                rtTLABBuffer->release();
             }
-            if (descriptorSet->rtUAVTableBuffer != nullptr) {
-                descriptorSet->rtUAVTableBuffer->release();
-                descriptorSet->rtUAVTableBuffer = nullptr;
-            }
-            if (descriptorSet->rtTLABBuffer != nullptr) {
-                descriptorSet->rtTLABBuffer->release();
-                descriptorSet->rtTLABBuffer = nullptr;
-            }
-
-            // Root parameter 0: UAV descriptor table for output texture.
-            if (outputTexture != nullptr) {
-                IRDescriptorTableEntry uavEntry = {};
-                IRDescriptorTableSetTexture(&uavEntry, outputTexture, 0, 0);
-                descriptorSet->rtUAVTableBuffer = device->newBuffer(&uavEntry, sizeof(uavEntry), MTL::ResourceStorageModeShared);
-            }
-
-            // Root parameter 1: SRV for acceleration structure.
-            // This requires an IRRaytracingAccelerationStructureGPUHeader followed by an array
-            // of instance contribution indices (one uint32_t per TLAS instance).
-            if (tlas != nullptr) {
-                const size_t instanceContributionsSize = tlasInstanceCount * sizeof(uint32_t);
-                const size_t asSrvSize = sizeof(IRRaytracingAccelerationStructureGPUHeader) + instanceContributionsSize;
-                descriptorSet->rtASHeaderBuffer = device->newBuffer(asSrvSize, MTL::ResourceStorageModeShared);
-
-                // Fill the AS header.
-                auto* header = static_cast<IRRaytracingAccelerationStructureGPUHeader*>(descriptorSet->rtASHeaderBuffer->contents());
-                header->accelerationStructureID = tlas->gpuResourceID()._impl;
-                header->addressOfInstanceContributions = descriptorSet->rtASHeaderBuffer->gpuAddress() + sizeof(IRRaytracingAccelerationStructureGPUHeader);
-
-                // Fill instance contributions array. Each entry is the hit group offset for that instance.
-                auto* instanceContributions = reinterpret_cast<uint32_t*>(
-                    static_cast<uint8_t*>(descriptorSet->rtASHeaderBuffer->contents()) + sizeof(IRRaytracingAccelerationStructureGPUHeader));
-                if (tlasInstanceContributions != nullptr) {
-                    // Use per-instance hit group offsets from the TLAS build.
-                    memcpy(instanceContributions, tlasInstanceContributions, tlasInstanceCount * sizeof(uint32_t));
-                } else {
-                    // Default to 0 for all instances (single hit group).
-                    memset(instanceContributions, 0, tlasInstanceCount * sizeof(uint32_t));
-                }
-            }
-
-            // Root parameter 2: CBV (constant buffer) - direct GPU address, no wrapper needed.
-            uint64_t cbvAddress = constantBuffer ? constantBuffer->gpuAddress() : 0;
-
-            // Build the TLAB: array of GPU addresses for each root parameter.
-            uint64_t tlab[3] = {
-                descriptorSet->rtUAVTableBuffer ? descriptorSet->rtUAVTableBuffer->gpuAddress() : 0,
-                descriptorSet->rtASHeaderBuffer ? descriptorSet->rtASHeaderBuffer->gpuAddress() : 0,
-                cbvAddress
-            };
-
-            descriptorSet->rtTLABBuffer = device->newBuffer(tlab, sizeof(tlab), MTL::ResourceStorageModeShared);
-            descriptorSet->rtBuffersDirty = false;
+            rtTLABBuffer = device->newBuffer(tlabSize, MTL::ResourceStorageModeShared);
+            rtTLABBufferSize = tlabSize;
         }
 
-        // Bind resources for the encoder.
-        if (outputTexture != nullptr) {
-            activeComputeEncoder->useResource(outputTexture, MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
-        }
-        if (descriptorSet->rtUAVTableBuffer != nullptr) {
-            activeComputeEncoder->useResource(descriptorSet->rtUAVTableBuffer, MTL::ResourceUsageRead);
-        }
-        if (tlas != nullptr) {
-            activeComputeEncoder->useResource(tlas, MTL::ResourceUsageRead);
-        }
-        if (descriptorSet->rtASHeaderBuffer != nullptr) {
-            activeComputeEncoder->useResource(descriptorSet->rtASHeaderBuffer, MTL::ResourceUsageRead);
-        }
-        if (constantBuffer != nullptr) {
-            activeComputeEncoder->useResource(constantBuffer, MTL::ResourceUsageRead);
-        }
-        if (descriptorSet->rtTLABBuffer != nullptr) {
-            activeComputeEncoder->useResource(descriptorSet->rtTLABBuffer, MTL::ResourceUsageRead);
-        }
+        memcpy(rtTLABBuffer->contents(), tlabAddresses.data(), tlabSize);
+        activeComputeEncoder->useResource(rtTLABBuffer, MTL::ResourceUsageRead);
+        activeComputeEncoder->useResource(sbtBuffer->mtl, MTL::ResourceUsageRead);
 
         // Bind push constants for raytracing.
         for (const PushConstantData &pushConstant : pushConstants) {
@@ -3003,7 +3664,7 @@ namespace plume {
         // Build the IRDispatchRaysArgument structure.
         IRDispatchRaysArgument dispatchArgs = {};
         dispatchArgs.DispatchRaysDesc = dispatchDesc;
-        dispatchArgs.GRS = descriptorSet->rtTLABBuffer->gpuAddress();  // TLAB contains root parameter GPU addresses
+        dispatchArgs.GRS = rtTLABBuffer->gpuAddress();  // TLAB contains root parameter GPU addresses
         dispatchArgs.ResDescHeap = 0;  // Not using bindless resource heap
         dispatchArgs.SmpDescHeap = 0;  // Not using sampler heap
         dispatchArgs.VisibleFunctionTable = activeRaytracingPipeline->visibleFunctionTable ? activeRaytracingPipeline->visibleFunctionTable->gpuResourceID() : MTL::ResourceID{0};

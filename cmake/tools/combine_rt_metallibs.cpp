@@ -13,8 +13,10 @@
 //   [4 bytes] Version: 1
 //   [4 bytes] Functions metallib size (little-endian)
 //   [4 bytes] Dispatch metallib size (little-endian)
+//   [4 bytes] Root signature JSON size
 //   [N bytes] Functions metallib data
 //   [M bytes] Dispatch metallib data
+//   [K bytes] Root signature JSON
 
 #include <cstdint>
 #include <cstdio>
@@ -24,8 +26,6 @@
 #include <vector>
 
 static const char MAGIC[4] = {'P', 'L', 'R', 'T'};
-static const uint32_t VERSION = 1;
-
 std::vector<char> read_file(const char* path) {
     std::ifstream input_file{path, std::ios::binary};
     std::vector<char> ret{};
@@ -60,8 +60,8 @@ void write_uint32_le(std::ofstream& out, uint32_t value) {
 }
 
 int main(int argc, const char** argv) {
-    if (argc != 4) {
-        printf("Usage: %s <functions.metallib> <dispatch.metallib> <output.metallib>\n", argv[0]);
+    if (argc != 5) {
+        printf("Usage: %s <functions.metallib> <dispatch.metallib> <output.metallib> <root_signature.json>\n", argv[0]);
         printf("\nCombines two Metal RT shader libraries into a single blob.\n");
         return EXIT_FAILURE;
     }
@@ -69,6 +69,7 @@ int main(int argc, const char** argv) {
     const char* functions_path = argv[1];
     const char* dispatch_path = argv[2];
     const char* output_path = argv[3];
+    const char* root_signature_path = argv[4];
 
     // Read both input files
     std::vector<char> functions_data = read_file(functions_path);
@@ -80,6 +81,12 @@ int main(int argc, const char** argv) {
     std::vector<char> dispatch_data = read_file(dispatch_path);
     if (dispatch_data.empty()) {
         fprintf(stderr, "Failed to read dispatch metallib: %s\n", dispatch_path);
+        return EXIT_FAILURE;
+    }
+
+    std::vector<char> root_signature_data = read_file(root_signature_path);
+    if (root_signature_data.empty()) {
+        fprintf(stderr, "Failed to read root signature JSON: %s\n", root_signature_path);
         return EXIT_FAILURE;
     }
 
@@ -95,17 +102,20 @@ int main(int argc, const char** argv) {
 
     // Write header
     output.write(MAGIC, 4);
-    write_uint32_le(output, VERSION);
+    const uint32_t version = 1;
+    write_uint32_le(output, version);
     write_uint32_le(output, static_cast<uint32_t>(functions_data.size()));
     write_uint32_le(output, static_cast<uint32_t>(dispatch_data.size()));
+    write_uint32_le(output, static_cast<uint32_t>(root_signature_data.size()));
 
     // Write data
     output.write(functions_data.data(), functions_data.size());
     output.write(dispatch_data.data(), dispatch_data.size());
+    output.write(root_signature_data.data(), root_signature_data.size());
 
     printf("Combined RT metallib: %zu + %zu = %zu bytes\n",
            functions_data.size(), dispatch_data.size(),
-           16 + functions_data.size() + dispatch_data.size());
+           20 + functions_data.size() + dispatch_data.size() + root_signature_data.size());
 
     return EXIT_SUCCESS;
 }

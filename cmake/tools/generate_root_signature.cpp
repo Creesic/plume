@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -23,6 +24,7 @@ struct Resource {
     std::string dim;       // NA, 2d, ras (raytracing acceleration structure), etc.
     std::string bindType;  // cb, t, u, s
     int reg = 0;
+    int space = 0;
     int count = 1;
 };
 
@@ -46,15 +48,30 @@ std::vector<std::string> splitWhitespace(const std::string& s) {
 }
 
 // Parse HLSL bind like "cb0", "t0", "u0", "s0"
-bool parseHlslBind(const std::string& bind, std::string& bindType, int& reg) {
+bool parseHlslBind(const std::string& bind, std::string& bindType, int& reg, int& space) {
+    std::string bindPart = bind;
+    std::string spacePart;
+    const size_t comma = bind.find(',');
+    if (comma != std::string::npos) {
+        bindPart = bind.substr(0, comma);
+        spacePart = bind.substr(comma + 1);
+    }
+
     size_t i = 0;
-    while (i < bind.size() && std::isalpha(bind[i])) {
+    while (i < bindPart.size() && std::isalpha(static_cast<unsigned char>(bindPart[i]))) {
         i++;
     }
-    if (i == 0 || i >= bind.size()) return false;
-    
-    bindType = bind.substr(0, i);
-    reg = std::atoi(bind.substr(i).c_str());
+    if (i == 0 || i >= bindPart.size()) return false;
+
+    bindType = bindPart.substr(0, i);
+    reg = std::atoi(bindPart.substr(i).c_str());
+
+    if (!spacePart.empty()) {
+        spacePart = trim(spacePart);
+        if (spacePart.rfind("space", 0) == 0) {
+            space = std::atoi(spacePart.substr(5).c_str());
+        }
+    }
     return true;
 }
 
@@ -89,7 +106,7 @@ std::vector<Resource> parseReflection(const std::string& content) {
         line = trim(line.substr(1));
         if (line.empty()) continue;
         
-        // Parse: Name Type Format Dim ID HLSLBind Count
+        // Parse: Name Type Format Dim ID HLSLBind [Space] Count
         auto parts = splitWhitespace(line);
         if (parts.size() < 7) continue;
         
@@ -97,10 +114,15 @@ std::vector<Resource> parseReflection(const std::string& content) {
         res.name = parts[0];
         res.type = parts[1];
         res.dim = parts[3];
-        std::string hlslBind = parts[5];
-        res.count = std::atoi(parts[6].c_str());
-        
-        if (!parseHlslBind(hlslBind, res.bindType, res.reg)) {
+        res.count = std::atoi(parts.back().c_str());
+        size_t bindIndex = parts.size() - 2;
+        if (bindIndex > 0 && parts[bindIndex].rfind("space", 0) == 0) {
+            res.space = std::atoi(parts[bindIndex].substr(5).c_str());
+            bindIndex--;
+        }
+        std::string hlslBind = parts[bindIndex];
+
+        if (!parseHlslBind(hlslBind, res.bindType, res.reg, res.space)) {
             continue;
         }
         
@@ -151,7 +173,7 @@ void writeRootSignature(std::ofstream& out, const std::vector<Resource>& resourc
             out << "              \"RangeType\": \"IRDescriptorRangeTypeUAV\",\n";
             out << "              \"NumDescriptors\": " << res.count << ",\n";
             out << "              \"BaseShaderRegister\": " << res.reg << ",\n";
-            out << "              \"RegisterSpace\": 0,\n";
+            out << "              \"RegisterSpace\": " << res.space << ",\n";
             out << "              \"OffsetInDescriptorsFromTableStart\": 0,\n";
             out << "              \"Flags\": \"IRDescriptorRangeFlagNone\"\n";
             out << "            }\n";
@@ -166,7 +188,7 @@ void writeRootSignature(std::ofstream& out, const std::vector<Resource>& resourc
                 out << "        \"ShaderVisibility\": \"IRShaderVisibilityAll\",\n";
                 out << "        \"Descriptor\": {\n";
                 out << "          \"ShaderRegister\": " << res.reg << ",\n";
-                out << "          \"RegisterSpace\": 0,\n";
+                out << "          \"RegisterSpace\": " << res.space << ",\n";
                 out << "          \"Flags\": \"IRRootDescriptorFlagNone\"\n";
                 out << "        }\n";
                 out << "      }";
@@ -182,7 +204,7 @@ void writeRootSignature(std::ofstream& out, const std::vector<Resource>& resourc
                 out << "              \"RangeType\": \"IRDescriptorRangeTypeSRV\",\n";
                 out << "              \"NumDescriptors\": " << res.count << ",\n";
                 out << "              \"BaseShaderRegister\": " << res.reg << ",\n";
-                out << "              \"RegisterSpace\": 0,\n";
+                out << "              \"RegisterSpace\": " << res.space << ",\n";
                 out << "              \"OffsetInDescriptorsFromTableStart\": 0,\n";
                 out << "              \"Flags\": \"IRDescriptorRangeFlagNone\"\n";
                 out << "            }\n";
@@ -197,7 +219,7 @@ void writeRootSignature(std::ofstream& out, const std::vector<Resource>& resourc
             out << "        \"ShaderVisibility\": \"IRShaderVisibilityAll\",\n";
             out << "        \"Descriptor\": {\n";
             out << "          \"ShaderRegister\": " << res.reg << ",\n";
-            out << "          \"RegisterSpace\": 0,\n";
+            out << "          \"RegisterSpace\": " << res.space << ",\n";
             out << "          \"Flags\": \"IRRootDescriptorFlagNone\"\n";
             out << "        }\n";
             out << "      }";
@@ -213,7 +235,7 @@ void writeRootSignature(std::ofstream& out, const std::vector<Resource>& resourc
             out << "              \"RangeType\": \"IRDescriptorRangeTypeSampler\",\n";
             out << "              \"NumDescriptors\": " << res.count << ",\n";
             out << "              \"BaseShaderRegister\": " << res.reg << ",\n";
-            out << "              \"RegisterSpace\": 0,\n";
+            out << "              \"RegisterSpace\": " << res.space << ",\n";
             out << "              \"OffsetInDescriptorsFromTableStart\": 0,\n";
             out << "              \"Flags\": \"IRDescriptorRangeFlagNone\"\n";
             out << "            }\n";
