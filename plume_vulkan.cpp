@@ -6,7 +6,7 @@
 //
 
 #define VMA_IMPLEMENTATION
-#define VOLK_IMPLEMENTATION 
+#define VOLK_IMPLEMENTATION
 
 #include "plume_vulkan.h"
 
@@ -65,11 +65,11 @@ namespace plume {
         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
 #   endif
     };
-    
+
     static const std::unordered_set<std::string> RequiredDeviceExtensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     };
-    
+
     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
@@ -342,9 +342,9 @@ namespace plume {
         case RenderPrimitiveTopology::LINE_STRIP:
             return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
         case RenderPrimitiveTopology::TRIANGLE_LIST:
-            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; 
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         case RenderPrimitiveTopology::TRIANGLE_STRIP:
-            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;  
+            return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
         case RenderPrimitiveTopology::TRIANGLE_FAN:
             return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
         default:
@@ -599,7 +599,7 @@ namespace plume {
             return VK_ACCELERATION_STRUCTURE_TYPE_MAX_ENUM_KHR;
         }
     }
-    
+
     static VkPipelineStageFlags toStageFlags(RenderBarrierStages stages, bool geometrySupported, bool rtSupported) {
         VkPipelineStageFlags flags = 0;
 
@@ -688,7 +688,7 @@ namespace plume {
         flags |= preferFastTrace ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR : 0;
         return flags;
     }
-    
+
     static VkImageLayout toImageLayout(RenderTextureLayout layout) {
         switch (layout) {
         case RenderTextureLayout::UNKNOWN:
@@ -918,7 +918,7 @@ namespace plume {
     }
 
     void VulkanBuffer::setName(const std::string &name) {
-        setObjectName(device->vk, VK_OBJECT_TYPE_IMAGE, uint64_t(vk), name);
+        setObjectName(device->vk, VK_OBJECT_TYPE_BUFFER, uint64_t(vk), name);
     }
 
     uint64_t VulkanBuffer::getDeviceAddress() const {
@@ -1031,7 +1031,7 @@ namespace plume {
             vmaDestroyImage(device->allocator, vk, allocation);
         }
     }
-    
+
     void VulkanTexture::createImageView(VkFormat format) {
         VkImageView view = VK_NULL_HANDLE;
         VkImageViewCreateInfo viewInfo = {};
@@ -1044,7 +1044,7 @@ namespace plume {
         viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
         viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
         viewInfo.subresourceRange = imageSubresourceRange;
-        
+
         VkResult res = vkCreateImageView(device->vk, &viewInfo, nullptr, &imageView);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateImageView failed with error code 0x%X.\n", res);
@@ -1163,7 +1163,7 @@ namespace plume {
                 }
             }
         }
-        
+
         // Create bindings.
         uint32_t immutableSamplerIndex = 0;
         for (uint32_t i = 0; i < descriptorSetDesc.descriptorRangesCount; i++) {
@@ -1192,7 +1192,7 @@ namespace plume {
         setLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         setLayoutInfo.pBindings = !setBindings.empty() ? setBindings.data() : nullptr;
         setLayoutInfo.bindingCount = uint32_t(setBindings.size());
-        
+
         thread_local std::vector<VkDescriptorBindingFlags> bindingFlags;
         VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo = {};
         if (descriptorSetDesc.lastRangeIsBoundless && (descriptorSetDesc.descriptorRangesCount > 0)) {
@@ -1207,7 +1207,7 @@ namespace plume {
             setLayoutInfo.pNext = &flagsInfo;
             setLayoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         }
-        
+
         VkResult res = vkCreateDescriptorSetLayout(device->vk, &setLayoutInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateDescriptorSetLayout failed with error code 0x%X.\n", res);
@@ -1583,7 +1583,7 @@ namespace plume {
         colorBlend.logicOp = toVk(desc.logicOp);
         colorBlend.pAttachments = !colorBlendAttachments.empty() ? colorBlendAttachments.data() : nullptr;
         colorBlend.attachmentCount = uint32_t(colorBlendAttachments.size());
-        
+
         VkPipelineDepthStencilStateCreateInfo depthStencil = {};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = desc.depthEnabled;
@@ -1863,7 +1863,7 @@ namespace plume {
 
         groupCount = pipelineInfo.groupCount;
     }
-    
+
     VulkanRaytracingPipeline::~VulkanRaytracingPipeline() {
         if (vk != VK_NULL_HANDLE) {
             vkDestroyPipeline(device->vk, vk, nullptr);
@@ -1889,7 +1889,7 @@ namespace plume {
 
         thread_local std::unordered_map<VkDescriptorType, uint32_t> typeCounts;
         typeCounts.clear();
-        
+
         uint32_t boundlessRangeSize = 0;
         uint32_t rangeCount = desc.descriptorRangesCount;
         if (desc.lastRangeIsBoundless) {
@@ -1943,7 +1943,7 @@ namespace plume {
 
         delete setLayout;
     }
-    
+
     void VulkanDescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
         if (buffer == nullptr) {
             return;
@@ -2135,7 +2135,7 @@ namespace plume {
         assert(renderWindow.view != 0);
         // Creates a wrapper around the window for storing and fetching sizes.
         this->windowWrapper = std::make_unique<CocoaWindow>(renderWindow.window);
-        
+
         VkMetalSurfaceCreateInfoEXT surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
         surfaceCreateInfo.pLayer = renderWindow.view;
@@ -2278,7 +2278,7 @@ namespace plume {
             presentId.swapchainCount = 1;
             presentInfo.pNext = &presentId;
         }
-        
+
         VkResult res;
         {
             const std::scoped_lock queueLock(*commandQueue->queue->mutex);
@@ -2508,7 +2508,7 @@ namespace plume {
     }
 
     // VulkanFramebuffer
-    
+
     VulkanFramebuffer::VulkanFramebuffer(VulkanDevice *device, const RenderFramebufferDesc &desc) {
         assert(device != nullptr);
 
@@ -2627,7 +2627,7 @@ namespace plume {
             fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
             return;
         }
-        
+
         VkFramebufferCreateInfo fbInfo = {};
         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbInfo.renderPass = renderPass;
@@ -2686,13 +2686,13 @@ namespace plume {
         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
         createInfo.queryCount = queryCount;
-        
+
         VkResult res = vkCreateQueryPool(device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateQueryPool failed with error code 0x%X.\n", res);
             return;
         }
-        
+
         results.resize(queryCount);
     }
 
@@ -2714,16 +2714,16 @@ namespace plume {
             uint64_t t = (u1 * v1);
             uint64_t w3 = (t & 0xffffffff);
             uint64_t k = (t >> 32);
-    
+
             u >>= 32;
             t = (u * v1) + k;
             k = (t & 0xffffffff);
             uint64_t w1 = (t >> 32);
-    
+
             v >>= 32;
             t = (u1 * v) + k;
             k = (t >> 32);
-    
+
             h = (u * v) + w1 + k;
             l = (t << 32) + w3;
         };
@@ -2874,7 +2874,7 @@ namespace plume {
             interfaceTexture->textureLayout = textureBarrier.layout;
             interfaceTexture->barrierStages = stages;
         }
-        
+
         if (bufferMemoryBarriers.empty() && imageMemoryBarriers.empty()) {
             return;
         }
@@ -2928,7 +2928,7 @@ namespace plume {
 
         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
     }
-    
+
     void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
         assert(activeGraphicsPipelineLayout != nullptr);
         checkActiveRenderPass();
@@ -2971,7 +2971,7 @@ namespace plume {
     void VulkanCommandList::setComputePushConstants(uint32_t rangeIndex, const void *data, uint32_t offset, uint32_t size) {
         assert(activeComputePipelineLayout != nullptr);
         assert(rangeIndex < activeComputePipelineLayout->pushConstantRanges.size());
-        
+
         const VkPushConstantRange &range = activeComputePipelineLayout->pushConstantRanges[rangeIndex];
         vkCmdPushConstants(vk, activeComputePipelineLayout->vk, range.stageFlags & VK_SHADER_STAGE_COMPUTE_BIT, range.offset + offset, size == 0 ? range.size : size, data);
     }
@@ -3197,7 +3197,7 @@ namespace plume {
 
     void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
         endActiveRenderPass();
-        
+
         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
         assert(srcLocation.type != RenderTextureCopyType::UNKNOWN);
 
@@ -3266,7 +3266,7 @@ namespace plume {
 
         assert(dstBuffer != nullptr);
         assert(srcBuffer != nullptr);
-        
+
         const VulkanBuffer *interfaceDstBuffer = static_cast<const VulkanBuffer *>(dstBuffer);
         const VulkanBuffer *interfaceSrcBuffer = static_cast<const VulkanBuffer *>(srcBuffer);
         VkBufferCopy bufferCopy = {};
@@ -3361,7 +3361,7 @@ namespace plume {
 
         vkCmdResolveImage(vk, src->vk, srcLayout, dst->vk, dstLayout, uint32_t(imageResolves.size()), imageResolves.data());
     }
-    
+
     void VulkanCommandList::buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) {
         assert(dstAccelerationStructure != nullptr);
         assert(scratchBuffer.ref != nullptr);
@@ -3465,7 +3465,7 @@ namespace plume {
 
     void VulkanCommandList::checkActiveRenderPass() {
         assert(targetFramebuffer != nullptr);
-        
+
         if (activeRenderPass == VK_NULL_HANDLE) {
             VkRenderPassBeginInfo beginInfo = {};
             beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3627,7 +3627,7 @@ namespace plume {
             return;
         }
     }
-    
+
     void VulkanCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         assert(fence != nullptr);
 
@@ -3697,7 +3697,7 @@ namespace plume {
     std::unique_ptr<RenderTexture> VulkanPool::createTexture(const RenderTextureDesc &desc) {
         return std::make_unique<VulkanTexture>(device, this, desc);
     }
-    
+
     // VulkanQueueFamily
 
     void VulkanQueueFamily::add(VulkanCommandQueue *virtualQueue) {
@@ -3730,7 +3730,7 @@ namespace plume {
     }
 
     // VulkanDevice
-    
+
     VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName) {
         assert(renderInterface != nullptr);
 
@@ -3742,7 +3742,7 @@ namespace plume {
             fprintf(stderr, "Unable to find devices that support Vulkan.\n");
             return;
         }
-        
+
         std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
         vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, physicalDevices.data());
 
@@ -3813,7 +3813,7 @@ namespace plume {
             }
 #       endif
         }
-        
+
         if (!missingRequiredExtensions.empty()) {
             for (const std::string &extension : missingRequiredExtensions) {
                 fprintf(stderr, "Missing required extension: %s.\n", extension.c_str());
@@ -3961,7 +3961,7 @@ namespace plume {
             bufferDeviceAddressFeatures.pNext = createDeviceChain;
             createDeviceChain = &bufferDeviceAddressFeatures;
         }
-        
+
         if (portabilityFound) {
             portabilityFeatures.pNext = createDeviceChain;
             createDeviceChain = &portabilityFeatures;
@@ -4347,7 +4347,7 @@ namespace plume {
         buildInfo.scratchSize = roundUp(buildSizesInfo.buildScratchSize, AccelerationStructureBufferAlignment);
         buildInfo.accelerationStructureSize = roundUp(buildSizesInfo.accelerationStructureSize, AccelerationStructureBufferAlignment);
     }
-    
+
     void VulkanDevice::setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) {
         assert(pipeline != nullptr);
         assert((descriptorSets != nullptr) && "Vulkan doesn't require descriptor sets, but they should be passed to keep consistency with D3D12.");
@@ -4365,7 +4365,7 @@ namespace plume {
             fprintf(stderr, "vkGetRayTracingShaderGroupHandlesKHR failed with error code 0x%X.\n", res);
             return;
         }
-        
+
         const uint32_t handleSizeAligned = roundUp(handleSize, rtPipelineProperties.shaderGroupHandleAlignment);
         const uint32_t regionAlignment = roundUp(handleSizeAligned, rtPipelineProperties.shaderGroupBaseAlignment);
         uint64_t tableSize = 0;
@@ -4499,7 +4499,7 @@ namespace plume {
 
 #   if PLUME_SDL_VULKAN_ENABLED
         // Push the extensions specified by SDL as required.
-        // SDL2 has this awkward requirement for the window to pull the extensions from. 
+        // SDL2 has this awkward requirement for the window to pull the extensions from.
         // This can be removed when upgrading to SDL3.
         if (sdlWindow != nullptr) {
             uint32_t sdlVulkanExtensionCount = 0;
@@ -4558,7 +4558,7 @@ namespace plume {
 
         std::vector<VkLayerProperties> availableLayers(layerCount);
         vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
-        
+
         const char validationLayerName[] = "VK_LAYER_KHRONOS_validation";
         const char *enabledLayerNames[] = { validationLayerName };
         for (const VkLayerProperties &layerProperties : availableLayers) {
@@ -4569,7 +4569,7 @@ namespace plume {
             }
         }
 #   endif
-        
+
         res = vkCreateInstance(&createInfo, nullptr, &instance);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateInstance failed with error code 0x%X.\n", res);
