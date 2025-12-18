@@ -3,6 +3,7 @@
 
 // Output texture
 [[vk::binding(0)]]
+[[vk::image_format("rgba8")]]
 RWTexture2D<float4> outputTexture : register(u0);
 
 // Acceleration structure
