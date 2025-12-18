@@ -2,7 +2,7 @@
 // Samples from a cubemap texture
 
 [[vk::binding(0, 0)]] TextureCube<float4> cubeTexture : register(t0);
-[[vk::binding(1, 0)]] SamplerState cubeSampler : register(s0);
+[[vk::binding(1, 0)]] SamplerState cubeSampler : register(s1);
 
 struct PSInput {
     float4 position : SV_POSITION;
