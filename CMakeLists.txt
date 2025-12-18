@@ -13,8 +13,6 @@ if(APPLE)
     enable_language(OBJC OBJCXX)
 endif()
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/examples/cmake/modules/PlumeFileToC.cmake)
-
 string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
 
 # Project options
@@ -111,52 +109,6 @@ if(APPLE)
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
-
-    plume_build_file_to_c()
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
-
-    function(plume_compile_internal_metal TARGET_NAME SHADER_SOURCE OUTPUT_NAME)
-        set(IR_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.ir")
-        set(METALLIB_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metallib")
-        set(C_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.c")
-        set(H_OUTPUT "${CMAKE_BINARY_DIR}/shaders/${OUTPUT_NAME}.metal.h")
-
-        if(CMAKE_OSX_DEPLOYMENT_TARGET)
-            set(METAL_VERSION_FLAG "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        else()
-            set(METAL_VERSION_FLAG "")
-        endif()
-
-        add_custom_command(
-            OUTPUT "${IR_OUTPUT}"
-            COMMAND xcrun -sdk macosx metal ${METAL_VERSION_FLAG} -o "${IR_OUTPUT}" -c "${SHADER_SOURCE}"
-            DEPENDS "${SHADER_SOURCE}"
-            COMMENT "Compiling Metal shader ${OUTPUT_NAME} to IR"
-            VERBATIM
-        )
-
-        add_custom_command(
-            OUTPUT "${METALLIB_OUTPUT}"
-            COMMAND xcrun -sdk macosx metallib "${IR_OUTPUT}" -o "${METALLIB_OUTPUT}"
-            DEPENDS "${IR_OUTPUT}"
-            COMMENT "Linking ${OUTPUT_NAME} to metallib"
-            VERBATIM
-        )
-
-        add_custom_command(
-            OUTPUT "${C_OUTPUT}" "${H_OUTPUT}"
-            COMMAND plume_file_to_c "${METALLIB_OUTPUT}" "${OUTPUT_NAME}BlobMSL" "${C_OUTPUT}" "${H_OUTPUT}"
-            DEPENDS "${METALLIB_OUTPUT}" plume_file_to_c
-            COMMENT "Generating C header for Metal shader ${OUTPUT_NAME}"
-            VERBATIM
-        )
-
-        target_sources(${TARGET_NAME} PRIVATE "${C_OUTPUT}")
-        target_include_directories(${TARGET_NAME} PRIVATE "${CMAKE_BINARY_DIR}")
-    endfunction()
-
-    plume_compile_internal_metal(plume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/plume_clear.metal" plume_clear)
-    plume_compile_internal_metal(plume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/plume_resolve.metal" plume_resolve)
 endif()
 
 # Add examples if requested
