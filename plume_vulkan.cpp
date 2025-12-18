@@ -918,7 +918,7 @@ namespace plume {
     }
 
     void VulkanBuffer::setName(const std::string &name) {
-        setObjectName(device->vk, VK_OBJECT_TYPE_BUFFER, uint64_t(vk), name);
+        setObjectName(device->vk, VK_OBJECT_TYPE_IMAGE, uint64_t(vk), name);
     }
 
     uint64_t VulkanBuffer::getDeviceAddress() const {
