@@ -548,7 +548,7 @@ namespace plume {
         MetalCommandQueue(MetalDevice *device, RenderCommandListType type);
         ~MetalCommandQueue() override;
         std::unique_ptr<RenderCommandList> createCommandList() override;
-        std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) override;
+        std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
     };
