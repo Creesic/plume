@@ -173,7 +173,7 @@ namespace plume {
         ctx.m_fence = ctx.m_device->createCommandFence();
 
         // Create a swap chain for the window using the render window from init
-        ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(ctx.m_renderWindow, BufferCount, SwapchainFormat, 2);
+        ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(RenderSwapChainDesc(ctx.m_renderWindow, SwapchainFormat, BufferCount));
 
         // Explicitly resize the swapchain to create the textures
         ctx.m_swapChain->resize();

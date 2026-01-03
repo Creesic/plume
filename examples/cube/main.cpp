@@ -401,7 +401,7 @@ namespace plume {
         ctx.m_device = renderInterface->createDevice();
         ctx.m_commandQueue = ctx.m_device->createCommandQueue(RenderCommandListType::DIRECT);
         ctx.m_fence = ctx.m_device->createCommandFence();
-        ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(ctx.m_renderWindow, BufferCount, SwapchainFormat, 2);
+        ctx.m_swapChain = ctx.m_commandQueue->createSwapChain(RenderSwapChainDesc(ctx.m_renderWindow, SwapchainFormat, BufferCount));
         ctx.m_swapChain->resize();
         ctx.m_commandList = ctx.m_commandQueue->createCommandList();
         ctx.m_acquireSemaphore = ctx.m_device->createCommandSemaphore();
