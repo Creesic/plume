@@ -2239,6 +2239,7 @@ namespace plume {
 
     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
 #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
+        assert(d3dV9 != nullptr);
         assert(queue->device->capabilities.dynamicDepthBias && "Dynamic depth bias is unsupported on this device.");
         d3dV9->RSSetDepthBias(depthBias, depthBiasClamp, slopeScaledDepthBias);
 #   else
