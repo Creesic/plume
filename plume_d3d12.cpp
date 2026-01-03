@@ -1315,18 +1315,15 @@ namespace plume {
 
     // D3D12SwapChain
 
-    D3D12SwapChain::D3D12SwapChain(D3D12CommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency) {
+    D3D12SwapChain::D3D12SwapChain(D3D12CommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
         assert(commandQueue != nullptr);
-        assert(renderWindow != 0);
+        assert(desc.renderWindow != 0);
 
         this->commandQueue = commandQueue;
-        this->renderWindow = renderWindow;
-        this->textureCount = textureCount;
-        this->format = format;
-        this->maxFrameLatency = maxFrameLatency;
+        this->desc = desc;
         
         // Store the native format representation.
-        nativeFormat = toDXGI(format);
+        nativeFormat = toDXGI(desc.format);
 
         getWindowSize(width, height);
 
@@ -1336,7 +1333,7 @@ namespace plume {
         }
         
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.BufferCount = textureCount;
+        swapChainDesc.BufferCount = desc.textureCount;
         swapChainDesc.Width = width;
         swapChainDesc.Height = height;
         swapChainDesc.Format = nativeFormat;
@@ -1347,28 +1344,28 @@ namespace plume {
 
         IDXGISwapChain1 *swapChain1;
         IDXGIFactory4 *dxgiFactory = commandQueue->device->renderInterface->dxgiFactory;
-        HRESULT res = dxgiFactory->CreateSwapChainForHwnd(commandQueue->d3d, renderWindow, &swapChainDesc, nullptr, nullptr, &swapChain1);
+        HRESULT res = dxgiFactory->CreateSwapChainForHwnd(commandQueue->d3d, desc.renderWindow, &swapChainDesc, nullptr, nullptr, &swapChain1);
         if (FAILED(res)) {
             fprintf(stderr, "CreateSwapChainForHwnd failed with error code 0x%lX.\n", res);
             return;
         }
 
-        res = dxgiFactory->MakeWindowAssociation(renderWindow, DXGI_MWA_NO_ALT_ENTER);
+        res = dxgiFactory->MakeWindowAssociation(desc.renderWindow, DXGI_MWA_NO_ALT_ENTER);
         if (FAILED(res)) {
             fprintf(stderr, "MakeWindowAssociation failed with error code 0x%lX.\n", res);
             return;
         }
 
         d3d = static_cast<IDXGISwapChain3 *>(swapChain1);
-        d3d->SetMaximumFrameLatency(maxFrameLatency);
+        d3d->SetMaximumFrameLatency(desc.maxFrameLatency);
         waitableObject = d3d->GetFrameLatencyWaitableObject();
 
-        textures.resize(textureCount);
+        textures.resize(desc.textureCount);
 
-        for (uint32_t i = 0; i < textureCount; i++) {
+        for (uint32_t i = 0; i < desc.textureCount; i++) {
             textures[i].device = commandQueue->device;
             textures[i].desc.dimension = RenderTextureDimension::TEXTURE_2D;
-            textures[i].desc.format = format;
+            textures[i].desc.format = desc.format;
             textures[i].desc.depth = 1;
             textures[i].desc.mipLevels = 1;
             textures[i].desc.arraySize = 1;
@@ -1379,7 +1376,7 @@ namespace plume {
     }
 
     D3D12SwapChain::~D3D12SwapChain() {
-        for (uint32_t i = 0; i < textureCount; i++) {
+        for (uint32_t i = 0; i < desc.textureCount; i++) {
             if (textures[i].d3d != nullptr) {
                 textures[i].d3d->Release();
                 textures[i].d3d = nullptr;
@@ -1392,14 +1389,17 @@ namespace plume {
     }
 
     bool D3D12SwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) {
+        // If using present wait, we prefer using a SyncInterval of 0 even when Vsync is enabled. Tearing won't happen if DXGI_PRESENT_ALLOW_TEARING is not specified.
         const bool tearingAllowed = (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0U;
-        UINT syncInterval = vsyncEnabled ? 1 : 0;
-        UINT flags = (tearingAllowed && !vsyncEnabled) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+        UINT syncInterval = (vsyncEnabled && !desc.enablePresentWait) ? 1 : 0;
+        UINT flags = (!vsyncEnabled && tearingAllowed) ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT res = d3d->Present(syncInterval, flags);
         return SUCCEEDED(res);
     }
 
     void D3D12SwapChain::wait() {
+        assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
+
         if (waitableObject != NULL) {
             WaitForSingleObject(waitableObject, INFINITE);
         }
@@ -1413,7 +1413,7 @@ namespace plume {
             return false;
         }
 
-        for (uint32_t i = 0; i < textureCount; i++) {
+        for (uint32_t i = 0; i < desc.textureCount; i++) {
             textures[i].d3d->Release();
             textures[i].d3d = nullptr;
         }
@@ -1452,15 +1452,15 @@ namespace plume {
 
     void D3D12SwapChain::getWindowSize(uint32_t &dstWidth, uint32_t &dstHeight) const {
         RECT rect;
-        GetClientRect(renderWindow, &rect);
+        GetClientRect(desc.renderWindow, &rect);
         dstWidth = rect.right - rect.left;
         dstHeight = rect.bottom - rect.top;
     }
 
     void D3D12SwapChain::setTextures() {
-        assert(textureCount == textures.size());
+        assert(desc.textureCount == textures.size());
 
-        for (uint32_t i = 0; i < textureCount; i++) {
+        for (uint32_t i = 0; i < desc.textureCount; i++) {
             d3d->GetBuffer(i, IID_PPV_ARGS(&textures[i].d3d));
 
             textures[i].desc.width = width;
@@ -1475,7 +1475,7 @@ namespace plume {
     }
 
     uint32_t D3D12SwapChain::getTextureCount() const {
-        return textureCount;
+        return desc.textureCount;
     }
 
     bool D3D12SwapChain::acquireTexture(RenderCommandSemaphore *signalSemaphore, uint32_t *textureIndex) {
@@ -1485,7 +1485,7 @@ namespace plume {
     }
 
     RenderWindow D3D12SwapChain::getWindow() const {
-        return renderWindow;
+        return desc.renderWindow;
     }
 
     bool D3D12SwapChain::isEmpty() const {
@@ -2672,8 +2672,8 @@ namespace plume {
         return std::make_unique<D3D12CommandList>(this);
     }
 
-    std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {
-        return std::make_unique<D3D12SwapChain>(this, renderWindow, bufferCount, format, maxFrameLatency);
+    std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
+        return std::make_unique<D3D12SwapChain>(this, desc);
     }
 
     void D3D12CommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {

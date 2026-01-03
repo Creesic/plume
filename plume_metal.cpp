@@ -1900,19 +1900,18 @@ namespace plume {
 
     // MetalSwapChain
 
-    MetalSwapChain::MetalSwapChain(MetalCommandQueue *commandQueue, const RenderWindow renderWindow, uint32_t textureCount, const RenderFormat format, uint32_t maxFrameLatency) {
-        this->layer = static_cast<CA::MetalLayer*>(renderWindow.view);
+    MetalSwapChain::MetalSwapChain(MetalCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
+        this->layer = static_cast<CA::MetalLayer*>(desc.renderWindow.view);
         layer->setDevice(commandQueue->device->mtl);
-        layer->setPixelFormat(mapPixelFormat(format));
+        layer->setPixelFormat(mapPixelFormat(desc.format));
 
         this->commandQueue = commandQueue;
-        this->maxFrameLatency = maxFrameLatency;
+        this->desc = desc;
 
         // Metal supports a maximum of 3 drawables.
         this->drawables.resize(MAX_DRAWABLES);
 
-        this->renderWindow = renderWindow;
-        this->windowWrapper = std::make_unique<CocoaWindow>(renderWindow.window);
+        this->windowWrapper = std::make_unique<CocoaWindow>(desc.renderWindow.window);
         getWindowSize(width, height);
 
         // Set the layer's drawable size to match the window size
@@ -1925,7 +1924,7 @@ namespace plume {
             MetalDrawable &drawable = this->drawables[i];
             drawable.desc.width = width;
             drawable.desc.height = height;
-            drawable.desc.format = format;
+            drawable.desc.format = desc.format;
             drawable.desc.flags = RenderTextureFlag::RENDER_TARGET;
         }
     }
@@ -1978,10 +1977,12 @@ namespace plume {
     }
 
     void MetalSwapChain::wait() {
-        if (currentPresentId >= maxFrameLatency) {
+        assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
+
+        if (currentPresentId >= desc.maxFrameLatency) {
             std::unique_lock lock(lastPresentedIdMutex);
             lastPresentedIdCondVar.wait_for(lock, std::chrono::seconds(1), [this] {
-                return lastPresentedId >= currentPresentId - (maxFrameLatency - 1);
+                return lastPresentedId >= currentPresentId - (desc.maxFrameLatency - 1);
             });
         }
     }
@@ -2079,7 +2080,7 @@ namespace plume {
     }
 
     RenderWindow MetalSwapChain::getWindow() const {
-        return renderWindow;
+        return desc.renderWindow;
     }
 
     bool MetalSwapChain::isEmpty() const {
@@ -3676,8 +3677,8 @@ namespace plume {
         return std::make_unique<MetalCommandList>(this);
     }
 
-    std::unique_ptr<RenderSwapChain> MetalCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency) {
-        return std::make_unique<MetalSwapChain>(this, renderWindow, textureCount, format, maxFrameLatency);
+    std::unique_ptr<RenderSwapChain> MetalCommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
+        return std::make_unique<MetalSwapChain>(this, desc);
     }
 
     void MetalCommandQueue::executeCommandLists(const RenderCommandList **commandLists, const uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, const uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, const uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {

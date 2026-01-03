@@ -234,25 +234,23 @@ namespace plume {
     };
 
     struct MetalSwapChain : RenderSwapChain {
+        RenderSwapChainDesc desc;
         CA::MetalLayer *layer = nullptr;
         MetalCommandQueue *commandQueue = nullptr;
-        RenderFormat format = RenderFormat::UNKNOWN;
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t refreshRate = 0;
         std::vector<MetalDrawable> drawables;
         uint32_t currentAvailableDrawableIndex = 0;
-        RenderWindow renderWindow = {};
         std::unique_ptr<CocoaWindow> windowWrapper;
 
         // Present wait
-        uint32_t maxFrameLatency = 0;
         uint64_t currentPresentId = 0;
         uint64_t lastPresentedId = 0;
         std::mutex lastPresentedIdMutex;
         std::condition_variable lastPresentedIdCondVar;
 
-        MetalSwapChain(MetalCommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency);
+        MetalSwapChain(MetalCommandQueue *commandQueue, const RenderSwapChainDesc &desc);
         ~MetalSwapChain() override;
         bool present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) override;
         void wait() override;

@@ -100,22 +100,19 @@ namespace plume {
     };
 
     struct D3D12SwapChain : RenderSwapChain {
+        RenderSwapChainDesc desc;
         IDXGISwapChain3 *d3d = nullptr;
         HANDLE waitableObject = 0;
         D3D12CommandQueue *commandQueue = nullptr;
-        RenderWindow renderWindow = {};
         std::vector<D3D12Texture> textures;
-        uint32_t textureCount = 0;
-        RenderFormat format = RenderFormat::UNKNOWN;
         DXGI_FORMAT nativeFormat = DXGI_FORMAT_UNKNOWN;
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t refreshRate = 0;
         bool vsyncEnabled = true;
-        uint32_t maxFrameLatency = 0;
         UINT swapChainFlags = 0;
 
-        D3D12SwapChain(D3D12CommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency);
+        D3D12SwapChain(D3D12CommandQueue *commandQueue, const RenderSwapChainDesc &desc);
         ~D3D12SwapChain() override;
         bool present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) override;
         void wait() override;
@@ -266,7 +263,7 @@ namespace plume {
         D3D12CommandQueue(D3D12Device *device, RenderCommandListType type);
         ~D3D12CommandQueue() override;
         std::unique_ptr<RenderCommandList> createCommandList() override;
-        std::unique_ptr<RenderSwapChain> createSwapChain(RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t newFrameLatency) override;
+        std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
     };

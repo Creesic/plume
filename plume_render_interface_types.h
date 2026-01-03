@@ -1139,6 +1139,18 @@ namespace plume {
         bool allowOnlyBuffers = false;
     };
 
+    struct RenderSwapChainDesc {
+        RenderWindow renderWindow = {};
+        RenderFormat format = RenderFormat::UNKNOWN;
+        uint32_t textureCount = 0;
+
+        // The capability for presentWait must be supported by the RenderDevice.
+        bool enablePresentWait = false;
+        uint32_t maxFrameLatency = 0;
+
+        RenderSwapChainDesc() = default;
+    };
+
     struct RenderInputSlot {
         uint32_t index = 0;
         uint32_t stride = 0;

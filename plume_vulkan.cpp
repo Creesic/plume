@@ -2070,22 +2070,20 @@ namespace plume {
 
     // VulkanSwapChain
 
-    VulkanSwapChain::VulkanSwapChain(VulkanCommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency) {
+    VulkanSwapChain::VulkanSwapChain(VulkanCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
         assert(commandQueue != nullptr);
-        assert(textureCount > 0);
+        assert(desc.textureCount > 0);
 
         this->commandQueue = commandQueue;
-        this->renderWindow = renderWindow;
-        this->format = format;
-        this->maxFrameLatency = maxFrameLatency;
+        this->desc = desc;
 
         VkResult res;
 
 #   ifdef _WIN64
-        assert(renderWindow != 0);
+        assert(desc.renderWindow != 0);
         VkWin32SurfaceCreateInfoKHR surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        surfaceCreateInfo.hwnd = HWND(renderWindow);
+        surfaceCreateInfo.hwnd = HWND(desc.renderWindow);
         surfaceCreateInfo.hinstance = GetModuleHandle(nullptr);
 
         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
@@ -2096,16 +2094,16 @@ namespace plume {
         }
 #   elif defined(PLUME_SDL_VULKAN_ENABLED)
         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
-        SDL_bool sdlRes = SDL_Vulkan_CreateSurface(renderWindow, renderInterface->instance, &surface);
+        SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
         if (sdlRes == SDL_FALSE) {
             fprintf(stderr, "SDL_Vulkan_CreateSurface failed with error %s.\n", SDL_GetError());
             return;
         }
 #   elif defined(__ANDROID__)
-        assert(renderWindow != nullptr);
+        assert(desc.renderWindow != nullptr);
         VkAndroidSurfaceCreateInfoKHR surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-        surfaceCreateInfo.window = renderWindow;
+        surfaceCreateInfo.window = desc.renderWindow;
 
         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
         res = vkCreateAndroidSurfaceKHR(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
@@ -2114,12 +2112,12 @@ namespace plume {
             return;
         }
 #   elif defined(__linux__)
-        assert(renderWindow.display != 0);
-        assert(renderWindow.window != 0);
+        assert(desc.renderWindow.display != 0);
+        assert(desc.renderWindow.window != 0);
         VkXlibSurfaceCreateInfoKHR surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        surfaceCreateInfo.dpy = renderWindow.display;
-        surfaceCreateInfo.window = renderWindow.window;
+        surfaceCreateInfo.dpy = desc.renderWindow.display;
+        surfaceCreateInfo.window = desc.renderWindow.window;
 
         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
         res = vkCreateXlibSurfaceKHR(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
@@ -2128,14 +2126,14 @@ namespace plume {
             return;
         }
 #   elif defined(__APPLE__)
-        assert(renderWindow.window != 0);
-        assert(renderWindow.view != 0);
+        assert(desc.renderWindow.window != 0);
+        assert(desc.renderWindow.view != 0);
         // Creates a wrapper around the window for storing and fetching sizes.
-        this->windowWrapper = std::make_unique<CocoaWindow>(renderWindow.window);
+        this->windowWrapper = std::make_unique<CocoaWindow>(desc.renderWindow.window);
         
         VkMetalSurfaceCreateInfoEXT surfaceCreateInfo = {};
         surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-        surfaceCreateInfo.pLayer = renderWindow.view;
+        surfaceCreateInfo.pLayer = desc.renderWindow.view;
 
         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
         res = vkCreateMetalSurfaceEXT(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
@@ -2177,7 +2175,7 @@ namespace plume {
         surfaceCapabilities.maxImageCount = std::max(surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
 
         // Clamp the requested buffer count between the bounds of the surface capabilities.
-        this->textureCount = std::clamp(textureCount, surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
+        this->desc.textureCount = std::clamp(desc.textureCount, surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
 
         uint32_t surfaceFormatCount = 0;
         vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, nullptr);
@@ -2191,10 +2189,11 @@ namespace plume {
         std::vector<VkPresentModeKHR> presentModes(presentModeCount);
         vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &presentModeCount, presentModes.data());
         immediatePresentModeSupported = std::find(presentModes.begin(), presentModes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != presentModes.end();
+        mailboxPresentModeSupported = std::find(presentModes.begin(), presentModes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != presentModes.end();
 
         // Check if the format we requested is part of the supported surface formats.
         std::vector<VkSurfaceFormatKHR> compatibleSurfaceFormats;
-        VkFormat requestedFormat = toVk(format);
+        VkFormat requestedFormat = toVk(desc.format);
         for (uint32_t i = 0; i < surfaceFormatCount; i++) {
             if (surfaceFormats[i].format == requestedFormat) {
                 compatibleSurfaceFormats.emplace_back(surfaceFormats[i]);
@@ -2219,8 +2218,8 @@ namespace plume {
             pickedSurfaceFormat = compatibleSurfaceFormats[0];
         }
 
-        // FIFO is guaranteed to be supported.
-        requiredPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+        // Sets the required presentation mode.
+        setVsyncEnabled(true);
 
         // Pick an alpha compositing mode, prefer opaque over inherit.
         if (surfaceCapabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) {
@@ -2268,7 +2267,9 @@ namespace plume {
         presentInfo.waitSemaphoreCount = uint32_t(waitSemaphoresVector.size());
 
         VkPresentIdKHR presentId = {};
-        if (commandQueue->device->capabilities.presentWait) {
+        if (desc.enablePresentWait) {
+            assert(commandQueue->device->capabilities.presentWait && "Present wait must be supported by the RenderDevice.");
+
             currentPresentId++;
             presentId.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
             presentId.pPresentIds = &currentPresentId;
@@ -2297,9 +2298,11 @@ namespace plume {
     }
 
     void VulkanSwapChain::wait() {
-        if (commandQueue->device->capabilities.presentWait && (currentPresentId >= maxFrameLatency)) {
+        assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
+
+        if (currentPresentId >= desc.maxFrameLatency) {
             constexpr uint64_t waitTimeout = 100000000;
-            vkWaitForPresentKHR(commandQueue->device->vk, vk, currentPresentId - (maxFrameLatency - 1), waitTimeout);
+            vkWaitForPresentKHR(commandQueue->device->vk, vk, currentPresentId - (desc.maxFrameLatency - 1), waitTimeout);
         }
     }
 
@@ -2320,7 +2323,7 @@ namespace plume {
 
         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
         createInfo.surface = surface;
-        createInfo.minImageCount = textureCount;
+        createInfo.minImageCount = desc.textureCount;
         createInfo.imageFormat = pickedSurfaceFormat.format;
         createInfo.imageColorSpace = pickedSurfaceFormat.colorSpace;
         createInfo.imageExtent.width = width;
@@ -2352,16 +2355,16 @@ namespace plume {
 
         uint32_t retrievedImageCount = 0;
         vkGetSwapchainImagesKHR(commandQueue->device->vk, vk, &retrievedImageCount, nullptr);
-        if (retrievedImageCount < textureCount) {
+        if (retrievedImageCount < desc.textureCount) {
             releaseSwapChain();
             fprintf(stderr, "Image count differs from the texture count.\n");
             return false;
         }
 
-        textureCount = retrievedImageCount;
+        desc.textureCount = retrievedImageCount;
 
-        std::vector<VkImage> images(textureCount);
-        res = vkGetSwapchainImagesKHR(commandQueue->device->vk, vk, &textureCount, images.data());
+        std::vector<VkImage> images(desc.textureCount);
+        res = vkGetSwapchainImagesKHR(commandQueue->device->vk, vk, &desc.textureCount, images.data());
         if (res != VK_SUCCESS) {
             releaseSwapChain();
             fprintf(stderr, "vkGetSwapchainImagesKHR failed with error code 0x%X.\n", res);
@@ -2369,12 +2372,12 @@ namespace plume {
         }
 
         // Assign the swap chain images to the buffer resources.
-        textures.resize(textureCount);
+        textures.resize(desc.textureCount);
 
-        for (uint32_t i = 0; i < textureCount; i++) {
+        for (uint32_t i = 0; i < desc.textureCount; i++) {
             textures[i] = VulkanTexture(commandQueue->device, images[i]);
             textures[i].desc.dimension = RenderTextureDimension::TEXTURE_2D;
-            textures[i].desc.format = format;
+            textures[i].desc.format = desc.format;
             textures[i].desc.width = width;
             textures[i].desc.height = height;
             textures[i].desc.depth = 1;
@@ -2397,13 +2400,17 @@ namespace plume {
     void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
         // Immediate mode must be supported and the presentation mode will only be used on the next resize.
         // needsResize() will return as true as long as the created and required present mode do not match.
-        if (immediatePresentModeSupported) {
-            requiredPresentMode = vsyncEnabled ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+        if (immediatePresentModeSupported && !vsyncEnabled) {
+            requiredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+        // Prefer mailbox if available and using present wait. FIFO is guaranteed to be supported.
+        else {
+            requiredPresentMode = (desc.enablePresentWait && mailboxPresentModeSupported) ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_FIFO_KHR;
         }
     }
 
     bool VulkanSwapChain::isVsyncEnabled() const {
-        return createdPresentMode == VK_PRESENT_MODE_FIFO_KHR;
+        return (createdPresentMode == VK_PRESENT_MODE_FIFO_KHR) || (createdPresentMode == VK_PRESENT_MODE_MAILBOX_KHR);
     }
 
     uint32_t VulkanSwapChain::getWidth() const {
@@ -2419,11 +2426,11 @@ namespace plume {
     }
 
     uint32_t VulkanSwapChain::getTextureCount() const {
-        return textureCount;
+        return desc.textureCount;
     }
 
     RenderWindow VulkanSwapChain::getWindow() const {
-        return renderWindow;
+        return desc.renderWindow;
     }
 
     bool VulkanSwapChain::isEmpty() const {
@@ -2444,17 +2451,17 @@ namespace plume {
     void VulkanSwapChain::getWindowSize(uint32_t &dstWidth, uint32_t &dstHeight) const {
 #   if defined(_WIN64)
         RECT rect;
-        GetClientRect(renderWindow, &rect);
+        GetClientRect(desc.renderWindow, &rect);
         dstWidth = rect.right - rect.left;
         dstHeight = rect.bottom - rect.top;
 #   elif defined(PLUME_SDL_VULKAN_ENABLED)
-        SDL_GetWindowSizeInPixels(renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
+        SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
 #   elif defined(__ANDROID__)
-        dstWidth = ANativeWindow_getWidth(renderWindow);
-        dstHeight = ANativeWindow_getHeight(renderWindow);
+        dstWidth = ANativeWindow_getWidth(desc.renderWindow);
+        dstHeight = ANativeWindow_getHeight(desc.renderWindow);
 #   elif defined(__linux__)
         XWindowAttributes attributes;
-        XGetWindowAttributes(renderWindow.display, renderWindow.window, &attributes);
+        XGetWindowAttributes(desc.renderWindow.display, desc.renderWindow.window, &attributes);
         // The attributes width and height members do not include the border.
         dstWidth = attributes.width;
         dstHeight = attributes.height;
@@ -3548,8 +3555,8 @@ namespace plume {
         return std::make_unique<VulkanCommandList>(this);
     }
 
-    std::unique_ptr<RenderSwapChain> VulkanCommandQueue::createSwapChain(RenderWindow renderWindow, uint32_t bufferCount, RenderFormat format, uint32_t maxFrameLatency) {
-        return std::make_unique<VulkanSwapChain>(this, renderWindow, bufferCount, format, maxFrameLatency);
+    std::unique_ptr<RenderSwapChain> VulkanCommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
+        return std::make_unique<VulkanSwapChain>(this, desc);
     }
 
     void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
