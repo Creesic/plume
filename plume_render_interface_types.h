@@ -1149,6 +1149,14 @@ namespace plume {
         uint32_t maxFrameLatency = 0;
 
         RenderSwapChainDesc() = default;
+
+        RenderSwapChainDesc(RenderWindow renderWindow, RenderFormat format, uint32_t textureCount, bool enablePresentWait = false, uint32_t maxFrameLatency = 0) {
+            this->renderWindow = renderWindow;
+            this->format = format;
+            this->textureCount = textureCount;
+            this->enablePresentWait = enablePresentWait;
+            this->maxFrameLatency = maxFrameLatency;
+        }
     };
 
     struct RenderInputSlot {
