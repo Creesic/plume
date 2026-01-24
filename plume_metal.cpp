@@ -3905,12 +3905,12 @@ namespace plume {
         capabilities.descriptorIndexing = mtl->supportsFamily(MTL::GPUFamilyApple3);
         capabilities.displayTiming = false;
         capabilities.bufferDeviceAddress = osVersion.majorVersion >= 16 && mtl->supportsFamily(MTL::GPUFamilyApple3);
-        supportsResidencySets = osVersion.majorVersion >= 18 && mtl->supportsFamily(MTL::GPUFamilyApple6);
+        supportsResidencySets = false;
 #else
         capabilities.descriptorIndexing = true;
         capabilities.displayTiming = osVersion.majorVersion >= 12;
         capabilities.bufferDeviceAddress = osVersion.majorVersion >= 13 && mtl->supportsFamily(MTL::GPUFamilyApple3);
-        supportsResidencySets = osVersion.majorVersion >= 15 && mtl->supportsFamily(MTL::GPUFamilyApple6);
+        supportsResidencySets = false;
 #endif
 
         useArgumentBuffersTier2 = mtl->argumentBuffersSupport() == MTL::ArgumentBuffersTier2;
