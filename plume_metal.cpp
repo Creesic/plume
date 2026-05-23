@@ -1705,8 +1705,7 @@ namespace plume {
         setLayout = std::make_unique<MetalDescriptorSetLayout>(device, desc);
 
         const uint32_t maxResources = setLayout->descriptorBindingIndices.size();
-        // When using more than 128 resources, use residency sets for greater efficiency.
-        if (maxResources > 128 && device->supportsResidencySets) {
+        if (device->supportsResidencySets) {
             MTL::ResidencySetDescriptor* descriptor = MTL::ResidencySetDescriptor::alloc()->init();
             descriptor->setInitialCapacity(maxResources);
 
