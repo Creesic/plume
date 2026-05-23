@@ -1723,7 +1723,7 @@ namespace plume {
             .offset = 0,
         };
 
-        if (!device->useArgumentBuffersTier2) {
+        if (!device->useArgumentBuffersTier2 || !device->useDirectBufferAddresses) {
             argumentBuffer.argumentEncoder->setArgumentBuffer(argumentBuffer.mtl, argumentBuffer.offset);
         }
 
