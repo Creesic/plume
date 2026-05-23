@@ -19,6 +19,11 @@
 
 #include "plume_metal.h"
 
+extern "C" {
+    void *objc_autoreleasePoolPush(void);
+    void objc_autoreleasePoolPop(void *pool);
+}
+
 namespace plume {
     // MARK: - Constants
 
@@ -961,13 +966,31 @@ namespace plume {
         }
     }
 
+    // This structure should be used to wrap any public APIs, constructors or
+    // destructors in an autorelease pool. Autorelease pools should never be
+    // initialized or released without using this structure. The structure
+    // should be declared as early as possible into the function. The structure
+    // can be omitted if the function makes no use of any Metal functions.
+
+    struct MetalAutoreleasePool {
+        void *pool = nullptr;
+
+        MetalAutoreleasePool() {
+            pool = objc_autoreleasePoolPush();
+        }
+
+        ~MetalAutoreleasePool() {
+            objc_autoreleasePoolPop(pool);
+        }
+    };
+
     // MARK: - Helper Structures
 
     MetalDescriptorSetLayout::MetalDescriptorSetLayout(MetalDevice *device, const RenderDescriptorSetDesc &desc) {
         assert(device != nullptr);
-        this->device = device;
 
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+        MetalAutoreleasePool releasePool;
+        this->device = device;
 
         // Initialize binding vector with -1 (invalid index)
         bindingToIndex.resize(MAX_BINDING_NUMBER, -1);
@@ -1088,7 +1111,6 @@ namespace plume {
 
         // Release resources
         pArray->release();
-        releasePool->release();
     }
 
     MetalDescriptorSetLayout::DescriptorSetLayoutBinding* MetalDescriptorSetLayout::getBinding(const uint32_t binding, const uint32_t bindingIndexOffset) {
@@ -1100,6 +1122,7 @@ namespace plume {
     }
 
     MetalDescriptorSetLayout::~MetalDescriptorSetLayout() {
+        MetalAutoreleasePool releasePool;
         argumentEncoder->release();
         for (MTL::ArgumentDescriptor *argumentDesc: argumentDescriptors) {
             argumentDesc->release();
@@ -1111,6 +1134,7 @@ namespace plume {
     MetalBuffer::MetalBuffer(MetalDevice *device, MetalPool *pool, const RenderBufferDesc &desc) {
         assert(device != nullptr);
 
+        MetalAutoreleasePool releasePool;
         this->pool = pool;
         this->desc = desc;
         this->device = device;
@@ -1130,6 +1154,7 @@ namespace plume {
     }
 
     MetalBuffer::~MetalBuffer() {
+        MetalAutoreleasePool releasePool;
         if (desc.flags & RenderBufferFlag::DEVICE_ADDRESSABLE) {
             std::lock_guard lock(device->gpuAddressableResourcesMutex);
             if (device->gpuAddressableResidencySet != nullptr) {
@@ -1147,10 +1172,12 @@ namespace plume {
     }
 
     void* MetalBuffer::map(uint32_t subresource, const RenderRange* readRange) {
+        MetalAutoreleasePool releasePool;
         return mtl->contents();
     }
 
     void MetalBuffer::unmap(uint32_t subresource, const RenderRange* writtenRange) {
+        MetalAutoreleasePool releasePool;
         if (mtl->storageMode() == MTL::StorageModeManaged) {
             if (writtenRange == nullptr) {
                 mtl->didModifyRange(NS::Range(0, desc.size));
@@ -1165,6 +1192,7 @@ namespace plume {
     }
 
     void MetalBuffer::setName(const std::string &name) {
+        MetalAutoreleasePool releasePool;
         const NS::String *label = NS::String::string(name.c_str(), NS::UTF8StringEncoding);
         mtl->setLabel(label);
     }
@@ -1181,6 +1209,7 @@ namespace plume {
         assert(buffer != nullptr);
         assert((buffer->desc.flags & RenderBufferFlag::FORMATTED) && "Buffer must allow formatted views.");
 
+        MetalAutoreleasePool releasePool;
         this->buffer = buffer;
 
         // Calculate texture properties
@@ -1196,11 +1225,10 @@ namespace plume {
         // Create texture with configured descriptor and alignment
         MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::textureBufferDescriptor(pixelFormat, width, options, usage);
         this->texture = buffer->mtl->newTexture(descriptor, 0, bytesPerRow);
-
-        descriptor->release();
     }
 
     MetalBufferFormattedView::~MetalBufferFormattedView() {
+        MetalAutoreleasePool releasePool;
         texture->release();
     }
 
@@ -1209,6 +1237,7 @@ namespace plume {
     MetalTexture::MetalTexture(const MetalDevice *device, MetalPool *pool, const RenderTextureDesc &desc) {
         assert(device != nullptr);
 
+        MetalAutoreleasePool releasePool;
         this->pool = pool;
         this->desc = desc;
 
@@ -1239,6 +1268,7 @@ namespace plume {
     }
 
     MetalTexture::~MetalTexture() {
+        MetalAutoreleasePool releasePool;
         mtl->release();
     }
 
@@ -1247,6 +1277,7 @@ namespace plume {
     }
 
     void MetalTexture::setName(const std::string &name) {
+        MetalAutoreleasePool releasePool;
         mtl->setLabel(NS::String::string(name.c_str(), NS::UTF8StringEncoding));
     }
 
@@ -1259,6 +1290,7 @@ namespace plume {
     MetalTextureView::MetalTextureView(const MetalTexture *texture, const RenderTextureViewDesc &desc) {
         assert(texture != nullptr);
 
+        MetalAutoreleasePool releasePool;
         this->parentTexture = texture;
         this->desc = desc;
 
@@ -1275,6 +1307,7 @@ namespace plume {
     }
 
     MetalTextureView::~MetalTextureView() {
+        MetalAutoreleasePool releasePool;
         texture->release();
     }
 
@@ -1319,7 +1352,10 @@ namespace plume {
         assert(format == RenderShaderFormat::METAL);
 
         this->format = format;
-        this->functionName = (entryPointName != nullptr) ? NS::String::string(entryPointName, NS::UTF8StringEncoding) : MTLSTR("");
+
+        MetalAutoreleasePool releasePool;
+        functionName = (entryPointName != nullptr) ? NS::String::string(entryPointName, NS::UTF8StringEncoding) : MTLSTR("");
+        functionName->retain();
 
         NS::Error *error = nullptr;
         const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
@@ -1332,18 +1368,24 @@ namespace plume {
     }
 
     MetalShader::~MetalShader() {
+        MetalAutoreleasePool releasePool;
         functionName->release();
         library->release();
-        if (debugName) {
+
+        if (debugName != nullptr) {
             debugName->release();
         }
     }
 
     void MetalShader::setName(const std::string &name) {
-        if (debugName) {
+        MetalAutoreleasePool releasePool;
+        if (debugName != nullptr) {
             debugName->release();
         }
+
         debugName = NS::String::string(name.c_str(), NS::UTF8StringEncoding);
+        debugName->retain();
+
         library->setLabel(debugName);
     }
 
@@ -1376,6 +1418,7 @@ namespace plume {
     MetalSampler::MetalSampler(const MetalDevice *device, const RenderSamplerDesc &desc) {
         assert(device != nullptr);
 
+        MetalAutoreleasePool releasePool;
         MTL::SamplerDescriptor *descriptor = MTL::SamplerDescriptor::alloc()->init();
         descriptor->setSupportArgumentBuffers(true);
         descriptor->setMinFilter(mapSamplerMinMagFilter(desc.minFilter));
@@ -1397,6 +1440,7 @@ namespace plume {
     }
 
     MetalSampler::~MetalSampler() {
+        MetalAutoreleasePool releasePool;
         state->release();
     }
 
@@ -1418,6 +1462,7 @@ namespace plume {
         assert(desc.pipelineLayout != nullptr);
         assert((desc.threadGroupSizeX > 0) && (desc.threadGroupSizeY > 0) && (desc.threadGroupSizeZ > 0));
 
+        MetalAutoreleasePool releasePool;
         const MetalShader *computeShader = static_cast<const MetalShader *>(desc.computeShader);
 
         MTL::ComputePipelineDescriptor *descriptor = MTL::ComputePipelineDescriptor::alloc()->init();
@@ -1443,7 +1488,10 @@ namespace plume {
     }
 
     MetalComputePipeline::~MetalComputePipeline() {
-        if (state.pipelineState) state.pipelineState->release();
+        MetalAutoreleasePool releasePool;
+        if (state.pipelineState != nullptr) {
+            state.pipelineState->release();
+        }
     }
 
     void MetalComputePipeline::setName(const std::string &name) {
@@ -1459,8 +1507,8 @@ namespace plume {
 
     MetalGraphicsPipeline::MetalGraphicsPipeline(const MetalDevice *device, const RenderGraphicsPipelineDesc &desc) : MetalPipeline(device, Type::Graphics) {
         assert(desc.pipelineLayout != nullptr);
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
 
+        MetalAutoreleasePool releasePool;
         MTL::RenderPipelineDescriptor *descriptor = MTL::RenderPipelineDescriptor::alloc()->init();
         descriptor->setInputPrimitiveTopology(mapPrimitiveTopologyClass(desc.primitiveTopology));
         descriptor->setRasterSampleCount(desc.multisampling.sampleCount);
@@ -1595,18 +1643,25 @@ namespace plume {
         vertexFunction->release();
         descriptor->release();
         depthStencilDescriptor->release();
-        if (frontFaceStencilDescriptor) {
+
+        if (frontFaceStencilDescriptor != nullptr) {
             frontFaceStencilDescriptor->release();
         }
-        if (backFaceStencilDescriptor) {
+
+        if (backFaceStencilDescriptor != nullptr) {
             backFaceStencilDescriptor->release();
         }
-        releasePool->release();
     }
 
     MetalGraphicsPipeline::~MetalGraphicsPipeline() {
-        if (state.renderPipelineState) state.renderPipelineState->release();
-        if (state.depthStencilState) state.depthStencilState->release();
+        MetalAutoreleasePool releasePool;
+        if (state.renderPipelineState != nullptr) {
+            state.renderPipelineState->release();
+        }
+
+        if (state.depthStencilState != nullptr) {
+            state.depthStencilState->release();
+        }
     }
 
     void MetalGraphicsPipeline::setName(const std::string &name) {
@@ -1623,6 +1678,7 @@ namespace plume {
     MetalDescriptorSet::MetalDescriptorSet(MetalDevice *device, const RenderDescriptorSetDesc &desc) {
         assert(device != nullptr);
 
+        MetalAutoreleasePool releasePool;
         this->device = device;
 
         thread_local std::unordered_map<RenderDescriptorRangeType, uint32_t> typeCounts;
@@ -1676,6 +1732,7 @@ namespace plume {
     }
 
     MetalDescriptorSet::~MetalDescriptorSet() {
+        MetalAutoreleasePool releasePool;
         if (residencySet != nullptr) {
             residencySet->endResidency();
             residencySet->release();
@@ -1721,6 +1778,7 @@ namespace plume {
     }
 
     void MetalDescriptorSet::setBuffer(const uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+        MetalAutoreleasePool releasePool;
         if (buffer == nullptr) {
             setDescriptor(descriptorIndex, nullptr);
             return;
@@ -1750,6 +1808,7 @@ namespace plume {
     }
 
     void MetalDescriptorSet::setTexture(const uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) {
+        MetalAutoreleasePool releasePool;
         if (texture == nullptr) {
             setDescriptor(descriptorIndex, nullptr);
             return;
@@ -1770,6 +1829,7 @@ namespace plume {
     }
 
     void MetalDescriptorSet::setSampler(const uint32_t descriptorIndex, const RenderSampler *sampler) {
+        MetalAutoreleasePool releasePool;
         if (sampler == nullptr) {
             setDescriptor(descriptorIndex, nullptr);
             return;
@@ -1881,12 +1941,11 @@ namespace plume {
 
     // MetalDrawable
 
-    MetalDrawable::MetalDrawable(MetalDevice* device, MetalPool* pool, const RenderTextureDesc& desc) {
-        assert(false && "MetalDrawable should not be constructed directly from device - use fromDrawable() instead");
-    }
-
     MetalDrawable::~MetalDrawable() {
-        mtl->release();
+        MetalAutoreleasePool releasePool;
+        if (mtl != nullptr) {
+            mtl->release();
+        }
     }
 
     std::unique_ptr<RenderTextureView> MetalDrawable::createTextureView(const RenderTextureViewDesc& desc) const {
@@ -1895,12 +1954,14 @@ namespace plume {
     }
 
     void MetalDrawable::setName(const std::string &name) {
+        MetalAutoreleasePool releasePool;
         mtl->texture()->setLabel(NS::String::string(name.c_str(), NS::UTF8StringEncoding));
     }
 
     // MetalSwapChain
 
     MetalSwapChain::MetalSwapChain(MetalCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
+        MetalAutoreleasePool releasePool;
         this->layer = static_cast<CA::MetalLayer*>(desc.renderWindow.view);
         layer->setDevice(commandQueue->device->mtl);
         layer->setPixelFormat(mapPixelFormat(desc.format));
@@ -1934,8 +1995,8 @@ namespace plume {
 
     bool MetalSwapChain::present(const uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, const uint32_t waitSemaphoreCount) {
         assert(layer != nullptr && "Cannot present without a valid layer.");
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
 
+        MetalAutoreleasePool releasePool;
         const MetalDrawable &drawable = drawables[textureIndex];
         assert(drawable.mtl != nullptr && "Cannot present without a valid drawable.");
 
@@ -1971,14 +2032,13 @@ namespace plume {
 
         presentBuffer->commit();
 
-        releasePool->release();
-
         return true;
     }
 
     void MetalSwapChain::wait() {
         assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
 
+        MetalAutoreleasePool releasePool;
         if (currentPresentId >= desc.maxFrameLatency) {
             std::unique_lock lock(lastPresentedIdMutex);
             lastPresentedIdCondVar.wait_for(lock, std::chrono::seconds(1), [this] {
@@ -1988,6 +2048,7 @@ namespace plume {
     }
 
     bool MetalSwapChain::resize() {
+        MetalAutoreleasePool releasePool;
         getWindowSize(width, height);
 
         if (width == 0 || height == 0) {
@@ -2009,16 +2070,19 @@ namespace plume {
     }
 
     bool MetalSwapChain::needsResize() const {
+        MetalAutoreleasePool releasePool;
         uint32_t windowWidth, windowHeight;
         getWindowSize(windowWidth, windowHeight);
         return (layer == nullptr) || (width != windowWidth) || (height != windowHeight);
     }
 
     void MetalSwapChain::setVsyncEnabled(const bool vsyncEnabled) {
+        MetalAutoreleasePool releasePool;
         layer->setDisplaySyncEnabled(vsyncEnabled);
     }
 
     bool MetalSwapChain::isVsyncEnabled() const {
+        MetalAutoreleasePool releasePool;
         return layer->displaySyncEnabled();
     }
 
@@ -2040,9 +2104,8 @@ namespace plume {
         assert(textureIndex != nullptr);
         assert(*textureIndex < MAX_DRAWABLES);
 
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
         // Create a command buffer just to encode the signal
+        MetalAutoreleasePool releasePool;
         MTL::CommandBuffer *acquireBuffer = commandQueue->mtl->commandBufferWithUnretainedReferences();
         acquireBuffer->setLabel(MTLSTR("Acquire Drawable Command Buffer"));
         const MetalCommandSemaphore *interfaceSemaphore = static_cast<MetalCommandSemaphore *>(signalSemaphore);
@@ -2070,7 +2133,6 @@ namespace plume {
         drawable.mtl = nextDrawable;
 
         drawable.mtl->retain();
-        releasePool->release();
 
         return true;
     }
@@ -2088,10 +2150,12 @@ namespace plume {
     }
 
     uint32_t MetalSwapChain::getRefreshRate() const {
+        MetalAutoreleasePool releasePool;
         return windowWrapper->getRefreshRate();
     }
 
     void MetalSwapChain::getWindowSize(uint32_t &dstWidth, uint32_t &dstHeight) const {
+        MetalAutoreleasePool releasePool;
         CocoaWindowAttributes attributes;
         windowWrapper->getWindowAttributes(&attributes);
         dstWidth = attributes.width;
@@ -2108,8 +2172,8 @@ namespace plume {
 
     MetalFramebuffer::MetalFramebuffer(const MetalDevice *device, const RenderFramebufferDesc &desc) {
         assert(device != nullptr);
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
 
+        MetalAutoreleasePool releasePool;
         colorAttachments.reserve(desc.colorAttachmentsCount);
         depthAttachmentReadOnly = desc.depthAttachmentReadOnly;
 
@@ -2168,11 +2232,10 @@ namespace plume {
                 }
             }
         }
-
-        releasePool->release();
     }
 
     MetalFramebuffer::~MetalFramebuffer() {
+        MetalAutoreleasePool releasePool;
         colorAttachments.clear();
     }
 
@@ -2190,6 +2253,7 @@ namespace plume {
         assert(device != nullptr);
         assert(queryCount > 0);
 
+        MetalAutoreleasePool releasePool;
         this->device = device;
 
         MTL::CounterSampleBufferDescriptor *sampleBufferDesc = MTL::CounterSampleBufferDescriptor::alloc()->init();
@@ -2203,16 +2267,14 @@ namespace plume {
     }
 
     MetalQueryPool::~MetalQueryPool() {
+        MetalAutoreleasePool releasePool;
         sampleBuffer->release();
     }
 
     void MetalQueryPool::queryResults() {
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
+        MetalAutoreleasePool releasePool;
         const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, results.size()));
         std::memcpy(results.data(), data->mutableBytes(), results.size() * sizeof(uint64_t));
-
-        releasePool->release();
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
@@ -2226,19 +2288,20 @@ namespace plume {
     // MetalCommandList
 
     MetalCommandList::MetalCommandList(const MetalCommandQueue *queue) {
+        MetalAutoreleasePool releasePool;
         this->device = queue->device;
         this->queue = queue;
 
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
         timestampQueryFence = device->mtl->newFence();
         timestampQueryFence->setLabel(MTLSTR("Timestamp Query Fence"));
-
-        releasePool->release();
     }
 
     MetalCommandList::~MetalCommandList() {
-        mtl->release();
+        MetalAutoreleasePool releasePool;
+
+        if (mtl != nullptr) {
+            mtl->release();
+        }
 
         for (auto& fenceSet : fences) {
             for (auto* fence : fenceSet) {
@@ -2251,8 +2314,11 @@ namespace plume {
 
     void MetalCommandList::begin() {
         assert(mtl == nullptr);
+
+        MetalAutoreleasePool releasePool;
         startedEncoding = false;
         mtl = queue->mtl->commandBufferWithUnretainedReferences();
+        mtl->retain();
         mtl->setLabel(MTLSTR("RT64 Command List"));
 
         // Reset fence waits and updates for new command list.
@@ -2266,6 +2332,7 @@ namespace plume {
     }
 
     void MetalCommandList::end() {
+        MetalAutoreleasePool releasePool;
         endActiveRenderEncoder();
         handlePendingClears();
 
@@ -2389,6 +2456,7 @@ namespace plume {
             return;
         }
 
+        MetalAutoreleasePool releasePool;
         uint64_t srcStageMask = 0;
         const uint64_t destStageMask = toStageMask(stages);
 
@@ -2436,9 +2504,10 @@ namespace plume {
     }
 
     void MetalCommandList::dispatch(const uint32_t threadGroupCountX, const uint32_t threadGroupCountY, const uint32_t threadGroupCountZ) {
-        checkActiveComputeEncoder();
-        assert(activeComputeEncoder != nullptr && "Cannot encode dispatch on nullptr MTLComputeCommandEncoder!");
         assert(activeComputePipelineLayout != nullptr);
+
+        MetalAutoreleasePool releasePool;
+        checkActiveComputeEncoder();
 
         const MTL::Size threadGroupCount = { threadGroupCountX, threadGroupCountY, threadGroupCountZ };
         const MTL::Size threadGroupSize = { activeComputeState->threadGroupSizeX, activeComputeState->threadGroupSizeY, activeComputeState->threadGroupSizeZ };
@@ -2477,6 +2546,8 @@ namespace plume {
 
     void MetalCommandList::drawInstanced(const uint32_t vertexCountPerInstance, const uint32_t instanceCount, const uint32_t startVertexLocation, const uint32_t startInstanceLocation) {
         assert(activeGraphicsPipelineLayout != nullptr);
+
+        MetalAutoreleasePool releasePool;
         checkActiveRenderEncoder();
         checkForUpdatesInGraphicsState();
 
@@ -2485,6 +2556,8 @@ namespace plume {
 
     void MetalCommandList::drawIndexedInstanced(const uint32_t indexCountPerInstance, const uint32_t instanceCount, const uint32_t startIndexLocation, const int32_t baseVertexLocation, const uint32_t startInstanceLocation) {
         assert(activeGraphicsPipelineLayout != nullptr);
+
+        MetalAutoreleasePool releasePool;
         checkActiveRenderEncoder();
         checkForUpdatesInGraphicsState();
 
@@ -2708,6 +2781,7 @@ namespace plume {
     }
 
     void MetalCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+        MetalAutoreleasePool releasePool;
         endOtherEncoders(EncoderType::Render);
         endActiveRenderEncoder();
         handlePendingClears();
@@ -2762,6 +2836,7 @@ namespace plume {
         assert((!clearRects || clearRectsCount <= MAX_CLEAR_RECTS) && "Too many clear rects");
 
         // For full framebuffer clears, use the more efficient load action clear
+        MetalAutoreleasePool releasePool;
         if (clearRectsCount == 0) {
             pendingClears.initialAction[attachmentIndex] = MTL::LoadActionClear;
             pendingClears.clearValues[attachmentIndex].color = colorValue;
@@ -2771,8 +2846,6 @@ namespace plume {
 
         // For partial clears, do our own quad-based clear
         checkActiveRenderEncoder();
-
-        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
 
         // Store state cache
         const auto previousCache = stateCache;
@@ -2844,8 +2917,6 @@ namespace plume {
         // Restore previous state if we had one
         stateCache = previousCache;
         dirtyGraphicsState.setAll();
-
-        pool->release();
     }
 
     void MetalCommandList::clearDepthStencil(const bool clearDepth, const bool clearStencil, const float depthValue, const uint32_t stencilValue, const RenderRect *clearRects, const uint32_t clearRectsCount) {
@@ -2853,6 +2924,7 @@ namespace plume {
         assert(targetFramebuffer->depthAttachment.format != RenderFormat::UNKNOWN);
         assert((!clearRects || clearRectsCount <= MAX_CLEAR_RECTS) && "Too many clear rects");
 
+        MetalAutoreleasePool releasePool;
         if (clearDepth || clearStencil) {
             // For full framebuffer clears, use the more efficient load action clear
             if (clearRectsCount == 0) {
@@ -2874,8 +2946,6 @@ namespace plume {
 
             // For partial clears, do our own quad-based clear
             checkActiveRenderEncoder();
-
-            NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
 
             // Store state cache
             auto previousCache = stateCache;
@@ -2946,8 +3016,6 @@ namespace plume {
             // Restore previous state if we had one
             stateCache = previousCache;
             dirtyGraphicsState.setAll();
-
-            pool->release();
         }
     }
 
@@ -2955,6 +3023,7 @@ namespace plume {
         assert(dstBuffer.ref != nullptr);
         assert(srcBuffer.ref != nullptr);
 
+        MetalAutoreleasePool releasePool;
         endOtherEncoders(EncoderType::Blit);
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
@@ -2969,6 +3038,7 @@ namespace plume {
         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
         assert(srcLocation.type != RenderTextureCopyType::UNKNOWN);
 
+        MetalAutoreleasePool releasePool;
         endOtherEncoders(EncoderType::Blit);
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
@@ -3043,6 +3113,7 @@ namespace plume {
         assert(dstBuffer != nullptr);
         assert(srcBuffer != nullptr);
 
+        MetalAutoreleasePool releasePool;
         endOtherEncoders(EncoderType::Blit);
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
@@ -3059,6 +3130,7 @@ namespace plume {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
+        MetalAutoreleasePool releasePool;
         endOtherEncoders(EncoderType::Blit);
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
@@ -3073,6 +3145,7 @@ namespace plume {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
+        MetalAutoreleasePool releasePool;
         const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
         const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
 
@@ -3081,8 +3154,6 @@ namespace plume {
         endActiveRenderEncoder();
         handlePendingClears();
         activeType = EncoderType::Render;
-
-        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
 
         const MTL::RenderPassDescriptor *renderPassDescriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
         MTL::RenderPassColorAttachmentDescriptor *colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
@@ -3095,8 +3166,6 @@ namespace plume {
         MTL::RenderCommandEncoder *encoder = mtl->renderCommandEncoder(renderPassDescriptor);
         encoder->setLabel(MTLSTR("Resolve Texture Encoder"));
         encoder->endEncoding();
-
-        pool->release();
     }
 
     void MetalCommandList::resolveTextureRegion(const RenderTexture *dstTexture, const uint32_t dstX, const uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
@@ -3104,6 +3173,7 @@ namespace plume {
         assert(srcTexture != nullptr);
         assert(resolveMode == RenderResolveMode::AVERAGE && "Metal currently only supports AVERAGE resolve mode.");
 
+        MetalAutoreleasePool releasePool;
         const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
         const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
 
@@ -3187,6 +3257,7 @@ namespace plume {
     void MetalCommandList::writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) {
         assert(queryPool != nullptr);
 
+        MetalAutoreleasePool releasePool;
         const MetalQueryPool *interfaceQueryPool = static_cast<const MetalQueryPool *>(queryPool);
 
         MTL::ComputeCommandEncoder *computeEncoder = activeComputeEncoder != nullptr ? activeComputeEncoder : activeResolveComputeEncoder;
@@ -3206,8 +3277,6 @@ namespace plume {
             // (e.g. Apple GPUs), we need to use a dummy blit encoder configured to sample to the buffer.
             endOtherEncoders(EncoderType::None);
 
-            NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
             MTL::BlitPassDescriptor *descriptor = MTL::BlitPassDescriptor::alloc()->init();
             MTL::BlitPassSampleBufferAttachmentDescriptor *sampleDescriptor = descriptor->sampleBufferAttachments()->object(0);
             sampleDescriptor->setSampleBuffer(interfaceQueryPool->sampleBuffer);
@@ -3225,8 +3294,6 @@ namespace plume {
             }
             encoder->fillBuffer(nullBuffer->mtl, NS::Range(0, 1), 0);
             encoder->endEncoding();
-
-            releasePool->release();
         }
     }
 
@@ -3263,13 +3330,9 @@ namespace plume {
         activeType = EncoderType::Compute;
 
         if (activeComputeEncoder == nullptr) {
-            NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
             activeComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
             activeComputeEncoder->setLabel(MTLSTR("Compute Encoder"));
-
             activeComputeEncoder->retain();
-            releasePool->release();
 
             startedEncoding = true;
 
@@ -3341,8 +3404,6 @@ namespace plume {
         activeType = EncoderType::Render;
 
         if (activeRenderEncoder == nullptr) {
-            NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
-
             // target frame buffer & sample positions affect the descriptor
             MTL::RenderPassDescriptor *renderDescriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
 
@@ -3381,7 +3442,6 @@ namespace plume {
             barrierWait(MetalBarrierStage::GRAPHICS, activeRenderEncoder);
 
             activeRenderEncoder->retain();
-            releasePool->release();
 
             startedEncoding = true;
 
@@ -3550,6 +3610,7 @@ namespace plume {
 
         if (activeBlitEncoder == nullptr) {
             activeBlitEncoder = mtl->blitCommandEncoder(device->sharedBlitDescriptor);
+            activeBlitEncoder->retain();
             activeBlitEncoder->setLabel(MTLSTR("Copy Blit Encoder"));
 
             startedEncoding = true;
@@ -3576,6 +3637,7 @@ namespace plume {
 
         if (activeResolveComputeEncoder == nullptr) {
             activeResolveComputeEncoder = mtl->computeCommandEncoder(MTL::DispatchTypeConcurrent);
+            activeResolveComputeEncoder->retain();
             activeResolveComputeEncoder->setLabel(MTLSTR("Resolve Texture Encoder"));
             activeResolveComputeEncoder->setComputePipelineState(device->resolveTexturePipelineState);
 
@@ -3636,21 +3698,25 @@ namespace plume {
     // MetalCommandFence
 
     MetalCommandFence::MetalCommandFence(MetalDevice *device) {
+        MetalAutoreleasePool releasePool;
         semaphore = dispatch_semaphore_create(0);
     }
 
     MetalCommandFence::~MetalCommandFence() {
+        MetalAutoreleasePool releasePool;
         dispatch_release(semaphore);
     }
 
     // MetalCommandSemaphore
 
     MetalCommandSemaphore::MetalCommandSemaphore(const MetalDevice *device) {
+        MetalAutoreleasePool releasePool;
         this->mtl = device->mtl->newEvent();
         this->mtlEventValue = 1;
     }
 
     MetalCommandSemaphore::~MetalCommandSemaphore() {
+        MetalAutoreleasePool releasePool;
         mtl->release();
     }
 
@@ -3660,6 +3726,7 @@ namespace plume {
         assert(device != nullptr);
         assert(type != RenderCommandListType::UNKNOWN);
 
+        MetalAutoreleasePool releasePool;
         this->device = device;
         this->mtl = device->mtl->newCommandQueue();
 
@@ -3670,6 +3737,7 @@ namespace plume {
     }
 
     MetalCommandQueue::~MetalCommandQueue() {
+        MetalAutoreleasePool releasePool;
         mtl->release();
     }
 
@@ -3686,6 +3754,7 @@ namespace plume {
         assert(commandListCount > 0);
 
         // Create a new command buffer to encode the wait semaphores into
+        MetalAutoreleasePool releasePool;
         MTL::CommandBuffer* cmdBuffer = mtl->commandBufferWithUnretainedReferences();
         cmdBuffer->setLabel(MTLSTR("Wait Command Buffer"));
         cmdBuffer->enqueue();
@@ -3728,6 +3797,7 @@ namespace plume {
     }
 
     void MetalCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
+        MetalAutoreleasePool releasePool;
         const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);
         dispatch_semaphore_wait(metalFence->semaphore, DISPATCH_TIME_FOREVER);
     }
@@ -3775,10 +3845,12 @@ namespace plume {
 
     MetalDevice::MetalDevice(MetalInterface *renderInterface, const std::string &preferredDeviceName) {
         assert(renderInterface != nullptr);
+
+        MetalAutoreleasePool releasePool;
         this->renderInterface = renderInterface;
 
         // Device Selection
-        const NS::Array* devices = MTL::CopyAllDevices();
+        NS::Array* devices = MTL::CopyAllDevices();
         MTL::Device *preferredDevice = nullptr;
         for (NS::UInteger i = 0; i < devices->count(); i++) {
             MTL::Device *device = (MTL::Device *)devices->object(i);
@@ -3789,7 +3861,10 @@ namespace plume {
             }
         }
 
-        mtl = preferredDevice ? preferredDevice : MTL::CreateSystemDefaultDevice();;
+        mtl = preferredDevice ? preferredDevice : MTL::CreateSystemDefaultDevice();
+        mtl->retain();
+        devices->release();
+
         const std::string deviceName(mtl->name()->utf8String());
         description.name = deviceName;
         description.type = mapDeviceType(mtl->location());
@@ -3798,6 +3873,9 @@ namespace plume {
         description.dedicatedVideoMemory = mtl->recommendedMaxWorkingSetSize();
 
         timestampCounterSet = findTimestampCounterSet();
+        if (timestampCounterSet != nullptr) {
+            timestampCounterSet->retain();
+        }
 
         // Setup blit, clear and resolve shaders / pipelines
         createClearShaderLibrary();
@@ -3848,7 +3926,10 @@ namespace plume {
     }
 
     MetalDevice::~MetalDevice() {
-        mtl->release();
+        MetalAutoreleasePool releasePool;
+        if (timestampCounterSet != nullptr) {
+            timestampCounterSet->release();
+        }
 
         for (const auto& [key, state] : clearRenderPipelineStates) {
             state->release();
@@ -3864,6 +3945,8 @@ namespace plume {
             gpuAddressableResidencySet->endResidency();
             gpuAddressableResidencySet->release();
         }
+
+        mtl->release();
     }
 
     std::unique_ptr<RenderDescriptorSet> MetalDevice::createDescriptorSet(const RenderDescriptorSetDesc &desc) {
@@ -3952,6 +4035,7 @@ namespace plume {
     }
 
     RenderSampleCounts MetalDevice::getSampleCountsSupported(RenderFormat format) const {
+        MetalAutoreleasePool releasePool;
         RenderSampleCounts supportedSampleCounts = RenderSampleCount::COUNT_0;
         for (uint32_t sc = RenderSampleCount::COUNT_1; sc <= RenderSampleCount::COUNT_64; sc <<= 1) {
             if (mtl->supportsTextureSampleCount(sc)) {
@@ -3971,26 +4055,30 @@ namespace plume {
     }
 
     bool MetalDevice::beginCapture() {
+        MetalAutoreleasePool releasePool;
         MTL::CaptureManager *manager = MTL::CaptureManager::sharedCaptureManager();
         manager->startCapture(mtl);
         return true;
     }
 
     bool MetalDevice::endCapture() {
+        MetalAutoreleasePool releasePool;
         MTL::CaptureManager *manager = MTL::CaptureManager::sharedCaptureManager();
         manager->stopCapture();
         return true;
     }
 
-    const MTL::CounterSet* MetalDevice::findTimestampCounterSet() const {
+    MTL::CounterSet* MetalDevice::findTimestampCounterSet() const {
         for (uint32_t setIndex = 0; setIndex < mtl->counterSets()->count(); setIndex++){
-            const MTL::CounterSet *counterSet = static_cast<MTL::CounterSet*>(mtl->counterSets()->object(setIndex));
+            MTL::CounterSet *counterSet = static_cast<MTL::CounterSet*>(mtl->counterSets()->object(setIndex));
             for (uint32_t counterIndex = 0; counterIndex < counterSet->counters()->count(); counterIndex++) {
                 const MTL::Counter *counter = static_cast<MTL::Counter*>(counterSet->counters()->object(counterIndex));
-                if (counter->name()->isEqualToString(MTL::CommonCounterTimestamp))
+                if (counter->name()->isEqualToString(MTL::CommonCounterTimestamp)) {
                     return counterSet;
+                }
             }
         }
+
         return nullptr;
     }
 
@@ -4141,10 +4229,8 @@ namespace plume {
     // MetalInterface
 
     MetalInterface::MetalInterface() {
-        NS::AutoreleasePool *releasePool = NS::AutoreleasePool::alloc()->init();
+        MetalAutoreleasePool releasePool;
         capabilities.shaderFormat = RenderShaderFormat::METAL;
-
-        releasePool->release();
 
         // Fill device names.
         const NS::Array* devices = MTL::CopyAllDevices();
