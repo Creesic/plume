@@ -1,0 +1,15 @@
+{
+  "name": "plume",
+  "description": "Plume skills marketplace",
+  "owner": {
+    "name": "Plume contributors"
+  },
+  "plugins": [
+    {
+      "name": "plume-skills",
+      "description": "Expert skills for Plume's cross-platform RHI across D3D12, Vulkan, and Metal.",
+      "version": "0.1.0",
+      "source": "./plume-skills"
+    }
+  ]
+}

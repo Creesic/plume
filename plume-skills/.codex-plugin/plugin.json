@@ -1,0 +1,32 @@
+{
+  "name": "plume-skills",
+  "version": "0.1.0",
+  "description": "Codex skills for working on Plume, a low-level C++ RHI for D3D12, Vulkan, and Metal.",
+  "author": {
+    "name": "Plume contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "plume",
+    "rhi",
+    "rendering",
+    "d3d12",
+    "vulkan",
+    "metal",
+    "graphics"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Plume Skills",
+    "shortDescription": "Work on Plume's cross-API rendering hardware interface",
+    "longDescription": "Repo-specific skills for understanding, modifying, building, and debugging Plume across its public RHI layer, D3D12, Vulkan, Metal, shader compilation, swap chains, resources, descriptors, and synchronization behavior.",
+    "developerName": "Plume contributors",
+    "category": "Coding",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Get familiar with Plume's RHI architecture",
+      "Add a Plume rendering feature across backends",
+      "Debug a Plume rendering or swap-chain issue"
+    ]
+  }
+}
