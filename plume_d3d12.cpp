@@ -8,6 +8,7 @@
 #include "plume_d3d12.h"
 
 #include <unordered_set>
+#include <vector>
 
 #include <dxgi1_5.h>
 
@@ -676,6 +677,32 @@ namespace plume {
             assert(false && "Unknown texture layout.");
             return D3D12_RESOURCE_STATE_COMMON;
         }
+    }
+
+    static void DumpD3D12InfoQueue(ID3D12Device *device) {
+#ifdef D3D12_DEBUG_LAYER_ENABLED
+        if (device == nullptr) return;
+        ID3D12InfoQueue *infoQueue = nullptr;
+        if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))) || infoQueue == nullptr) return;
+        const UINT64 count = infoQueue->GetNumStoredMessages();
+        fprintf(stderr, "D3D12 InfoQueue: %llu stored message(s)\n",
+                static_cast<unsigned long long>(count));
+        for (UINT64 i = 0; i < count; ++i) {
+            SIZE_T length = 0;
+            infoQueue->GetMessage(i, nullptr, &length);
+            std::vector<uint8_t> bytes(length);
+            auto *message = reinterpret_cast<D3D12_MESSAGE *>(bytes.data());
+            if (FAILED(infoQueue->GetMessage(i, message, &length))) continue;
+            if (message->Severity > D3D12_MESSAGE_SEVERITY_WARNING) continue;
+            const char *sev = message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION"
+                            : message->Severity == D3D12_MESSAGE_SEVERITY_ERROR       ? "ERROR"
+                                                                                      : "WARNING";
+            fprintf(stderr, "  [%s] %s\n", sev, message->pDescription);
+        }
+        infoQueue->Release();
+#else
+        (void)device;
+#endif
     }
 
     static D3D12_TEXTURE_COPY_LOCATION toD3D12(const RenderTextureCopyLocation &location) {
@@ -2969,6 +2996,11 @@ namespace plume {
                     desc.width, desc.height, res);
             if (res == DXGI_ERROR_DEVICE_REMOVED && device->d3d != nullptr) {
                 fprintf(stderr, "  GetDeviceRemovedReason: 0x%lX\n", device->d3d->GetDeviceRemovedReason());
+                static bool dumped = false;
+                if (!dumped) {
+                    dumped = true;
+                    DumpD3D12InfoQueue(device->d3d);
+                }
             }
             d3d = nullptr;
             allocation = nullptr;
