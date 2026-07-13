@@ -710,17 +710,28 @@ namespace plume {
         switch (location.type) {
         case RenderTextureCopyType::SUBRESOURCE: {
             const D3D12Texture *interfaceTexture = static_cast<const D3D12Texture *>(location.texture);
-            uint32_t mipLevels = interfaceTexture->desc.mipLevels;
-            loc.pResource = (interfaceTexture != nullptr) ? interfaceTexture->d3d : nullptr;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            if (interfaceTexture == nullptr) {
+                loc.pResource = nullptr;
+                loc.SubresourceIndex = 0;
+                break;
+            }
+            const uint32_t mipLevels = interfaceTexture->desc.mipLevels;
+            loc.pResource = interfaceTexture->d3d;
             loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels;
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
             const D3D12Buffer *interfaceBuffer = static_cast<const D3D12Buffer *>(location.buffer);
+            if (interfaceBuffer == nullptr) {
+                loc.pResource = nullptr;
+                loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                loc.PlacedFootprint = {};
+                break;
+            }
             const uint32_t blockWidth = RenderFormatBlockWidth(location.placedFootprint.format);
             const uint32_t blockCount = (location.placedFootprint.rowWidth + blockWidth - 1) / blockWidth;
-            loc.pResource = (interfaceBuffer != nullptr) ? interfaceBuffer->d3d : nullptr;
+            loc.pResource = interfaceBuffer->d3d;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             loc.PlacedFootprint.Offset = location.placedFootprint.offset;
             loc.PlacedFootprint.Footprint.Format = toDXGI(location.placedFootprint.format);
