@@ -372,7 +372,8 @@ namespace plume {
         UNKNOWN,
         DXIL,
         SPIRV,
-        METAL
+        METAL,
+        METAL_SOURCE
     };
 
     enum class RenderRaytracingPipelineLibrarySymbolType {

@@ -1333,7 +1333,8 @@ namespace plume {
         assert(device != nullptr);
         assert(data != nullptr);
         assert(size > 0);
-        assert(format == RenderShaderFormat::METAL);
+        assert((format == RenderShaderFormat::METAL) ||
+               (format == RenderShaderFormat::METAL_SOURCE));
 
         this->format = format;
 
@@ -1342,11 +1343,21 @@ namespace plume {
         functionName->retain();
 
         NS::Error *error = nullptr;
-        const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
-        library = device->mtl->newLibrary(dispatchData, &error);
+        if (format == RenderShaderFormat::METAL_SOURCE) {
+            const std::string source(static_cast<const char *>(data), size);
+            const NS::String *sourceString =
+                NS::String::string(source.c_str(), NS::UTF8StringEncoding);
+            library = device->mtl->newLibrary(sourceString, nullptr, &error);
+        }
+        else {
+            const dispatch_data_t dispatchData =
+                dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
+            library = device->mtl->newLibrary(dispatchData, &error);
+        }
 
         if (error != nullptr) {
-            fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
+            fprintf(stderr, "MTLDevice newLibrary: failed with error %s.\n",
+                    error->localizedDescription()->utf8String());
             return;
         }
     }
@@ -1354,7 +1365,9 @@ namespace plume {
     MetalShader::~MetalShader() {
         MetalAutoreleasePool releasePool;
         functionName->release();
-        library->release();
+        if (library != nullptr) {
+            library->release();
+        }
 
         if (debugName != nullptr) {
             debugName->release();
@@ -4188,7 +4201,7 @@ namespace plume {
 
     MetalInterface::MetalInterface() {
         MetalAutoreleasePool releasePool;
-        capabilities.shaderFormat = RenderShaderFormat::METAL;
+        capabilities.shaderFormat = RenderShaderFormat::METAL_SOURCE;
 
         // Fill device names.
         const NS::Array* devices = MTL::CopyAllDevices();
