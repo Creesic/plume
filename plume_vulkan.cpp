@@ -1944,7 +1944,7 @@ namespace plume {
         delete setLayout;
     }
     
-    void VulkanDescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void VulkanDescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         if (buffer == nullptr) {
             return;
         }
@@ -1953,7 +1953,11 @@ namespace plume {
         const VkBufferView *bufferView = nullptr;
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = interfaceBuffer->vk;
-        bufferInfo.range = (bufferSize > 0) ? bufferSize : interfaceBuffer->desc.size;
+        assert(bufferOffset <= interfaceBuffer->desc.size);
+        assert((bufferSize == 0) ||
+               (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
+        bufferInfo.range = (bufferSize > 0)
+            ? bufferSize : interfaceBuffer->desc.size - bufferOffset;
 
         if (bufferFormattedView != nullptr) {
             assert((bufferStructuredView == nullptr) && "Can't use structured views and formatted views at the same time.");
@@ -1965,10 +1969,12 @@ namespace plume {
             assert((bufferFormattedView == nullptr) && "Can't use structured views and formatted views at the same time.");
             assert(bufferStructuredView->structureByteStride > 0);
 
-            bufferInfo.offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
+            bufferInfo.offset = bufferOffset +
+                bufferStructuredView->firstElement *
+                    bufferStructuredView->structureByteStride;
         }
         else {
-            bufferInfo.offset = 0;
+            bufferInfo.offset = bufferOffset;
         }
 
         setDescriptor(descriptorIndex, &bufferInfo, nullptr, bufferView, nullptr);

@@ -965,19 +965,24 @@ namespace plume {
         }
     }
 
-    void D3D12DescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void D3D12DescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         const D3D12Buffer *interfaceBuffer = static_cast<const D3D12Buffer *>(buffer);
         ID3D12Resource *nativeResource = (interfaceBuffer != nullptr) ? interfaceBuffer->d3d : nullptr;
+        if (interfaceBuffer != nullptr) {
+            assert(bufferOffset <= interfaceBuffer->desc.size);
+            assert((bufferSize == 0) ||
+                   (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
+        }
         uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
         RenderDescriptorRangeType descriptorType = descriptorTypes[descriptorIndexClamped];
         switch (descriptorType) {
         case RenderDescriptorRangeType::CONSTANT_BUFFER: {
             uint64_t bufferViewSize = bufferSize;
             if ((bufferSize == 0) && (interfaceBuffer != nullptr)) {
-                bufferViewSize = interfaceBuffer->desc.size;
+                bufferViewSize = interfaceBuffer->desc.size - bufferOffset;
             }
 
-            setCBV(descriptorIndex, nativeResource, bufferViewSize);
+            setCBV(descriptorIndex, nativeResource, bufferViewSize, bufferOffset);
             break;
         }
         case RenderDescriptorRangeType::FORMATTED_BUFFER: {
@@ -1299,10 +1304,11 @@ namespace plume {
         }
     }
 
-    void D3D12DescriptorSet::setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize) {
+    void D3D12DescriptorSet::setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize, uint64_t bufferOffset) {
         if (resource != nullptr) {
+            assert((bufferOffset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) == 0);
             D3D12_CONSTANT_BUFFER_VIEW_DESC viewDesc = {};
-            viewDesc.BufferLocation = resource->GetGPUVirtualAddress();
+            viewDesc.BufferLocation = resource->GetGPUVirtualAddress() + bufferOffset;
             viewDesc.SizeInBytes = UINT(roundUp(bufferSize, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT));
 
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);

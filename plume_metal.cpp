@@ -1751,7 +1751,7 @@ namespace plume {
         }
     }
 
-    void MetalDescriptorSet::setBuffer(const uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void MetalDescriptorSet::setBuffer(const uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         MetalAutoreleasePool releasePool;
         if (buffer == nullptr) {
             setDescriptor(descriptorIndex, nullptr);
@@ -1759,6 +1759,9 @@ namespace plume {
         }
 
         const MetalBuffer *interfaceBuffer = static_cast<const MetalBuffer *>(buffer);
+        assert(bufferOffset <= interfaceBuffer->desc.size);
+        assert((bufferSize == 0) ||
+               (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
 
         if (bufferFormattedView != nullptr) {
             assert((bufferStructuredView == nullptr) && "Can't use structured views and formatted views at the same time.");
@@ -1767,13 +1770,14 @@ namespace plume {
             const TextureDescriptor descriptor = { .texture = interfaceBufferFormattedView->texture };
             setDescriptor(descriptorIndex, &descriptor);
         } else {
-            uint32_t offset = 0;
+            uint64_t offset = bufferOffset;
 
             if (bufferStructuredView != nullptr) {
                 assert((bufferFormattedView == nullptr) && "Can't use structured views and formatted views at the same time.");
                 assert(bufferStructuredView->structureByteStride > 0);
 
-                offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
+                offset += bufferStructuredView->firstElement *
+                    bufferStructuredView->structureByteStride;
             }
 
             const BufferDescriptor descriptor = { .buffer = interfaceBuffer->mtl, .offset = offset };

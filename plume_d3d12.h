@@ -90,13 +90,13 @@ namespace plume {
 
         D3D12DescriptorSet(D3D12Device *device, const RenderDescriptorSetDesc &desc);
         ~D3D12DescriptorSet() override;
-        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) override;
+        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) override;
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
         void setSRV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_SHADER_RESOURCE_VIEW_DESC *viewDesc);
         void setUAV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC *viewDesc);
-        void setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize);
+        void setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize, uint64_t bufferOffset);
     };
 
     struct D3D12SwapChain : RenderSwapChain {

@@ -126,8 +126,8 @@ namespace plume {
             return descriptorSet.get();
         }
 
-        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr) {
-            descriptorSet->setBuffer(descriptorIndex, buffer, bufferSize, bufferStructuredView, bufferFormattedView);
+        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr, uint64_t bufferOffset = 0) {
+            descriptorSet->setBuffer(descriptorIndex, buffer, bufferSize, bufferStructuredView, bufferFormattedView, bufferOffset);
         }
 
         void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView &bufferStructuredView) {
