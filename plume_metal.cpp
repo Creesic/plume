@@ -18,6 +18,7 @@
 #include <mutex>
 
 #include "plume_metal.h"
+#include "plume_copy_layout.h"
 
 extern "C" {
     void *objc_autoreleasePoolPush(void);
@@ -3009,37 +3010,87 @@ namespace plume {
         const MetalBuffer *dstBuffer = static_cast<const MetalBuffer *>(dstLocation.buffer);
         const MetalBuffer *srcBuffer = static_cast<const MetalBuffer *>(srcLocation.buffer);
 
-        if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE && srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
+        if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
+            srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
+            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
 
-            // Calculate block size based on destination texture format
-            const uint32_t blockWidth = RenderFormatBlockWidth(dstTexture->desc.format);
-
-            // Use actual dimensions for the copy size
-            const MTL::Size size = { srcLocation.placedFootprint.width, srcLocation.placedFootprint.height, srcLocation.placedFootprint.depth};
-
-            const uint32_t horizontalBlocks = (srcLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth;
-            const uint32_t verticalBlocks = (srcLocation.placedFootprint.height + blockWidth - 1) / blockWidth;
-            const uint32_t bytesPerRow = horizontalBlocks * RenderFormatSize(dstTexture->desc.format);
-            const uint32_t bytesPerImage = bytesPerRow * verticalBlocks;
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    srcLocation.placedFootprint.format,
+                    srcLocation.placedFootprint.width,
+                    srcLocation.placedFootprint.height,
+                    srcLocation.placedFootprint.depth,
+                    srcLocation.placedFootprint.rowWidth, 0,
+                    srcLocation.placedFootprint.offset,
+                    dstLocation.subresource.mipLevel,
+                    dstLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   srcBuffer->desc.size);
+            const MTL::Size size = { copy.width, copy.height, copy.depth };
 
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
             activeBlitEncoder->copyFromBuffer(
                 srcBuffer->mtl,
-                srcLocation.placedFootprint.offset,
-                bytesPerRow,
-                bytesPerImage,
+                copy.offset,
+                copy.rowPitch,
+                copy.bytesPerImage,
                 size,
                 dstTexture->mtl,
-                dstLocation.subresource.arrayIndex,
-                dstLocation.subresource.mipLevel,
+                copy.arrayIndex,
+                copy.mipLevel,
                 dstOrigin
             );
             activeBlitEncoder->popDebugGroup();
-        } else {
+        } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT &&
+                   srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
+            assert(dstBuffer != nullptr);
+            assert(srcTexture != nullptr);
+            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
+
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    dstLocation.placedFootprint.format,
+                    dstLocation.placedFootprint.width,
+                    dstLocation.placedFootprint.height,
+                    dstLocation.placedFootprint.depth,
+                    dstLocation.placedFootprint.rowWidth, 0,
+                    dstLocation.placedFootprint.offset,
+                    srcLocation.subresource.mipLevel,
+                    srcLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   dstBuffer->desc.size);
+
+            MTL::Origin srcOrigin = { 0, 0, 0 };
+            MTL::Size size = { copy.width, copy.height, copy.depth };
+            if (srcBox != nullptr) {
+                srcOrigin = { NS::UInteger(srcBox->left),
+                              NS::UInteger(srcBox->top),
+                              NS::UInteger(srcBox->front) };
+                size = { NS::UInteger(srcBox->right - srcBox->left),
+                         NS::UInteger(srcBox->bottom - srcBox->top),
+                         NS::UInteger(srcBox->back - srcBox->front) };
+            }
+
+            activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            activeBlitEncoder->copyFromTexture(
+                srcTexture->mtl,
+                copy.arrayIndex,
+                copy.mipLevel,
+                srcOrigin,
+                size,
+                dstBuffer->mtl,
+                copy.offset,
+                copy.rowPitch,
+                copy.bytesPerImage
+            );
+            activeBlitEncoder->popDebugGroup();
+        } else if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
+                   srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
 
@@ -3067,7 +3118,9 @@ namespace plume {
                 dstLocation.subresource.mipLevel,   // destination mipmap level
                 dstOrigin                           // destination origin
             );
-          }
+        } else {
+            assert(false && "Unsupported Metal texture copy location pair.");
+        }
     }
 
     void MetalCommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {

@@ -52,6 +52,8 @@ message(STATUS "Plume - Building examples: ${PLUME_BUILD_EXAMPLES}")
 
 # Basic source files that are always included
 set(PLUME_SOURCES
+    plume_copy_layout.cpp
+    plume_copy_layout.h
     plume_vulkan.cpp
     plume_vulkan.h
 )

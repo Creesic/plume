@@ -9,6 +9,7 @@
 #define VOLK_IMPLEMENTATION 
 
 #include "plume_vulkan.h"
+#include "plume_copy_layout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -3214,28 +3215,90 @@ namespace plume {
         const VulkanTexture *srcTexture = static_cast<const VulkanTexture *>(srcLocation.texture);
         const VulkanBuffer *dstBuffer = static_cast<const VulkanBuffer *>(dstLocation.buffer);
         const VulkanBuffer *srcBuffer = static_cast<const VulkanBuffer *>(srcLocation.buffer);
-        if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) && (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
+        if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) &&
+            (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
+            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
 
-            const uint32_t blockWidth = RenderFormatBlockWidth(dstTexture->desc.format);
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    srcLocation.placedFootprint.format,
+                    srcLocation.placedFootprint.width,
+                    srcLocation.placedFootprint.height,
+                    srcLocation.placedFootprint.depth,
+                    srcLocation.placedFootprint.rowWidth, 0,
+                    srcLocation.placedFootprint.offset,
+                    dstLocation.subresource.mipLevel,
+                    dstLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   srcBuffer->desc.size);
             VkBufferImageCopy imageCopy = {};
-            imageCopy.bufferOffset = srcLocation.placedFootprint.offset;
-            imageCopy.bufferRowLength = ((srcLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
-            imageCopy.bufferImageHeight = ((srcLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
+            imageCopy.bufferOffset = copy.offset;
+            imageCopy.bufferRowLength = copy.rowWidth;
+            imageCopy.bufferImageHeight = copy.bufferImageHeight;
             imageCopy.imageSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
-            imageCopy.imageSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
+            imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
-            imageCopy.imageSubresource.mipLevel = dstLocation.subresource.mipLevel;
+            imageCopy.imageSubresource.mipLevel = copy.mipLevel;
             imageCopy.imageOffset.x = dstX;
             imageCopy.imageOffset.y = dstY;
             imageCopy.imageOffset.z = dstZ;
-            imageCopy.imageExtent.width = srcLocation.placedFootprint.width;
-            imageCopy.imageExtent.height = srcLocation.placedFootprint.height;
-            imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+            imageCopy.imageExtent.width = copy.width;
+            imageCopy.imageExtent.height = copy.height;
+            imageCopy.imageExtent.depth = copy.depth;
             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
         }
-        else {
+        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) &&
+                 (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
+            assert(dstBuffer != nullptr);
+            assert(srcTexture != nullptr);
+            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
+
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    dstLocation.placedFootprint.format,
+                    dstLocation.placedFootprint.width,
+                    dstLocation.placedFootprint.height,
+                    dstLocation.placedFootprint.depth,
+                    dstLocation.placedFootprint.rowWidth, 0,
+                    dstLocation.placedFootprint.offset,
+                    srcLocation.subresource.mipLevel,
+                    srcLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   dstBuffer->desc.size);
+
+            VkBufferImageCopy imageCopy = {};
+            imageCopy.bufferOffset = copy.offset;
+            imageCopy.bufferRowLength = copy.rowWidth;
+            imageCopy.bufferImageHeight = copy.bufferImageHeight;
+            imageCopy.imageSubresource.aspectMask =
+                toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+            imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
+            imageCopy.imageSubresource.layerCount = 1;
+            imageCopy.imageSubresource.mipLevel = copy.mipLevel;
+            if (srcBox != nullptr) {
+                imageCopy.imageOffset.x = srcBox->left;
+                imageCopy.imageOffset.y = srcBox->top;
+                imageCopy.imageOffset.z = srcBox->front;
+                imageCopy.imageExtent.width = srcBox->right - srcBox->left;
+                imageCopy.imageExtent.height = srcBox->bottom - srcBox->top;
+                imageCopy.imageExtent.depth = srcBox->back - srcBox->front;
+            }
+            else {
+                imageCopy.imageExtent.width = copy.width;
+                imageCopy.imageExtent.height = copy.height;
+                imageCopy.imageExtent.depth = copy.depth;
+            }
+            vkCmdCopyImageToBuffer(vk, srcTexture->vk,
+                                   toImageLayout(srcTexture->textureLayout),
+                                   dstBuffer->vk, 1, &imageCopy);
+        }
+        else if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) &&
+                 (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
+            assert(dstTexture != nullptr);
+            assert(srcTexture != nullptr);
             VkImageCopy imageCopy = {};
             imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
             imageCopy.srcSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
@@ -3267,6 +3330,9 @@ namespace plume {
             }
 
             vkCmdCopyImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+        }
+        else {
+            assert(false && "Unsupported Vulkan texture copy location pair.");
         }
     }
 
