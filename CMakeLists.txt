@@ -94,6 +94,7 @@ endif()
 if(PLUME_SDL_VULKAN_ENABLED)
     target_compile_definitions(plume PUBLIC PLUME_SDL_VULKAN_ENABLED)
     target_include_directories(plume PUBLIC ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(plume PRIVATE SDL2::SDL2)
 endif()
 
 if(PLUME_D3D12_AGILITY_SDK_ENABLED)
@@ -111,6 +112,17 @@ if(APPLE)
     target_include_directories(plume PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/metal-cpp
     )
+    target_link_libraries(plume PRIVATE
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework CoreGraphics"
+        "-framework Foundation"
+        "-framework IOKit"
+    )
+elseif(WIN32)
+    target_link_libraries(plume PRIVATE d3d12 dxgi dxguid)
+elseif(UNIX)
+    target_link_libraries(plume PRIVATE dl)
 endif()
 
 # Add examples if requested
