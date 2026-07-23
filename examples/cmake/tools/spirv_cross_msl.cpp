@@ -118,8 +118,9 @@ static std::string pad_descriptor_sets(const std::string& source) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input.spv> <output.metal>\n";
+    if (argc != 3 && argc != 4) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <input.spv> <output.metal> [output.entry]\n";
         return 1;
     }
 
@@ -168,13 +169,23 @@ int main(int argc, char* argv[]) {
         common_options.vertex.flip_vert_y = true;
         msl.set_common_options(common_options);
 
-        // Generate MSL source
+        const auto entry_points = msl.get_entry_points_and_stages();
+        if (entry_points.size() != 1)
+            throw std::runtime_error("Expected exactly one SPIR-V entry point");
+
+        // Generate MSL source. MSL reserves names such as `main`, so the
+        // compiler may cleanse the SPIR-V entry point (typically to `main0`).
         std::string source = msl.compile();
+        const std::string emitted_entry = msl.get_cleansed_entry_point_name(
+            entry_points[0].name, entry_points[0].execution_model);
 
         // Pad descriptor sets to ensure contiguous IDs
         std::string padded_source = pad_descriptor_sets(source);
 
-        write_string_to_file(argv[2], padded_source.c_str());
+        if (!write_string_to_file(argv[2], padded_source.c_str()))
+            return 1;
+        if (argc == 4 && !write_string_to_file(argv[3], emitted_entry.c_str()))
+            return 1;
 
         return 0;
     } catch (const std::exception& e) {
