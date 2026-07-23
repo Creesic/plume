@@ -20,14 +20,15 @@ include(CMakeDependentOption)
 cmake_dependent_option(PLUME_SDL_VULKAN_ENABLED "Enable SDL Vulkan integration" OFF IS_LINUX OFF)
 cmake_dependent_option(PLUME_D3D12_AGILITY_SDK_ENABLED "Enable D3D12 Agility SDK" OFF WIN32 OFF)
 cmake_dependent_option(PLUME_APPLE_RETINA_ENABLED "Enable Apple Retina display support" ON APPLE ON)
+cmake_dependent_option(PLUME_D3D12_ENABLED "Build the D3D12 backend" ON WIN32 OFF)
+option(PLUME_VULKAN_ENABLED "Build the Vulkan backend" ON)
+cmake_dependent_option(PLUME_METAL_ENABLED "Build the Metal backend" ON APPLE OFF)
 option(PLUME_BUILD_EXAMPLES "Build example applications" OFF)
 
-# Windows-specific definitions
-if(WIN32)
-    add_compile_definitions(NOMINMAX)
-endif()
-
 # Enable SDL Vulkan support
+if(PLUME_SDL_VULKAN_ENABLED AND NOT PLUME_VULKAN_ENABLED)
+    message(FATAL_ERROR "PLUME_SDL_VULKAN_ENABLED requires PLUME_VULKAN_ENABLED")
+endif()
 if(PLUME_SDL_VULKAN_ENABLED)
     if (NOT TARGET SDL2::SDL2)
         find_package(SDL2 REQUIRED)
@@ -45,7 +46,7 @@ if(PLUME_D3D12_AGILITY_SDK_ENABLED)
 endif()
 
 # Print status messages
-message(STATUS "Plume - Building with backends: Vulkan=1 Metal=${APPLE} D3D12=${WIN32}")
+message(STATUS "Plume - Building with backends: Vulkan=${PLUME_VULKAN_ENABLED} Metal=${PLUME_METAL_ENABLED} D3D12=${PLUME_D3D12_ENABLED}")
 message(STATUS "Plume - SDL Vulkan integration: ${PLUME_SDL_VULKAN_ENABLED}")
 message(STATUS "Plume - D3D12 Agility SDK: ${PLUME_D3D12_AGILITY_SDK_ENABLED}")
 message(STATUS "Plume - Building examples: ${PLUME_BUILD_EXAMPLES}")
@@ -54,19 +55,22 @@ message(STATUS "Plume - Building examples: ${PLUME_BUILD_EXAMPLES}")
 set(PLUME_SOURCES
     plume_copy_layout.cpp
     plume_copy_layout.h
-    plume_vulkan.cpp
-    plume_vulkan.h
 )
 
+if(PLUME_VULKAN_ENABLED)
+    list(APPEND PLUME_SOURCES plume_vulkan.cpp plume_vulkan.h)
+endif()
+
 # Platform-specific files
-if(APPLE)
+if(PLUME_METAL_ENABLED)
     list(APPEND PLUME_SOURCES
         plume_metal.cpp
         plume_metal.h
         plume_apple.mm
         plume_apple.h
     )
-elseif(WIN32)
+endif()
+if(PLUME_D3D12_ENABLED)
     list(APPEND PLUME_SOURCES
         plume_d3d12.cpp
         plume_d3d12.h
@@ -85,10 +89,23 @@ target_include_directories(plume PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/contrib/VulkanMemoryAllocator/include
 )
 
-if(WIN32)
+if(PLUME_D3D12_ENABLED)
     target_include_directories(plume PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/contrib/D3D12MemoryAllocator/include
     )
+endif()
+
+if(PLUME_VULKAN_ENABLED)
+    target_compile_definitions(plume PUBLIC PLUME_VULKAN_ENABLED=1)
+endif()
+if(PLUME_D3D12_ENABLED)
+    target_compile_definitions(plume PUBLIC PLUME_D3D12_ENABLED=1)
+endif()
+if(PLUME_METAL_ENABLED)
+    target_compile_definitions(plume PUBLIC PLUME_METAL_ENABLED=1)
+endif()
+if(WIN32)
+    target_compile_definitions(plume PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 
 if(PLUME_SDL_VULKAN_ENABLED)
@@ -104,7 +121,7 @@ if(PLUME_D3D12_AGILITY_SDK_ENABLED)
 endif()
 
 # Platform-specific includes and shader compilation
-if(APPLE)
+if(PLUME_METAL_ENABLED)
     if(PLUME_APPLE_RETINA_ENABLED)
         target_compile_definitions(plume PRIVATE PLUME_APPLE_RETINA_ENABLED)
     endif()
@@ -119,9 +136,11 @@ if(APPLE)
         "-framework Foundation"
         "-framework IOKit"
     )
-elseif(WIN32)
+endif()
+if(PLUME_D3D12_ENABLED)
     target_link_libraries(plume PRIVATE d3d12 dxgi dxguid)
-elseif(UNIX)
+endif()
+if(PLUME_VULKAN_ENABLED AND UNIX)
     target_link_libraries(plume PRIVATE dl)
 endif()
 
