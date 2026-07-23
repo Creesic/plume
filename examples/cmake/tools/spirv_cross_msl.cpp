@@ -12,6 +12,11 @@
 #include <regex>
 #include <sstream>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 static std::vector<uint32_t> read_spirv_file_stdin() {
 #ifdef _WIN32
     setmode(fileno(stdin), O_BINARY);
