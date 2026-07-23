@@ -1808,7 +1808,15 @@ namespace plume {
     }
 
     void D3D12QueryPool::queryResults() {
+        if (!readbackBuffer) {
+            fprintf(stderr,
+                    "D3D12QueryPool::queryResults failed: no readback "
+                    "buffer.\n");
+            return;
+        }
         void *readbackData = readbackBuffer->map();
+        if (readbackData == nullptr)
+            return;
         memcpy(results.data(), readbackData, sizeof(uint64_t) * results.size());
         readbackBuffer->unmap();
 
@@ -2046,11 +2054,24 @@ namespace plume {
         switch (interfacePipeline->type) {
         case D3D12Pipeline::Type::Compute: {
             const D3D12ComputePipeline *computePipeline = static_cast<const D3D12ComputePipeline *>(interfacePipeline);
+            if (computePipeline->d3d == nullptr) {
+                fprintf(stderr,
+                        "D3D12CommandList::setPipeline rejected invalid "
+                        "compute pipeline.\n");
+                return;
+            }
             d3d->SetPipelineState(computePipeline->d3d);
             break;
         }
         case D3D12Pipeline::Type::Graphics: {
             const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(interfacePipeline);
+            if (graphicsPipeline->d3d == nullptr) {
+                fprintf(stderr,
+                        "D3D12CommandList::setPipeline rejected invalid "
+                        "graphics pipeline.\n");
+                activeGraphicsPipeline = nullptr;
+                return;
+            }
             d3d->SetPipelineState(graphicsPipeline->d3d);
             activeGraphicsPipeline = graphicsPipeline;
             break;
@@ -2781,6 +2802,16 @@ namespace plume {
     }
 
     void *D3D12Buffer::map(uint32_t subresource, const RenderRange *readRange) {
+        if (d3d == nullptr) {
+            fprintf(stderr,
+                    "D3D12Buffer::map failed: resource unavailable "
+                    "(size=%llu heap=%u flags=0x%X).\n",
+                    static_cast<unsigned long long>(desc.size),
+                    static_cast<unsigned>(desc.heapType),
+                    static_cast<unsigned>(desc.flags));
+            return nullptr;
+        }
+
         D3D12_RANGE range;
         if (readRange != nullptr) {
             range.Begin = readRange->begin;
@@ -2788,7 +2819,26 @@ namespace plume {
         }
 
         void *outputData = nullptr;
-        d3d->Map(subresource, (readRange != nullptr) ? &range : nullptr, &outputData);
+        const HRESULT res = d3d->Map(
+            subresource, (readRange != nullptr) ? &range : nullptr,
+            &outputData);
+        if (FAILED(res) || outputData == nullptr) {
+            const HRESULT removed =
+                (device != nullptr && device->d3d != nullptr)
+                    ? device->d3d->GetDeviceRemovedReason()
+                    : E_POINTER;
+            fprintf(stderr,
+                    "D3D12Buffer::map failed: hr=0x%08lX "
+                    "device_removed=0x%08lX subresource=%u "
+                    "size=%llu heap=%u flags=0x%X.\n",
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(removed),
+                    subresource,
+                    static_cast<unsigned long long>(desc.size),
+                    static_cast<unsigned>(desc.heapType),
+                    static_cast<unsigned>(desc.flags));
+            return nullptr;
+        }
         return outputData;
     }
 
@@ -3060,7 +3110,16 @@ namespace plume {
         psoDesc.pRootSignature = rootSignature->rootSignature;
         psoDesc.CS.pShaderBytecode = computeShader->d3d.data();
         psoDesc.CS.BytecodeLength = computeShader->d3d.size();
-        device->d3d->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+        const HRESULT res = device->d3d->CreateComputePipelineState(
+            &psoDesc, IID_PPV_ARGS(&d3d));
+        if (FAILED(res)) {
+            const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+            fprintf(stderr,
+                    "CreateComputePipelineState failed: hr=0x%08lX "
+                    "device_removed=0x%08lX.\n",
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(removed));
+        }
     }
 
     D3D12ComputePipeline::~D3D12ComputePipeline() {
@@ -3205,7 +3264,21 @@ namespace plume {
 
         psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
 
-        device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+        const HRESULT res = device->d3d->CreateGraphicsPipelineState(
+            &psoDesc, IID_PPV_ARGS(&d3d));
+        if (FAILED(res)) {
+            const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+            fprintf(stderr,
+                    "CreateGraphicsPipelineState failed: hr=0x%08lX "
+                    "device_removed=0x%08lX topology=%u rt=0x%X "
+                    "depth=0x%X inputs=%u.\n",
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(removed),
+                    static_cast<unsigned>(desc.primitiveTopology),
+                    static_cast<unsigned>(desc.renderTargetFormat[0]),
+                    static_cast<unsigned>(desc.depthTargetFormat),
+                    desc.inputElementsCount);
+        }
     }
 
     D3D12GraphicsPipeline::~D3D12GraphicsPipeline() {
@@ -3912,11 +3985,19 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> D3D12Device::createComputePipeline(const RenderComputePipelineDesc &desc) {
-        return std::make_unique<D3D12ComputePipeline>(this, desc);
+        std::unique_ptr<D3D12ComputePipeline> pipeline =
+            std::make_unique<D3D12ComputePipeline>(this, desc);
+        if (!pipeline->d3d)
+            return nullptr;
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> D3D12Device::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
-        return std::make_unique<D3D12GraphicsPipeline>(this, desc);
+        std::unique_ptr<D3D12GraphicsPipeline> pipeline =
+            std::make_unique<D3D12GraphicsPipeline>(this, desc);
+        if (!pipeline->d3d)
+            return nullptr;
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> D3D12Device::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
