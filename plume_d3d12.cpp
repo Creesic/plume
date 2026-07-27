@@ -7,6 +7,7 @@
 
 #include "plume_d3d12.h"
 
+#include <cstdlib>
 #include <unordered_set>
 
 #include <dxgi1_5.h>
@@ -1399,7 +1400,35 @@ namespace plume {
         const bool tearingAllowed = (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0U;
         UINT syncInterval = (vsyncEnabled && !desc.enablePresentWait) ? 1 : 0;
         UINT flags = (!vsyncEnabled && tearingAllowed) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+        const UINT beforeIndex = d3d->GetCurrentBackBufferIndex();
         HRESULT res = d3d->Present(syncInterval, flags);
+        static int tracePresent = -1;
+        if (tracePresent < 0) {
+            const char *value = std::getenv("XRECOMP_PLUME_FLICKER_TRACE");
+            tracePresent = value && value[0] != '\0' && value[0] != '0';
+        }
+        if (tracePresent) {
+            UINT presentCount = 0;
+            const HRESULT countRes = d3d->GetLastPresentCount(&presentCount);
+            const UINT afterIndex = d3d->GetCurrentBackBufferIndex();
+            RECT clientRect = {};
+            GetClientRect(desc.renderWindow, &clientRect);
+            fprintf(stderr,
+                    "[PLUME-DXGI-PRESENT] requested=%u before=%u after=%u "
+                    "hr=%08lX count_hr=%08lX count=%u sync=%u flags=%u "
+                    "hwnd=%p valid=%d visible=%d iconic=%d client=%ldx%ld "
+                    "foreground=%d\n",
+                    textureIndex, beforeIndex, afterIndex,
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(countRes), presentCount,
+                    syncInterval, flags, desc.renderWindow,
+                    IsWindow(desc.renderWindow) != FALSE,
+                    IsWindowVisible(desc.renderWindow) != FALSE,
+                    IsIconic(desc.renderWindow) != FALSE,
+                    clientRect.right - clientRect.left,
+                    clientRect.bottom - clientRect.top,
+                    GetForegroundWindow() == desc.renderWindow);
+        }
         return SUCCEEDED(res);
     }
 
