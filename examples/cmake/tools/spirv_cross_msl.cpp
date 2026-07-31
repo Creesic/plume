@@ -169,11 +169,6 @@ int main(int argc, char* argv[]) {
         msl_binding_compute.msl_buffer = 8;
         msl.add_msl_resource_binding(msl_binding_compute);
 
-        // Configure common options
-        spirv_cross::CompilerGLSL::Options common_options;
-        common_options.vertex.flip_vert_y = true;
-        msl.set_common_options(common_options);
-
         const auto entry_points = msl.get_entry_points_and_stages();
         if (entry_points.size() != 1)
             throw std::runtime_error("Expected exactly one SPIR-V entry point");
