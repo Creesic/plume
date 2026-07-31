@@ -1476,14 +1476,13 @@ namespace plume {
         state.threadGroupSizeY = desc.threadGroupSizeY;
         state.threadGroupSizeZ = desc.threadGroupSizeZ;
 
+        descriptor->release();
+        function->release();
+
         if (error != nullptr) {
             fprintf(stderr, "MTLDevice newComputePipelineStateWithDescriptor: failed with error %s.\n", error->localizedDescription()->utf8String());
             return;
         }
-
-        // Release resources
-        descriptor->release();
-        function->release();
     }
 
     MetalComputePipeline::~MetalComputePipeline() {
@@ -1636,12 +1635,8 @@ namespace plume {
             state.depthBiasSlopeFactor = desc.slopeScaledDepthBias;
         }
 
-        if (error != nullptr) {
-            fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
-            return;
-        }
-
-        // Release resources
+        // All descriptor/function objects above are owned (+1) because they
+        // came from alloc/new APIs. Release them on both success and failure.
         vertexDescriptor->release();
         vertexFunction->release();
         descriptor->release();
@@ -1653,6 +1648,11 @@ namespace plume {
 
         if (backFaceStencilDescriptor != nullptr) {
             backFaceStencilDescriptor->release();
+        }
+
+        if (error != nullptr) {
+            fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
+            return;
         }
     }
 
@@ -1833,10 +1833,16 @@ namespace plume {
 
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
         const uint32_t bindingIndex = setLayout->descriptorBindingIndices[descriptorIndex];
-        const auto &setLayoutBinding = setLayout->setBindings[indexBase];
-        const MTL::DataType dtype = mapDataType(setLayoutBinding.descriptorType);
+        const MetalDescriptorSetLayout::DescriptorSetLayoutBinding *setLayoutBinding =
+            setLayout->getBinding(bindingIndex);
+        assert(setLayoutBinding != nullptr);
+        if (setLayoutBinding == nullptr) {
+            return;
+        }
+
+        const MTL::DataType dtype = mapDataType(setLayoutBinding->descriptorType);
         MTL::Resource *nativeResource = nullptr;
-        RenderDescriptorRangeType descriptorType = getDescriptorType(bindingIndex);
+        RenderDescriptorRangeType descriptorType = setLayoutBinding->descriptorType;
 
         if (descriptor != nullptr) {
             const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
@@ -3045,8 +3051,10 @@ namespace plume {
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
 
-        const MetalTexture *dstTexture = static_cast<const MetalTexture *>(dstLocation.texture);
-        const MetalTexture *srcTexture = static_cast<const MetalTexture *>(srcLocation.texture);
+        const ExtendedRenderTexture *dstTexture =
+            static_cast<const ExtendedRenderTexture *>(dstLocation.texture);
+        const ExtendedRenderTexture *srcTexture =
+            static_cast<const ExtendedRenderTexture *>(srcLocation.texture);
         const MetalBuffer *dstBuffer = static_cast<const MetalBuffer *>(dstLocation.buffer);
         const MetalBuffer *srcBuffer = static_cast<const MetalBuffer *>(srcLocation.buffer);
 
@@ -3096,7 +3104,7 @@ namespace plume {
                 copy.rowPitch,
                 copy.bytesPerImage,
                 size,
-                dstTexture->mtl,
+                dstTexture->getTexture(),
                 copy.arrayIndex,
                 copy.mipLevel,
                 dstOrigin,
@@ -3153,7 +3161,7 @@ namespace plume {
                            : MTL::BlitOptionDepthFromDepthStencil)
                     : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromTexture(
-                srcTexture->mtl,
+                srcTexture->getTexture(),
                 copy.arrayIndex,
                 copy.mipLevel,
                 srcOrigin,
@@ -3186,12 +3194,12 @@ namespace plume {
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->copyFromTexture(
-                srcTexture->mtl,                    // source texture
+                srcTexture->getTexture(),           // source texture
                 srcLocation.subresource.arrayIndex, // source slice (baseArrayLayer)
                 srcLocation.subresource.mipLevel,   // source mipmap level
                 srcOrigin,                          // source origin
                 size,                               // copy size
-                dstTexture->mtl,                    // destination texture
+                dstTexture->getTexture(),           // destination texture
                 dstLocation.subresource.arrayIndex, // destination slice (baseArrayLayer)
                 dstLocation.subresource.mipLevel,   // destination mipmap level
                 dstOrigin                           // destination origin
@@ -4084,6 +4092,12 @@ namespace plume {
 
     MetalDevice::~MetalDevice() {
         MetalAutoreleasePool releasePool;
+
+        // MetalBuffer unregisters itself through resourcesMutex. Destroy the
+        // device-owned placeholder while the residency state and mutex are
+        // still alive instead of relying on reverse member destruction order.
+        nullBuffer.reset();
+
         if (timestampCounterSet != nullptr) {
             timestampCounterSet->release();
         }
@@ -4125,7 +4139,12 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
-        return std::make_unique<MetalComputePipeline>(this, desc);
+        std::unique_ptr<MetalComputePipeline> pipeline =
+            std::make_unique<MetalComputePipeline>(this, desc);
+        if (pipeline->state.pipelineState == nullptr) {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
