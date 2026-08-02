@@ -1106,6 +1106,7 @@ namespace plume {
             struct {
                 uint32_t mipLevel;
                 uint32_t arrayIndex;
+                uint32_t planeIndex;
             } subresource;
         };
 
@@ -1122,12 +1123,13 @@ namespace plume {
             return loc;
         }
 
-        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0) {
+        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0, uint32_t planeIndex = 0) {
             RenderTextureCopyLocation loc;
             loc.texture = texture;
             loc.type = RenderTextureCopyType::SUBRESOURCE;
             loc.subresource.mipLevel = mipLevel;
             loc.subresource.arrayIndex = arrayIndex;
+            loc.subresource.planeIndex = planeIndex;
             return loc;
         }
     };

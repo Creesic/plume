@@ -3014,7 +3014,18 @@ namespace plume {
             srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
-            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
+            assert((dstTexture->desc.format == srcLocation.placedFootprint.format &&
+                    dstLocation.subresource.planeIndex == 0) ||
+                   (dstLocation.subresource.planeIndex == 0 &&
+                    ((dstTexture->desc.format == RenderFormat::D16_UNORM &&
+                      srcLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (dstTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((dstLocation.subresource.planeIndex == 0 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (dstLocation.subresource.planeIndex == 1 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R8_UINT))));
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3033,6 +3044,12 @@ namespace plume {
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (dstLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromBuffer(
                 srcBuffer->mtl,
                 copy.offset,
@@ -3042,14 +3059,26 @@ namespace plume {
                 dstTexture->mtl,
                 copy.arrayIndex,
                 copy.mipLevel,
-                dstOrigin
+                dstOrigin,
+                copyOption
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT &&
                    srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstBuffer != nullptr);
             assert(srcTexture != nullptr);
-            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert((srcTexture->desc.format == dstLocation.placedFootprint.format &&
+                    srcLocation.subresource.planeIndex == 0) ||
+                   (srcLocation.subresource.planeIndex == 0 &&
+                    ((srcTexture->desc.format == RenderFormat::D16_UNORM &&
+                      dstLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (srcTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((srcLocation.subresource.planeIndex == 0 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (srcLocation.subresource.planeIndex == 1 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R8_UINT))));
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3077,6 +3106,12 @@ namespace plume {
             }
 
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (srcLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromTexture(
                 srcTexture->mtl,
                 copy.arrayIndex,
@@ -3086,13 +3121,16 @@ namespace plume {
                 dstBuffer->mtl,
                 copy.offset,
                 copy.rowPitch,
-                copy.bytesPerImage
+                copy.bytesPerImage,
+                copyOption
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
                    srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
+            assert(srcLocation.subresource.planeIndex == 0);
+            assert(dstLocation.subresource.planeIndex == 0);
 
             MTL::Origin srcOrigin;
             MTL::Size size;

@@ -685,9 +685,12 @@ namespace plume {
         case RenderTextureCopyType::SUBRESOURCE: {
             const D3D12Texture *interfaceTexture = static_cast<const D3D12Texture *>(location.texture);
             uint32_t mipLevels = interfaceTexture->desc.mipLevels;
+            uint32_t arraySize = interfaceTexture->desc.arraySize;
             loc.pResource = (interfaceTexture != nullptr) ? interfaceTexture->d3d : nullptr;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels;
+            loc.SubresourceIndex = location.subresource.mipLevel +
+                location.subresource.arrayIndex * mipLevels +
+                location.subresource.planeIndex * mipLevels * arraySize;
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
@@ -3144,6 +3147,7 @@ namespace plume {
         assert(desc.pipelineLayout != nullptr);
 
         topology = toD3D12(desc.primitiveTopology);
+        stencilRef = desc.stencilReference;
 
         const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);

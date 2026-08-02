@@ -734,6 +734,36 @@ namespace plume {
         return aspect;
     }
 
+    static VkImageAspectFlags toCopyAspectFlags(const RenderFormat format,
+                                                const RenderTextureFlags flags,
+                                                const uint32_t planeIndex) {
+        if ((flags & RenderTextureFlag::DEPTH_TARGET) == 0) {
+            assert(planeIndex == 0);
+            return VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+        if (planeIndex == 0)
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+        assert(planeIndex == 1 && RenderFormatIsStencil(format));
+        return VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+
+    static bool copyFootprintCompatible(const RenderFormat textureFormat,
+                                        const RenderFormat footprintFormat,
+                                        const uint32_t planeIndex) {
+        if (textureFormat == footprintFormat && planeIndex == 0)
+            return true;
+        if (planeIndex == 0 &&
+            ((textureFormat == RenderFormat::D16_UNORM &&
+              footprintFormat == RenderFormat::R16_UNORM) ||
+             (textureFormat == RenderFormat::D32_FLOAT &&
+              footprintFormat == RenderFormat::R32_FLOAT)))
+            return true;
+        if (textureFormat != RenderFormat::D32_FLOAT_S8_UINT)
+            return false;
+        return (planeIndex == 0 && footprintFormat == RenderFormat::R32_FLOAT) ||
+               (planeIndex == 1 && footprintFormat == RenderFormat::R8_UINT);
+    }
+
     static VkComponentSwizzle toVk(RenderSwizzle swizzle) {
         switch (swizzle) {
         case RenderSwizzle::IDENTITY:
@@ -3219,7 +3249,9 @@ namespace plume {
             (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
-            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
+            assert(copyFootprintCompatible(
+                dstTexture->desc.format, srcLocation.placedFootprint.format,
+                dstLocation.subresource.planeIndex));
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3237,7 +3269,9 @@ namespace plume {
             imageCopy.bufferOffset = copy.offset;
             imageCopy.bufferRowLength = copy.rowWidth;
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
-            imageCopy.imageSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
+            imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
+                dstTexture->desc.format, dstTexture->desc.flags,
+                dstLocation.subresource.planeIndex);
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
@@ -3253,7 +3287,9 @@ namespace plume {
                  (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
             assert(dstBuffer != nullptr);
             assert(srcTexture != nullptr);
-            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert(copyFootprintCompatible(
+                srcTexture->desc.format, dstLocation.placedFootprint.format,
+                srcLocation.subresource.planeIndex));
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3273,8 +3309,9 @@ namespace plume {
             imageCopy.bufferOffset = copy.offset;
             imageCopy.bufferRowLength = copy.rowWidth;
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
-            imageCopy.imageSubresource.aspectMask =
-                toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+            imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
+                srcTexture->desc.format, srcTexture->desc.flags,
+                srcLocation.subresource.planeIndex);
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
@@ -3300,11 +3337,15 @@ namespace plume {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
             VkImageCopy imageCopy = {};
-            imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+            imageCopy.srcSubresource.aspectMask = toCopyAspectFlags(
+                srcTexture->desc.format, srcTexture->desc.flags,
+                srcLocation.subresource.planeIndex);
             imageCopy.srcSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
             imageCopy.srcSubresource.layerCount = 1;
             imageCopy.srcSubresource.mipLevel = srcLocation.subresource.mipLevel;
-            imageCopy.dstSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
+            imageCopy.dstSubresource.aspectMask = toCopyAspectFlags(
+                dstTexture->desc.format, dstTexture->desc.flags,
+                dstLocation.subresource.planeIndex);
             imageCopy.dstSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
             imageCopy.dstSubresource.layerCount = 1;
             imageCopy.dstSubresource.mipLevel = dstLocation.subresource.mipLevel;
