@@ -7,6 +7,7 @@
 
 #include "plume_d3d12.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -1785,14 +1786,18 @@ namespace plume {
 
     // D3D12QueryPool
 
-    D3D12QueryPool::D3D12QueryPool(D3D12Device *device, uint32_t queryCount) {
+    D3D12QueryPool::D3D12QueryPool(D3D12Device *device, uint32_t queryCount,
+                                   RenderQueryType type) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
         this->device = device;
+        this->type = type;
 
         D3D12_QUERY_HEAP_DESC queryHeapDesc = {};
-        queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        queryHeapDesc.Type = type == RenderQueryType::OCCLUSION
+            ? D3D12_QUERY_HEAP_TYPE_OCCLUSION
+            : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         queryHeapDesc.Count = queryCount;
 
         HRESULT res = device->d3d->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&d3d));
@@ -1811,7 +1816,7 @@ namespace plume {
         }
     }
 
-    void D3D12QueryPool::queryResults() {
+    void D3D12QueryPool::queryResults(uint32_t queryCount) {
         if (!readbackBuffer) {
             fprintf(stderr,
                     "D3D12QueryPool::queryResults failed: no readback "
@@ -1821,11 +1826,17 @@ namespace plume {
         void *readbackData = readbackBuffer->map();
         if (readbackData == nullptr)
             return;
-        memcpy(results.data(), readbackData, sizeof(uint64_t) * results.size());
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        memcpy(results.data(), readbackData, sizeof(uint64_t) * resultCount);
         readbackBuffer->unmap();
 
-        for (uint64_t &result : results) {
-            result = uint64_t(double(result) / double(device->timestampFrequency) * 1000000000.0);
+        if (type == RenderQueryType::TIMESTAMP) {
+            for (uint32_t i = 0; i < resultCount; ++i) {
+                results[i] = uint64_t(double(results[i]) /
+                    double(device->timestampFrequency) * 1000000000.0);
+            }
         }
     }
 
@@ -2462,9 +2473,37 @@ namespace plume {
         assert(queryPool != nullptr);
 
         const D3D12QueryPool *interfaceQueryPool = static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::TIMESTAMP);
         const D3D12Buffer *readbackBuffer = static_cast<const D3D12Buffer *>(interfaceQueryPool->readbackBuffer.get());
         d3d->EndQuery(interfaceQueryPool->d3d, D3D12_QUERY_TYPE_TIMESTAMP, queryIndex);
         d3d->ResolveQueryData(interfaceQueryPool->d3d, D3D12_QUERY_TYPE_TIMESTAMP, queryIndex, 1, readbackBuffer->d3d, queryIndex * sizeof(uint64_t));
+    }
+
+    void D3D12CommandList::beginQuery(const RenderQueryPool *queryPool,
+                                      uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const D3D12QueryPool *interfaceQueryPool =
+            static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        d3d->BeginQuery(interfaceQueryPool->d3d,
+                        D3D12_QUERY_TYPE_OCCLUSION, queryIndex);
+    }
+
+    void D3D12CommandList::endQuery(const RenderQueryPool *queryPool,
+                                    uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const D3D12QueryPool *interfaceQueryPool =
+            static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        const D3D12Buffer *readbackBuffer =
+            static_cast<const D3D12Buffer *>(
+                interfaceQueryPool->readbackBuffer.get());
+        d3d->EndQuery(interfaceQueryPool->d3d,
+                      D3D12_QUERY_TYPE_OCCLUSION, queryIndex);
+        d3d->ResolveQueryData(interfaceQueryPool->d3d,
+                              D3D12_QUERY_TYPE_OCCLUSION,
+                              queryIndex, 1, readbackBuffer->d3d,
+                              queryIndex * sizeof(uint64_t));
     }
 
     void D3D12CommandList::checkDescriptorHeaps() {
@@ -4050,8 +4089,9 @@ namespace plume {
         return std::make_unique<D3D12Framebuffer>(this, desc);
     }
 
-    std::unique_ptr<RenderQueryPool> D3D12Device::createQueryPool(uint32_t queryCount) {
-        return std::make_unique<D3D12QueryPool>(this, queryCount);
+    std::unique_ptr<RenderQueryPool> D3D12Device::createQueryPool(
+        uint32_t queryCount, RenderQueryType type) {
+        return std::make_unique<D3D12QueryPool>(this, queryCount, type);
     }
 
     void D3D12Device::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {

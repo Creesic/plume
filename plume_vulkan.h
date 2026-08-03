@@ -285,10 +285,12 @@ namespace plume {
         VulkanDevice *device = nullptr;
         std::vector<uint64_t> results;
         VkQueryPool vk = VK_NULL_HANDLE;
+        RenderQueryType type = RenderQueryType::TIMESTAMP;
 
-        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount);
+        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount,
+                        RenderQueryType type);
         virtual ~VulkanQueryPool() override;
-        virtual void queryResults() override;
+        virtual void queryResults(uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -342,6 +344,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void checkActiveRenderPass();
         void endActiveRenderPass();
         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
@@ -435,7 +439,8 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
-        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount, RenderQueryType type) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;

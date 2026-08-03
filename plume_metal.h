@@ -298,10 +298,13 @@ namespace plume {
         MetalDevice *device = nullptr;
         MTL::CounterSampleBuffer *sampleBuffer = nullptr;
         std::vector<uint64_t> results;
+        std::unique_ptr<RenderBuffer> visibilityBuffer;
+        RenderQueryType type = RenderQueryType::TIMESTAMP;
 
-        MetalQueryPool(MetalDevice *device, uint32_t queryCount);
+        MetalQueryPool(MetalDevice *device, uint32_t queryCount,
+                       RenderQueryType type);
         virtual ~MetalQueryPool() override;
-        virtual void queryResults() override;
+        virtual void queryResults(uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -446,6 +449,7 @@ namespace plume {
         MetalDescriptorSet* computeDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
 
         MTL::Fence *timestampQueryFence = nullptr;
+        const MetalQueryPool *visibilityQueryPool = nullptr;
 
         std::unordered_set<MetalDescriptorSet*> currentEncoderDescriptorSets;
         void bindEncoderResources(MTL::CommandEncoder* encoder, bool isCompute);
@@ -494,6 +498,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void endOtherEncoders(EncoderType type);
         void checkActiveComputeEncoder();
         void endActiveComputeEncoder();
@@ -746,7 +752,8 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
-        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount, RenderQueryType type) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;

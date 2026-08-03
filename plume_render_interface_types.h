@@ -83,6 +83,11 @@ namespace plume {
         INTEL = 0x8086,
         APPLE = 0x106B,
     };
+
+    enum class RenderQueryType {
+        TIMESTAMP,
+        OCCLUSION
+    };
     
     enum class RenderFormat {
         UNKNOWN,
