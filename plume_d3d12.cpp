@@ -7,6 +7,7 @@
 
 #include "plume_d3d12.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -3720,158 +3721,186 @@ namespace plume {
 
     // D3D12Device
 
-    D3D12Device::D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName) {
+    D3D12Device::D3D12Device(
+        D3D12Interface *renderInterface,
+        const std::string &preferredDeviceName,
+        const D3D12InterfaceCreationHooks *creationHooks) {
         assert(renderInterface != nullptr);
 
         this->renderInterface = renderInterface;
-        
-        // Detect adapter to use that will offer the best performance and features.
+
+        /* Choose an adapter before creating the real device. An early-creation
+         * hook must see that device immediately after D3D12CreateDevice and
+         * before Plume calls CheckFeatureSupport (or any other method), so the
+         * old create/query/compare loop could not satisfy that contract. */
+        struct AdapterCandidate {
+            IDXGIAdapter1 *adapter = nullptr;
+            DXGI_ADAPTER_DESC1 desc = {};
+            std::string name;
+        };
+        std::vector<AdapterCandidate> candidates;
         HRESULT res;
         UINT adapterIndex = 0;
         IDXGIAdapter1 *adapterOption = nullptr;
         while (renderInterface->dxgiFactory->EnumAdapters1(adapterIndex++, &adapterOption) != DXGI_ERROR_NOT_FOUND) {
-            DXGI_ADAPTER_DESC1 adapterDesc;
-            adapterOption->GetDesc1(&adapterDesc);
+            AdapterCandidate candidate;
+            candidate.adapter = adapterOption;
+            adapterOption = nullptr;
+            candidate.adapter->GetDesc1(&candidate.desc);
 
             // Ignore remote or software adapters.
-            if (adapterDesc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE)) {
-                adapterOption->Release();
+            if (candidate.desc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE)) {
+                candidate.adapter->Release();
                 continue;
             }
 
+            candidate.name = Utf16ToUtf8(candidate.desc.Description);
+            candidates.emplace_back(std::move(candidate));
+        }
+
+        std::stable_sort(candidates.begin(), candidates.end(),
+            [&preferredDeviceName](const AdapterCandidate &a,
+                                   const AdapterCandidate &b) {
+                const bool aPreferred = !preferredDeviceName.empty() &&
+                                        a.name == preferredDeviceName;
+                const bool bPreferred = !preferredDeviceName.empty() &&
+                                        b.name == preferredDeviceName;
+                if (aPreferred != bPreferred)
+                    return aPreferred;
+                return a.desc.DedicatedVideoMemory >
+                       b.desc.DedicatedVideoMemory;
+            });
+
+        DXGI_ADAPTER_DESC1 adapterDesc = {};
+        for (AdapterCandidate &candidate : candidates) {
             ID3D12Device8 *deviceOption = nullptr;
-            res = D3D12CreateDevice(adapterOption, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&deviceOption));
-            if (FAILED(res)) {
-                adapterOption->Release();
+            res = D3D12CreateDevice(candidate.adapter,
+                                    D3D_FEATURE_LEVEL_11_0,
+                                    IID_PPV_ARGS(&deviceOption));
+            if (FAILED(res))
+                continue;
+
+            if (creationHooks && creationHooks->deviceCreated &&
+                !creationHooks->deviceCreated(creationHooks->userData,
+                                              deviceOption,
+                                              &candidate.desc.AdapterLuid)) {
+                deviceOption->Release();
                 continue;
             }
 
-            // Determine the shader model supported by the device.
-#       if SM_5_1_SUPPORTED
-            const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0, D3D_SHADER_MODEL_5_1 };
-#       else
-            const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0 };
-#       endif
-            D3D12_FEATURE_DATA_SHADER_MODEL dataShaderModel = {};
-            for (uint32_t i = 0; i < _countof(supportedShaderModels); i++) {
-                dataShaderModel.HighestShaderModel = supportedShaderModels[i];
-                res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &dataShaderModel, sizeof(dataShaderModel));
-                if (res != E_INVALIDARG) {
-                    if (FAILED(res)) {
-                        deviceOption->Release();
-                        adapterOption->Release();
-                        continue;
-                    }
+            adapter = candidate.adapter;
+            candidate.adapter = nullptr;
+            d3d = deviceOption;
+            adapterDesc = candidate.desc;
+            description.name = candidate.name;
+            description.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
+            description.vendor = RenderDeviceVendor(adapterDesc.VendorId);
+            break;
+        }
 
-                    break;
-                }
-            }
-
-            // Determine if the device supports sample locations.
-            bool resolveRegionOption = false;
-            bool samplePositionsOption = false;
-            D3D12_FEATURE_DATA_D3D12_OPTIONS2 d3d12Options2 = {};
-            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &d3d12Options2, sizeof(d3d12Options2));
-            if (SUCCEEDED(res)) {
-                resolveRegionOption = true;
-                samplePositionsOption = d3d12Options2.ProgrammableSamplePositionsTier >= D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
-            }
-
-            // Determine if the device supports raytracing.
-            bool rtSupportOption = false;
-            bool rtStateUpdateSupportOption = false;
-            D3D12_FEATURE_DATA_D3D12_OPTIONS5 d3d12Options5 = {};
-            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &d3d12Options5, sizeof(d3d12Options5));
-            if (SUCCEEDED(res)) {
-                rtSupportOption = d3d12Options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
-                rtStateUpdateSupportOption = d3d12Options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
-            }
-
-            bool triangleFanSupportOption = false;
-            bool dynamicDepthBiasOption = false;
-            bool gpuUploadHeapOption = false;
-
-#       ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
-            // Check if triangle fan is supported.
-            D3D12_FEATURE_DATA_D3D12_OPTIONS15 d3d12Options15 = {};
-            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS15, &d3d12Options15, sizeof(d3d12Options15));
-            if (SUCCEEDED(res)) {
-                triangleFanSupportOption = d3d12Options15.TriangleFanSupported;
-            }
-
-            // Check if dynamic depth bias and GPU upload heap are supported.
-            D3D12_FEATURE_DATA_D3D12_OPTIONS16 d3d12Options16 = {};
-            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, &d3d12Options16, sizeof(d3d12Options16));
-            if (SUCCEEDED(res)) {
-                dynamicDepthBiasOption = d3d12Options16.DynamicDepthBiasSupported;
-                gpuUploadHeapOption = d3d12Options16.GPUUploadHeapSupported;
-            }
-#       endif
-
-            // Check if the architecture has UMA.
-            bool uma = false;
-            D3D12_FEATURE_DATA_ARCHITECTURE1 architecture1 = {};
-            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &architecture1, sizeof(architecture1));
-            if (SUCCEEDED(res)) {
-                uma = architecture1.UMA;
-            }
-
-            // Pick this adapter and device if it has better feature support than the current one.
-            std::string deviceName = Utf16ToUtf8(adapterDesc.Description);
-            bool preferOverNothing = (adapter == nullptr) || (d3d == nullptr);
-            bool preferVideoMemory = adapterDesc.DedicatedVideoMemory > description.dedicatedVideoMemory;
-            bool preferUserChoice = preferredDeviceName == deviceName;
-            bool preferOption = preferOverNothing || preferVideoMemory || preferUserChoice;
-            if (preferOption) {
-                if (d3d != nullptr) {
-                    d3d->Release();
-                }
-
-                if (adapter != nullptr) {
-                    adapter->Release();
-                }
-
-                adapter = adapterOption;
-                d3d = deviceOption;
-                shaderModel = dataShaderModel.HighestShaderModel;
-                capabilities.geometryShader = true;
-                capabilities.raytracing = rtSupportOption;
-                capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
-                capabilities.sampleLocations = samplePositionsOption;
-                capabilities.resolveRegion = resolveRegionOption;
-                capabilities.resolveModes = samplePositionsOption; // Resolve modes require sample positions support.
-                capabilities.triangleFan = triangleFanSupportOption;
-                capabilities.dynamicDepthBias = dynamicDepthBiasOption;
-                capabilities.uma = uma;
-
-                // Pretend GPU Upload heaps are supported if UMA is supported, as
-                // the backend has a workaround using a custom pool for it.
-                capabilities.gpuUploadHeap = uma || gpuUploadHeapOption;
-                gpuUploadHeapFallback = uma && !gpuUploadHeapOption;
-
-                description.name = deviceName;
-                description.dedicatedVideoMemory = adapterDesc.DedicatedVideoMemory;
-                description.vendor = RenderDeviceVendor(adapterDesc.VendorId);
-
-                LARGE_INTEGER adapterVersion = {};
-                res = adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &adapterVersion);
-                if (SUCCEEDED(res)) {
-                    description.driverVersion = adapterVersion.QuadPart;
-                }
-
-                if (preferUserChoice) {
-                    break;
-                }
-            }
-            else {
-                deviceOption->Release();
-                adapterOption->Release();
-            }
+        for (AdapterCandidate &candidate : candidates) {
+            if (candidate.adapter)
+                candidate.adapter->Release();
         }
 
         if (d3d == nullptr) {
             fprintf(stderr, "Unable to create a D3D12 device with the required features.\n");
             return;
+        }
+
+        // Determine the shader model supported by the selected device.
+#       if SM_5_1_SUPPORTED
+        const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0, D3D_SHADER_MODEL_5_1 };
+#       else
+        const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0 };
+#       endif
+        D3D12_FEATURE_DATA_SHADER_MODEL dataShaderModel = {};
+        bool shaderModelSupported = false;
+        for (uint32_t i = 0; i < _countof(supportedShaderModels); i++) {
+            dataShaderModel.HighestShaderModel = supportedShaderModels[i];
+            res = d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL,
+                                           &dataShaderModel,
+                                           sizeof(dataShaderModel));
+            if (res != E_INVALIDARG) {
+                shaderModelSupported = SUCCEEDED(res);
+                break;
+            }
+        }
+        if (!shaderModelSupported) {
+            fprintf(stderr, "Unable to query the required D3D shader model.\n");
+            release();
+            return;
+        }
+        shaderModel = dataShaderModel.HighestShaderModel;
+
+        // Determine if the device supports sample locations.
+        bool resolveRegionOption = false;
+        bool samplePositionsOption = false;
+        D3D12_FEATURE_DATA_D3D12_OPTIONS2 d3d12Options2 = {};
+        res = d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &d3d12Options2, sizeof(d3d12Options2));
+        if (SUCCEEDED(res)) {
+            resolveRegionOption = true;
+            samplePositionsOption = d3d12Options2.ProgrammableSamplePositionsTier >= D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
+        }
+
+        // Determine if the device supports raytracing.
+        bool rtSupportOption = false;
+        bool rtStateUpdateSupportOption = false;
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 d3d12Options5 = {};
+        res = d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &d3d12Options5, sizeof(d3d12Options5));
+        if (SUCCEEDED(res)) {
+            rtSupportOption = d3d12Options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+            rtStateUpdateSupportOption = d3d12Options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+        }
+
+        bool triangleFanSupportOption = false;
+        bool dynamicDepthBiasOption = false;
+        bool gpuUploadHeapOption = false;
+
+#       ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
+        // Check if triangle fan is supported.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS15 d3d12Options15 = {};
+        res = d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS15, &d3d12Options15, sizeof(d3d12Options15));
+        if (SUCCEEDED(res)) {
+            triangleFanSupportOption = d3d12Options15.TriangleFanSupported;
+        }
+
+        // Check if dynamic depth bias and GPU upload heap are supported.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS16 d3d12Options16 = {};
+        res = d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS16, &d3d12Options16, sizeof(d3d12Options16));
+        if (SUCCEEDED(res)) {
+            dynamicDepthBiasOption = d3d12Options16.DynamicDepthBiasSupported;
+            gpuUploadHeapOption = d3d12Options16.GPUUploadHeapSupported;
+        }
+#       endif
+
+        // Check if the architecture has UMA.
+        bool uma = false;
+        D3D12_FEATURE_DATA_ARCHITECTURE1 architecture1 = {};
+        res = d3d->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &architecture1, sizeof(architecture1));
+        if (SUCCEEDED(res)) {
+            uma = architecture1.UMA;
+        }
+
+        capabilities.geometryShader = true;
+        capabilities.raytracing = rtSupportOption;
+        capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
+        capabilities.sampleLocations = samplePositionsOption;
+        capabilities.resolveRegion = resolveRegionOption;
+        capabilities.resolveModes = samplePositionsOption; // Resolve modes require sample positions support.
+        capabilities.triangleFan = triangleFanSupportOption;
+        capabilities.dynamicDepthBias = dynamicDepthBiasOption;
+        capabilities.uma = uma;
+
+        // Pretend GPU Upload heaps are supported if UMA is supported, as
+        // the backend has a workaround using a custom pool for it.
+        capabilities.gpuUploadHeap = uma || gpuUploadHeapOption;
+        gpuUploadHeapFallback = uma && !gpuUploadHeapOption;
+
+        LARGE_INTEGER adapterVersion = {};
+        res = adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &adapterVersion);
+        if (SUCCEEDED(res)) {
+            description.driverVersion = adapterVersion.QuadPart;
         }
 
         #ifdef D3D12_DEBUG_SET_STABLE_POWER_STATE
@@ -4264,7 +4293,15 @@ namespace plume {
 
     // D3D12Interface
 
-    D3D12Interface::D3D12Interface() {
+    D3D12Interface::D3D12Interface()
+        : D3D12Interface(nullptr) {
+    }
+
+    D3D12Interface::D3D12Interface(
+        const D3D12InterfaceCreationHooks *creationHooks) {
+        if (creationHooks)
+            this->creationHooks = *creationHooks;
+
         // Create DXGI Factory.
         UINT dxgiFactoryFlags = 0;
 
@@ -4284,6 +4321,14 @@ namespace plume {
         HRESULT res = CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory));
         if (FAILED(res)) {
             fprintf(stderr, "CreateDXGIFactory2 failed with error code 0x%lX.\n", res);
+            return;
+        }
+
+        if (this->creationHooks.factoryCreated &&
+            !this->creationHooks.factoryCreated(
+                this->creationHooks.userData, dxgiFactory)) {
+            dxgiFactory->Release();
+            dxgiFactory = nullptr;
             return;
         }
 
@@ -4321,7 +4366,9 @@ namespace plume {
     }
 
     std::unique_ptr<RenderDevice> D3D12Interface::createDevice(const std::string &preferredDeviceName) {
-        std::unique_ptr<D3D12Device> createdDevice = std::make_unique<D3D12Device>(this, preferredDeviceName);
+        std::unique_ptr<D3D12Device> createdDevice =
+            std::make_unique<D3D12Device>(this, preferredDeviceName,
+                                          &creationHooks);
         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
     }
 
@@ -4340,7 +4387,13 @@ namespace plume {
     // Global creation function.
     
     std::unique_ptr<RenderInterface> CreateD3D12Interface() {
-        std::unique_ptr<D3D12Interface> createdInterface = std::make_unique<D3D12Interface>();
+        return CreateD3D12Interface(nullptr);
+    }
+
+    std::unique_ptr<RenderInterface> CreateD3D12Interface(
+        const D3D12InterfaceCreationHooks *creationHooks) {
+        std::unique_ptr<D3D12Interface> createdInterface =
+            std::make_unique<D3D12Interface>(creationHooks);
         return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
     }
 };

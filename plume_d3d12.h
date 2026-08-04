@@ -24,6 +24,22 @@
 #include "D3D12MemAlloc.h"
 
 namespace plume {
+    /* Optional host callbacks invoked immediately after D3D12 creates the
+     * native interface and before Plume calls any method on it. This is kept
+     * renderer-generic so API interposers can install their required proxy
+     * bookkeeping without Plume depending on a particular SDK. The callback
+     * does not replace the native pointer: Plume continues to use native
+     * interfaces except at explicitly intercepted call sites owned by the
+     * host. */
+    struct D3D12InterfaceCreationHooks {
+        void *userData = nullptr;
+        bool (*factoryCreated)(void *userData,
+                               IDXGIFactory4 *nativeFactory) = nullptr;
+        bool (*deviceCreated)(void *userData,
+                              ID3D12Device8 *nativeDevice,
+                              const LUID *adapterLuid) = nullptr;
+    };
+
     struct D3D12Buffer;
     struct D3D12CommandQueue;
     struct D3D12Device;
@@ -449,7 +465,9 @@ namespace plume {
         uint64_t timestampFrequency = 1;
         bool gpuUploadHeapFallback = false;
 
-        D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
+        D3D12Device(D3D12Interface *renderInterface,
+                    const std::string &preferredDeviceName,
+                    const D3D12InterfaceCreationHooks *creationHooks);
         ~D3D12Device() override;
         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
@@ -484,12 +502,19 @@ namespace plume {
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
         bool allowTearing = false;
+        D3D12InterfaceCreationHooks creationHooks = {};
 
         D3D12Interface();
+        explicit D3D12Interface(
+            const D3D12InterfaceCreationHooks *creationHooks);
         ~D3D12Interface() override;
         std::unique_ptr<RenderDevice> createDevice(const std::string &preferredDeviceName) override;
         const RenderInterfaceCapabilities &getCapabilities() const override;
         const std::vector<std::string> &getDeviceNames() const override;
         bool isValid() const;
     };
+
+    std::unique_ptr<RenderInterface> CreateD3D12Interface();
+    std::unique_ptr<RenderInterface> CreateD3D12Interface(
+        const D3D12InterfaceCreationHooks *creationHooks);
 };
