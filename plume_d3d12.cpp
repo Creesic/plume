@@ -46,7 +46,7 @@ extern "C" {
 
 namespace plume {
     static const uint32_t ShaderDescriptorHeapSize = 65536;
-    static const uint32_t SamplerDescriptorHeapSize = 1024;
+    static const uint32_t SamplerDescriptorHeapSize = 2048;
     static const uint32_t TargetDescriptorHeapSize = 16384;
 
     // Common functions.
