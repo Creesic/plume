@@ -3211,6 +3211,8 @@ namespace plume {
         psoDesc.DepthStencilState.BackFace.StencilFunc = toD3D12(desc.stencilBackFace.compareFunction);
         psoDesc.NumRenderTargets = desc.renderTargetCount;
         psoDesc.BlendState.AlphaToCoverageEnable = desc.alphaToCoverageEnabled;
+        psoDesc.BlendState.IndependentBlendEnable =
+            desc.renderTargetCount > 1;
 
         for (uint32_t i = 0; i < desc.renderTargetCount; i++) {
             psoDesc.RTVFormats[i] = toDXGI(desc.renderTargetFormat[i]);
