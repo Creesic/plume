@@ -2217,12 +2217,22 @@ namespace plume {
 
     // MetalQueryPool
 
-    MetalQueryPool::MetalQueryPool(MetalDevice *device, uint32_t queryCount) {
+    MetalQueryPool::MetalQueryPool(MetalDevice *device, uint32_t queryCount,
+                                   RenderQueryType type) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
         MetalAutoreleasePool releasePool;
         this->device = device;
+        this->type = type;
+
+        results.resize(queryCount, 0);
+        if (type == RenderQueryType::OCCLUSION) {
+            visibilityBuffer = device->createBuffer(
+                RenderBufferDesc::ReadbackBuffer(
+                    sizeof(uint64_t) * queryCount));
+            return;
+        }
 
         MTL::CounterSampleBufferDescriptor *sampleBufferDesc = MTL::CounterSampleBufferDescriptor::alloc()->init();
         sampleBufferDesc->setCounterSet(device->timestampCounterSet);
@@ -2231,18 +2241,30 @@ namespace plume {
         sampleBuffer = device->mtl->newCounterSampleBuffer(sampleBufferDesc, nullptr);
         sampleBufferDesc->release();
 
-        results.resize(queryCount, 0);
     }
 
     MetalQueryPool::~MetalQueryPool() {
         MetalAutoreleasePool releasePool;
-        sampleBuffer->release();
+        if (sampleBuffer != nullptr) {
+            sampleBuffer->release();
+        }
     }
 
-    void MetalQueryPool::queryResults() {
+    void MetalQueryPool::queryResults(uint32_t queryCount) {
         MetalAutoreleasePool releasePool;
-        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, results.size()));
-        std::memcpy(results.data(), data->mutableBytes(), results.size() * sizeof(uint64_t));
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        if (type == RenderQueryType::OCCLUSION) {
+            void *data = visibilityBuffer->map();
+            std::memcpy(results.data(), data,
+                        resultCount * sizeof(uint64_t));
+            visibilityBuffer->unmap();
+            return;
+        }
+
+        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, resultCount));
+        std::memcpy(results.data(), data->mutableBytes(), resultCount * sizeof(uint64_t));
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
@@ -2285,6 +2307,7 @@ namespace plume {
 
         MetalAutoreleasePool releasePool;
         startedEncoding = false;
+        visibilityQueryPool = nullptr;
         mtl = queue->mtl->commandBufferWithUnretainedReferences();
         mtl->retain();
         mtl->setLabel(MTLSTR("RT64 Command List"));
@@ -3022,7 +3045,18 @@ namespace plume {
             srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
-            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
+            assert((dstTexture->desc.format == srcLocation.placedFootprint.format &&
+                    dstLocation.subresource.planeIndex == 0) ||
+                   (dstLocation.subresource.planeIndex == 0 &&
+                    ((dstTexture->desc.format == RenderFormat::D16_UNORM &&
+                      srcLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (dstTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((dstLocation.subresource.planeIndex == 0 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (dstLocation.subresource.planeIndex == 1 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R8_UINT))));
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3041,6 +3075,12 @@ namespace plume {
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (dstLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromBuffer(
                 srcBuffer->mtl,
                 copy.offset,
@@ -3050,21 +3090,26 @@ namespace plume {
                 dstTexture->getTexture(),
                 copy.arrayIndex,
                 copy.mipLevel,
-                dstOrigin
+                dstOrigin,
+                copyOption
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT &&
                    srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstBuffer != nullptr);
             assert(srcTexture != nullptr);
-            const bool copiesDepthPlane =
-                dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT &&
-                (srcTexture->desc.format == RenderFormat::D32_FLOAT ||
-                 srcTexture->desc.format ==
-                     RenderFormat::D32_FLOAT_S8_UINT);
-            assert(srcTexture->desc.format ==
-                       dstLocation.placedFootprint.format ||
-                   copiesDepthPlane);
+            assert((srcTexture->desc.format == dstLocation.placedFootprint.format &&
+                    srcLocation.subresource.planeIndex == 0) ||
+                   (srcLocation.subresource.planeIndex == 0 &&
+                    ((srcTexture->desc.format == RenderFormat::D16_UNORM &&
+                      dstLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (srcTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((srcLocation.subresource.planeIndex == 0 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (srcLocation.subresource.planeIndex == 1 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R8_UINT))));
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3091,14 +3136,13 @@ namespace plume {
                          NS::UInteger(srcBox->back - srcBox->front) };
             }
 
-            const MTL::BlitOption options =
-                srcTexture->desc.format ==
-                        RenderFormat::D32_FLOAT_S8_UINT &&
-                    dstLocation.placedFootprint.format ==
-                        RenderFormat::R32_FLOAT
-                    ? MTL::BlitOptionDepthFromDepthStencil
-                    : MTL::BlitOptionNone;
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (srcLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromTexture(
                 srcTexture->getTexture(),
                 copy.arrayIndex,
@@ -3109,13 +3153,15 @@ namespace plume {
                 copy.offset,
                 copy.rowPitch,
                 copy.bytesPerImage,
-                options
+                copyOption
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
                    srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
+            assert(srcLocation.subresource.planeIndex == 0);
+            assert(dstLocation.subresource.planeIndex == 0);
 
             MTL::Origin srcOrigin;
             MTL::Size size;
@@ -3299,6 +3345,7 @@ namespace plume {
 
         MetalAutoreleasePool releasePool;
         const MetalQueryPool *interfaceQueryPool = static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::TIMESTAMP);
 
         MTL::ComputeCommandEncoder *computeEncoder = activeComputeEncoder != nullptr ? activeComputeEncoder : activeResolveComputeEncoder;
         if (computeEncoder != nullptr && device->mtl->supportsCounterSampling(MTL::CounterSamplingPointAtDispatchBoundary)) {
@@ -3335,6 +3382,35 @@ namespace plume {
             encoder->fillBuffer(nullBuffer->mtl, NS::Range(0, 1), 0);
             encoder->endEncoding();
         }
+    }
+
+    void MetalCommandList::beginQuery(const RenderQueryPool *queryPool,
+                                      uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const MetalQueryPool *interfaceQueryPool =
+            static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+
+        if (visibilityQueryPool != interfaceQueryPool) {
+            endActiveRenderEncoder();
+            visibilityQueryPool = interfaceQueryPool;
+        }
+
+        checkActiveRenderEncoder();
+        activeRenderEncoder->setVisibilityResultMode(
+            MTL::VisibilityResultModeCounting,
+            queryIndex * sizeof(uint64_t));
+    }
+
+    void MetalCommandList::endQuery(const RenderQueryPool *queryPool,
+                                    uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const MetalQueryPool *interfaceQueryPool =
+            static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool == visibilityQueryPool);
+        checkActiveRenderEncoder();
+        activeRenderEncoder->setVisibilityResultMode(
+            MTL::VisibilityResultModeDisabled, 0);
     }
 
     void MetalCommandList::endOtherEncoders(EncoderType type) {
@@ -3467,6 +3543,14 @@ namespace plume {
 
             if (targetFramebuffer->samplePositionsEnabled) {
                 renderDescriptor->setSamplePositions(targetFramebuffer->samplePositions, targetFramebuffer->sampleCount);
+            }
+
+            if (visibilityQueryPool != nullptr) {
+                const MetalBuffer *visibilityBuffer =
+                    static_cast<const MetalBuffer *>(
+                        visibilityQueryPool->visibilityBuffer.get());
+                renderDescriptor->setVisibilityResultBuffer(
+                    visibilityBuffer->mtl);
             }
 
             activeRenderEncoder = mtl->renderCommandEncoder(renderDescriptor);
@@ -4051,8 +4135,9 @@ namespace plume {
         return std::make_unique<MetalFramebuffer>(this, desc);
     }
 
-    std::unique_ptr<RenderQueryPool> MetalDevice::createQueryPool(uint32_t queryCount) {
-        return std::make_unique<MetalQueryPool>(this, queryCount);
+    std::unique_ptr<RenderQueryPool> MetalDevice::createQueryPool(
+        uint32_t queryCount, RenderQueryType type) {
+        return std::make_unique<MetalQueryPool>(this, queryCount, type);
     }
 
     void MetalDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
