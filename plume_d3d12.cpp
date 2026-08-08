@@ -476,7 +476,9 @@ namespace plume {
         case RenderHeapType::READBACK:
             return D3D12_HEAP_TYPE_READBACK;
         case RenderHeapType::GPU_UPLOAD:
-            return D3D12_HEAP_TYPE_GPU_UPLOAD;
+            // D3D12MA uses the same numeric fallback when building against an
+            // SDK that predates the public GPU_UPLOAD enum declaration.
+            return static_cast<D3D12_HEAP_TYPE>(5);
         default:
             assert(false && "Unknown heap type.");
             return D3D12_HEAP_TYPE_DEFAULT;
