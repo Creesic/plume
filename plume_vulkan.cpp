@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <cstdlib>
 #include <unordered_map>
 
 #if DLSS_ENABLED
@@ -3773,7 +3774,7 @@ namespace plume {
 
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
-            return;
+            std::abort();
         }
     }
     
@@ -3784,10 +3785,34 @@ namespace plume {
         VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk, VK_TRUE, UINT64_MAX);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
-            return;
+            std::abort();
         }
 
-        vkResetFences(device->vk, 1, &interfaceFence->vk);
+        res = vkResetFences(device->vk, 1, &interfaceFence->vk);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", res);
+            std::abort();
+        }
+    }
+
+    bool VulkanCommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        assert(fence != nullptr);
+
+        VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
+        const VkResult status = vkGetFenceStatus(device->vk, interfaceFence->vk);
+        if (status == VK_NOT_READY)
+            return false;
+        if (status != VK_SUCCESS) {
+            fprintf(stderr, "vkGetFenceStatus failed with error code 0x%X.\n", status);
+            std::abort();
+        }
+        const VkResult reset = vkResetFences(
+            device->vk, 1, &interfaceFence->vk);
+        if (reset != VK_SUCCESS) {
+            fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", reset);
+            std::abort();
+        }
+        return true;
     }
 
     // VulkanPool

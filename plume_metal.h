@@ -530,6 +530,7 @@ namespace plume {
 
     struct MetalCommandFence : RenderCommandFence {
         dispatch_semaphore_t semaphore;
+        std::atomic<bool> failed = false;
 
         MetalCommandFence(MetalDevice *device);
         ~MetalCommandFence() override;
@@ -553,6 +554,7 @@ namespace plume {
         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
+        bool pollCommandFence(RenderCommandFence *fence) override;
     };
 
     struct MetalBuffer : RenderBuffer {

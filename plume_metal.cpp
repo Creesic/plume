@@ -15,6 +15,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <mutex>
 
 #include "plume_metal.h"
@@ -3882,8 +3883,16 @@ namespace plume {
         interfaceCommandList->mtl->enqueue();
 
         if (signalFence != nullptr) {
+            MetalCommandFence *metalFence =
+                static_cast<MetalCommandFence *>(signalFence);
+            metalFence->failed.store(false, std::memory_order_release);
             interfaceCommandList->mtl->addCompletedHandler([signalFence](MTL::CommandBuffer* cmdBuffer) {
-                dispatch_semaphore_signal(static_cast<MetalCommandFence *>(signalFence)->semaphore);
+                MetalCommandFence *metalFence =
+                    static_cast<MetalCommandFence *>(signalFence);
+                metalFence->failed.store(
+                    cmdBuffer->status() == MTL::CommandBufferStatusError,
+                    std::memory_order_release);
+                dispatch_semaphore_signal(metalFence->semaphore);
             });
         }
 
@@ -3900,6 +3909,23 @@ namespace plume {
         MetalAutoreleasePool releasePool;
         const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);
         dispatch_semaphore_wait(metalFence->semaphore, DISPATCH_TIME_FOREVER);
+        if (metalFence->failed.load(std::memory_order_acquire)) {
+            fprintf(stderr, "Metal command buffer completed with an error.\n");
+            std::abort();
+        }
+    }
+
+    bool MetalCommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        MetalAutoreleasePool releasePool;
+        const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);
+        if (dispatch_semaphore_wait(
+                metalFence->semaphore, DISPATCH_TIME_NOW) != 0)
+            return false;
+        if (metalFence->failed.load(std::memory_order_acquire)) {
+            fprintf(stderr, "Metal command buffer completed with an error.\n");
+            std::abort();
+        }
+        return true;
     }
 
     // MetalPipelineLayout

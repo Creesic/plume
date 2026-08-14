@@ -2754,7 +2754,13 @@ namespace plume {
 
         for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
             D3D12CommandSemaphore *interfaceSemaphore = static_cast<D3D12CommandSemaphore *>(waitSemaphores[i]);
-            d3d->Wait(interfaceSemaphore->d3d, interfaceSemaphore->semaphoreValue);
+            const HRESULT waitResult = d3d->Wait(
+                interfaceSemaphore->d3d,
+                interfaceSemaphore->semaphoreValue);
+            if (FAILED(waitResult)) {
+                fprintf(stderr, "ID3D12CommandQueue::Wait failed with error code 0x%lX.\n", waitResult);
+                std::abort();
+            }
         }
 
         thread_local std::vector<ID3D12CommandList *> executionVector;
@@ -2771,13 +2777,28 @@ namespace plume {
         for (uint32_t i = 0; i < signalSemaphoreCount; i++) {
             D3D12CommandSemaphore *interfaceSemaphore = static_cast<D3D12CommandSemaphore *>(signalSemaphores[i]);
             interfaceSemaphore->semaphoreValue++;
-            d3d->Signal(interfaceSemaphore->d3d, interfaceSemaphore->semaphoreValue);
+            const HRESULT signalResult = d3d->Signal(
+                interfaceSemaphore->d3d,
+                interfaceSemaphore->semaphoreValue);
+            if (FAILED(signalResult)) {
+                fprintf(stderr, "ID3D12CommandQueue::Signal(semaphore) failed with error code 0x%lX.\n", signalResult);
+                std::abort();
+            }
         }
         
         if (signalFence != nullptr) {
             D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(signalFence);
-            d3d->Signal(interfaceFence->d3d, interfaceFence->fenceValue);
-            interfaceFence->d3d->SetEventOnCompletion(interfaceFence->fenceValue, interfaceFence->fenceEvent);
+            const HRESULT signalResult = d3d->Signal(
+                interfaceFence->d3d, interfaceFence->fenceValue);
+            const HRESULT eventResult = SUCCEEDED(signalResult)
+                ? interfaceFence->d3d->SetEventOnCompletion(
+                      interfaceFence->fenceValue,
+                      interfaceFence->fenceEvent)
+                : signalResult;
+            if (FAILED(signalResult) || FAILED(eventResult)) {
+                fprintf(stderr, "D3D12 fence submission failed with error code 0x%lX.\n", FAILED(signalResult) ? signalResult : eventResult);
+                std::abort();
+            }
             interfaceFence->fenceValue++;
         }
     }
@@ -2786,7 +2807,26 @@ namespace plume {
         assert(fence != nullptr);
 
         D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
-        WaitForSingleObjectEx(interfaceFence->fenceEvent, INFINITE, FALSE);
+        if (WaitForSingleObjectEx(
+                interfaceFence->fenceEvent, INFINITE, FALSE) !=
+            WAIT_OBJECT_0) {
+            fprintf(stderr, "D3D12 fence wait failed.\n");
+            std::abort();
+        }
+    }
+
+    bool D3D12CommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        assert(fence != nullptr);
+
+        D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
+        const DWORD result = WaitForSingleObjectEx(
+            interfaceFence->fenceEvent, 0, FALSE);
+        if (result == WAIT_OBJECT_0)
+            return true;
+        if (result == WAIT_TIMEOUT)
+            return false;
+        fprintf(stderr, "D3D12 fence poll failed.\n");
+        std::abort();
     }
 
     // D3D12Buffer
