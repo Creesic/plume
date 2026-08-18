@@ -1370,8 +1370,19 @@ namespace plume {
         }
 
         d3d = static_cast<IDXGISwapChain3 *>(swapChain1);
-        d3d->SetMaximumFrameLatency(desc.maxFrameLatency);
-        waitableObject = d3d->GetFrameLatencyWaitableObject();
+        /* Zero means no explicit latency limit in the cross-backend
+         * descriptor, but DXGI accepts only 1..40. Do not emit a validation
+         * error for the default non-present-wait swapchain. */
+        if (desc.maxFrameLatency > 0) {
+            res = d3d->SetMaximumFrameLatency(desc.maxFrameLatency);
+            if (FAILED(res)) {
+                fprintf(stderr,
+                        "SetMaximumFrameLatency failed with error code 0x%lX.\n",
+                        res);
+            }
+        }
+        waitableObject = desc.enablePresentWait
+            ? d3d->GetFrameLatencyWaitableObject() : NULL;
 
         textures.resize(desc.textureCount);
 
@@ -2311,8 +2322,20 @@ namespace plume {
 
     void D3D12CommandList::clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
         assert(targetFramebuffer != nullptr);
-        assert(targetFramebuffer->depthHandle.ptr != 0);
         assert((clearRectsCount == 0) || (clearRects != nullptr));
+
+        // A higher-level compatibility backend can receive an Xbox clear with
+        // no DSV bound. Treat it as an empty clear instead of taking down the
+        // process; callers should still filter this case before reaching RHI.
+        if (targetFramebuffer->depthHandle.ptr == 0) {
+            static bool loggedMissingDepthHandle = false;
+            if (!loggedMissingDepthHandle) {
+                fprintf(stderr, "D3D12 depth/stencil clear ignored because "
+                                "the framebuffer has no depth attachment.\n");
+                loggedMissingDepthHandle = true;
+            }
+            return;
+        }
 
         checkFramebufferSamplePositions();
 
