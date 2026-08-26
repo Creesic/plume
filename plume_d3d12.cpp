@@ -285,6 +285,10 @@ namespace plume {
             return D3D12_BLEND_BLEND_FACTOR;
         case RenderBlend::INV_BLEND_FACTOR:
             return D3D12_BLEND_INV_BLEND_FACTOR;
+        case RenderBlend::BLEND_FACTOR_ALPHA:
+            return D3D12_BLEND_ALPHA_FACTOR;
+        case RenderBlend::INV_BLEND_FACTOR_ALPHA:
+            return D3D12_BLEND_INV_ALPHA_FACTOR;
         case RenderBlend::SRC1_COLOR:
             return D3D12_BLEND_SRC1_COLOR;
         case RenderBlend::INV_SRC1_COLOR:
@@ -2300,6 +2304,10 @@ namespace plume {
 #   else
         assert(false && "Dynamic depth bias is unsupported without the Agility SDK.");
 #   endif
+    }
+
+    void D3D12CommandList::setBlendFactor(RenderColor blendFactor) {
+        d3d->OMSetBlendFactor(blendFactor.rgba);
     }
 
     void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {

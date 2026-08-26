@@ -258,6 +258,8 @@ namespace plume {
         SRC_ALPHA_SAT,
         BLEND_FACTOR,
         INV_BLEND_FACTOR,
+        BLEND_FACTOR_ALPHA,
+        INV_BLEND_FACTOR_ALPHA,
         SRC1_COLOR,
         INV_SRC1_COLOR,
         SRC1_ALPHA,

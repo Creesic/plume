@@ -698,6 +698,10 @@ namespace plume {
                 return MTL::BlendFactorBlendColor;
             case RenderBlend::INV_BLEND_FACTOR:
                 return MTL::BlendFactorOneMinusBlendColor;
+            case RenderBlend::BLEND_FACTOR_ALPHA:
+                return MTL::BlendFactorBlendAlpha;
+            case RenderBlend::INV_BLEND_FACTOR_ALPHA:
+                return MTL::BlendFactorOneMinusBlendAlpha;
             case RenderBlend::SRC1_COLOR:
                 return MTL::BlendFactorSource1Color;
             case RenderBlend::INV_SRC1_COLOR:
@@ -2798,6 +2802,11 @@ namespace plume {
         dirtyGraphicsState.depthBias = 1;
     }
 
+    void MetalCommandList::setBlendFactor(RenderColor blendFactor) {
+        this->blendFactor = blendFactor;
+        dirtyGraphicsState.blendFactor = 1;
+    }
+
     void MetalCommandList::setCommonClearState() const {
         activeRenderEncoder->setViewport({ 0, 0, static_cast<float>(targetFramebuffer->width), static_cast<float>(targetFramebuffer->height), 0.0f, 1.0f });
         activeRenderEncoder->setScissorRect(clampScissorRectIfNecessary({ 0, 0, static_cast<int32_t>(targetFramebuffer->width), static_cast<int32_t>(targetFramebuffer->height) }, targetFramebuffer));
@@ -3627,6 +3636,12 @@ namespace plume {
                 stateCache.lastDepthBiasClamp = newClamp;
             }
             dirtyGraphicsState.depthBias = 0;
+        }
+
+        if (dirtyGraphicsState.blendFactor) {
+            activeRenderEncoder->setBlendColor(
+                blendFactor.r, blendFactor.g, blendFactor.b, blendFactor.a);
+            dirtyGraphicsState.blendFactor = 0;
         }
 
         // Viewports
