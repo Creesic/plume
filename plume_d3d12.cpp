@@ -3010,7 +3010,12 @@ namespace plume {
 
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, (desc.optimizedClearValue != nullptr) ? &optimizedClearValue : nullptr, &allocation, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
-            fprintf(stderr, "CreateResource failed with error code 0x%lX.\n", res);
+            fprintf(stderr,
+                    "CreateResource %ux%ux%u format %u flags 0x%X failed "
+                    "with error code 0x%lX.\n",
+                    desc.width, desc.height, desc.depth,
+                    static_cast<unsigned>(desc.format),
+                    static_cast<unsigned>(desc.flags), res);
             return;
         }
     }
@@ -3089,7 +3094,8 @@ namespace plume {
     }
 
     std::unique_ptr<RenderTexture> D3D12Pool::createTexture(const RenderTextureDesc &desc) {
-        return std::make_unique<D3D12Texture>(device, this, desc);
+        auto texture = std::make_unique<D3D12Texture>(device, this, desc);
+        return texture->d3d ? std::move(texture) : nullptr;
     }
 
     // D3D12Shader
@@ -4095,7 +4101,8 @@ namespace plume {
     }
 
     std::unique_ptr<RenderTexture> D3D12Device::createTexture(const RenderTextureDesc &desc) {
-        return std::make_unique<D3D12Texture>(this, nullptr, desc);
+        auto texture = std::make_unique<D3D12Texture>(this, nullptr, desc);
+        return texture->d3d ? std::move(texture) : nullptr;
     }
 
     std::unique_ptr<RenderAccelerationStructure> D3D12Device::createAccelerationStructure(const RenderAccelerationStructureDesc &desc) {
