@@ -1,12 +1,16 @@
 [submodule "contrib/volk"]
 	path = contrib/volk
-	url = https://github.com/zeux/volk
+	url = https://github.com/Creesic/volk.git
+	branch = PGR4
 [submodule "contrib/VulkanMemoryAllocator"]
 	path = contrib/VulkanMemoryAllocator
-	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+	url = https://github.com/Creesic/VulkanMemoryAllocator.git
+	branch = PGR4
 [submodule "contrib/Vulkan-Headers"]
 	path = contrib/Vulkan-Headers
-	url = https://github.com/KhronosGroup/Vulkan-Headers
+	url = https://github.com/Creesic/Vulkan-Headers.git
+	branch = PGR4
 [submodule "contrib/D3D12MemoryAllocator"]
 	path = contrib/D3D12MemoryAllocator
-	url = https://github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator
+	url = https://github.com/Creesic/D3D12MemoryAllocator.git
+	branch = PGR4
