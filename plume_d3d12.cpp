@@ -49,6 +49,30 @@ namespace plume {
     static const uint32_t SamplerDescriptorHeapSize = 1024;
     static const uint32_t TargetDescriptorHeapSize = 16384;
 
+    template <typename T, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type>
+    struct alignas(void *) PipelineStateStreamSubobject {
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
+        T value = {};
+    };
+
+    struct GraphicsPipelineStateStream {
+        PipelineStateStreamSubobject<ID3D12RootSignature *, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE> rootSignature;
+        PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS> vertexShader;
+        PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS> geometryShader;
+        PipelineStateStreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS> pixelShader;
+        PipelineStateStreamSubobject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> blend;
+        PipelineStateStreamSubobject<UINT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK> sampleMask;
+        PipelineStateStreamSubobject<D3D12_RASTERIZER_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER> rasterizer;
+        PipelineStateStreamSubobject<D3D12_DEPTH_STENCIL_DESC2, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2> depthStencil;
+        PipelineStateStreamSubobject<D3D12_INPUT_LAYOUT_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT> inputLayout;
+        PipelineStateStreamSubobject<D3D12_INDEX_BUFFER_STRIP_CUT_VALUE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE> indexBufferStripCutValue;
+        PipelineStateStreamSubobject<D3D12_PRIMITIVE_TOPOLOGY_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY> primitiveTopologyType;
+        PipelineStateStreamSubobject<D3D12_RT_FORMAT_ARRAY, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS> renderTargetFormats;
+        PipelineStateStreamSubobject<DXGI_FORMAT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT> depthStencilFormat;
+        PipelineStateStreamSubobject<DXGI_SAMPLE_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC> sampleDesc;
+        PipelineStateStreamSubobject<D3D12_PIPELINE_STATE_FLAGS, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS> flags;
+    };
+
     // Common functions.
 
     static std::wstring Utf8ToUtf16(const std::string_view& value) {
@@ -1906,6 +1930,7 @@ namespace plume {
         // Attempt to query the interfaces available for this command list.
         d3d->QueryInterface(IID_PPV_ARGS(&d3dV1));
         d3d->QueryInterface(IID_PPV_ARGS(&d3dV4));
+        d3d->QueryInterface(IID_PPV_ARGS(&d3dV8));
 
 #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         d3d->QueryInterface(IID_PPV_ARGS(&d3dV9));
@@ -1915,6 +1940,10 @@ namespace plume {
     }
 
     D3D12CommandList::~D3D12CommandList() {
+        if (d3dV8 != nullptr) {
+            d3dV8->Release();
+        }
+
         if (d3d != nullptr) {
             d3d->Release();
         }
@@ -1939,7 +1968,9 @@ namespace plume {
         activeGraphicsPipelineLayout = nullptr;
         activeGraphicsPipeline = nullptr;
         activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-        activeStencilRef = 0;
+        activeFrontStencilRef = 0;
+        activeBackStencilRef = 0;
+        activeIndependentStencilRefs = false;
         descriptorHeapsSet = false;
         activeSamplePositions = false;
     }
@@ -1958,7 +1989,9 @@ namespace plume {
         activeGraphicsPipelineLayout = nullptr;
         activeGraphicsPipeline = nullptr;
         activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-        activeStencilRef = 0;
+        activeFrontStencilRef = 0;
+        activeBackStencilRef = 0;
+        activeIndependentStencilRefs = false;
         descriptorHeapsSet = false;
     }
     
@@ -2560,9 +2593,20 @@ namespace plume {
         assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
 
         const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
-        if (activeStencilRef != graphicsPipeline->stencilRef) {
-            d3d->OMSetStencilRef(graphicsPipeline->stencilRef);
-            activeStencilRef = graphicsPipeline->stencilRef;
+        const bool independent = graphicsPipeline->independentStencilRefs && d3dV8 != nullptr;
+        const uint32_t frontRef = graphicsPipeline->frontStencilRef;
+        const uint32_t backRef = independent ? graphicsPipeline->backStencilRef : frontRef;
+        if (activeFrontStencilRef != frontRef || activeBackStencilRef != backRef || activeIndependentStencilRefs != independent) {
+            if (independent) {
+                d3dV8->OMSetFrontAndBackStencilRef(frontRef, backRef);
+            }
+            else {
+                d3d->OMSetStencilRef(frontRef);
+            }
+
+            activeFrontStencilRef = frontRef;
+            activeBackStencilRef = backRef;
+            activeIndependentStencilRefs = independent;
         }
     }
     
@@ -3229,6 +3273,9 @@ namespace plume {
         assert(desc.pipelineLayout != nullptr);
 
         topology = toD3D12(desc.primitiveTopology);
+        frontStencilRef = desc.stencilEnabled ? desc.stencilReference : 0;
+        independentStencilRefs = desc.stencilEnabled && desc.independentStencilMasksAndReference && device->independentFrontAndBackStencilRefMaskSupported;
+        backStencilRef = independentStencilRefs ? desc.stencilBackReference : frontStencilRef;
 
         const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
@@ -3350,7 +3397,50 @@ namespace plume {
 
         psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
 
-        const HRESULT res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+        HRESULT res;
+        if (independentStencilRefs) {
+            GraphicsPipelineStateStream stream = {};
+            stream.rootSignature.value = psoDesc.pRootSignature;
+            stream.vertexShader.value = psoDesc.VS;
+            stream.geometryShader.value = psoDesc.GS;
+            stream.pixelShader.value = psoDesc.PS;
+            stream.blend.value = psoDesc.BlendState;
+            stream.sampleMask.value = psoDesc.SampleMask;
+            stream.rasterizer.value = psoDesc.RasterizerState;
+            stream.inputLayout.value = psoDesc.InputLayout;
+            stream.indexBufferStripCutValue.value = psoDesc.IBStripCutValue;
+            stream.primitiveTopologyType.value = psoDesc.PrimitiveTopologyType;
+            stream.renderTargetFormats.value.NumRenderTargets = psoDesc.NumRenderTargets;
+            std::copy(std::begin(psoDesc.RTVFormats), std::end(psoDesc.RTVFormats), std::begin(stream.renderTargetFormats.value.RTFormats));
+            stream.depthStencilFormat.value = psoDesc.DSVFormat;
+            stream.sampleDesc.value = psoDesc.SampleDesc;
+            stream.flags.value = psoDesc.Flags;
+
+            D3D12_DEPTH_STENCIL_DESC2 &depthStencil = stream.depthStencil.value;
+            depthStencil.DepthEnable = psoDesc.DepthStencilState.DepthEnable;
+            depthStencil.DepthWriteMask = psoDesc.DepthStencilState.DepthWriteMask;
+            depthStencil.DepthFunc = psoDesc.DepthStencilState.DepthFunc;
+            depthStencil.StencilEnable = psoDesc.DepthStencilState.StencilEnable;
+            depthStencil.FrontFace.StencilFailOp = psoDesc.DepthStencilState.FrontFace.StencilFailOp;
+            depthStencil.FrontFace.StencilDepthFailOp = psoDesc.DepthStencilState.FrontFace.StencilDepthFailOp;
+            depthStencil.FrontFace.StencilPassOp = psoDesc.DepthStencilState.FrontFace.StencilPassOp;
+            depthStencil.FrontFace.StencilFunc = psoDesc.DepthStencilState.FrontFace.StencilFunc;
+            depthStencil.FrontFace.StencilReadMask = uint8_t(desc.stencilReadMask);
+            depthStencil.FrontFace.StencilWriteMask = uint8_t(desc.stencilWriteMask);
+            depthStencil.BackFace.StencilFailOp = psoDesc.DepthStencilState.BackFace.StencilFailOp;
+            depthStencil.BackFace.StencilDepthFailOp = psoDesc.DepthStencilState.BackFace.StencilDepthFailOp;
+            depthStencil.BackFace.StencilPassOp = psoDesc.DepthStencilState.BackFace.StencilPassOp;
+            depthStencil.BackFace.StencilFunc = psoDesc.DepthStencilState.BackFace.StencilFunc;
+            depthStencil.BackFace.StencilReadMask = uint8_t(desc.stencilBackReadMask);
+            depthStencil.BackFace.StencilWriteMask = uint8_t(desc.stencilBackWriteMask);
+
+            const D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = { sizeof(stream), &stream };
+            res = device->d3d->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&d3d));
+        }
+        else {
+            res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+        }
+
         if (FAILED(res)) {
             fprintf(stderr, "CreateGraphicsPipelineState failed with error code 0x%lX.\n", res);
             if (res == DXGI_ERROR_DEVICE_REMOVED) {
@@ -3868,6 +3958,13 @@ namespace plume {
             bool triangleFanSupportOption = false;
             bool dynamicDepthBiasOption = false;
             bool gpuUploadHeapOption = false;
+            bool independentFrontAndBackStencilRefMaskOption = false;
+
+            D3D12_FEATURE_DATA_D3D12_OPTIONS14 d3d12Options14 = {};
+            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS14, &d3d12Options14, sizeof(d3d12Options14));
+            if (SUCCEEDED(res)) {
+                independentFrontAndBackStencilRefMaskOption = d3d12Options14.IndependentFrontAndBackStencilRefMaskSupported;
+            }
 
 #       ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
             // Check if triangle fan is supported.
@@ -3921,6 +4018,7 @@ namespace plume {
                 capabilities.triangleFan = triangleFanSupportOption;
                 capabilities.dynamicDepthBias = dynamicDepthBiasOption;
                 capabilities.uma = uma;
+                independentFrontAndBackStencilRefMaskSupported = independentFrontAndBackStencilRefMaskOption;
 
                 // Pretend GPU Upload heaps are supported if UMA is supported, as
                 // the backend has a workaround using a custom pool for it.

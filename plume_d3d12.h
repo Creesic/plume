@@ -169,6 +169,7 @@ namespace plume {
         ID3D12GraphicsCommandList *d3d = nullptr;
         ID3D12GraphicsCommandList1 *d3dV1 = nullptr;
         ID3D12GraphicsCommandList4 *d3dV4 = nullptr;
+        ID3D12GraphicsCommandList8 *d3dV8 = nullptr;
 #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
         ID3D12GraphicsCommandList9 *d3dV9 = nullptr;
 #   endif
@@ -182,7 +183,9 @@ namespace plume {
         const D3D12GraphicsPipeline *activeGraphicsPipeline = nullptr;
         bool descriptorHeapsSet = false;
         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-        uint32_t activeStencilRef = 0;
+        uint32_t activeFrontStencilRef = 0;
+        uint32_t activeBackStencilRef = 0;
+        bool activeIndependentStencilRefs = false;
         bool activeSamplePositions = false;
 
         D3D12CommandList(D3D12CommandQueue *queue);
@@ -396,7 +399,9 @@ namespace plume {
         ID3D12PipelineState *d3d = nullptr;
         std::vector<RenderInputSlot> inputSlots;
         D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
-        uint32_t stencilRef = 0;
+        uint32_t frontStencilRef = 0;
+        uint32_t backStencilRef = 0;
+        bool independentStencilRefs = false;
 
         D3D12GraphicsPipeline(D3D12Device *device, const RenderGraphicsPipelineDesc &desc);
         ~D3D12GraphicsPipeline() override;
@@ -437,6 +442,7 @@ namespace plume {
         IDXGIAdapter1 *adapter = nullptr;
         D3D12MA::Allocator *allocator = nullptr;
         D3D_SHADER_MODEL shaderModel = D3D_SHADER_MODEL(0);
+        bool independentFrontAndBackStencilRefMaskSupported = false;
         std::unique_ptr<RenderPipelineLayout> rtDummyGlobalPipelineLayout;
         std::unique_ptr<RenderPipelineLayout> rtDummyLocalPipelineLayout;
         std::unique_ptr<D3D12DescriptorHeapAllocator> viewHeapAllocator;

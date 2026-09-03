@@ -1591,8 +1591,8 @@ namespace plume {
                 backFaceStencilDescriptor->setDepthFailureOperation(mapStencilOperation(desc.stencilBackFace.depthFailOp));
                 backFaceStencilDescriptor->setDepthStencilPassOperation(mapStencilOperation(desc.stencilBackFace.passOp));
                 backFaceStencilDescriptor->setStencilCompareFunction(mapCompareFunction(desc.stencilBackFace.compareFunction));
-                backFaceStencilDescriptor->setReadMask(desc.stencilReadMask);
-                backFaceStencilDescriptor->setWriteMask(desc.stencilWriteMask);
+                backFaceStencilDescriptor->setReadMask(desc.independentStencilMasksAndReference ? desc.stencilBackReadMask : desc.stencilReadMask);
+                backFaceStencilDescriptor->setWriteMask(desc.independentStencilMasksAndReference ? desc.stencilBackWriteMask : desc.stencilWriteMask);
 
                 depthStencilDescriptor->setFrontFaceStencil(frontFaceStencilDescriptor);
                 depthStencilDescriptor->setBackFaceStencil(backFaceStencilDescriptor);
@@ -1606,7 +1606,8 @@ namespace plume {
         state.winding = mapFrontFace(desc.frontFace);
         state.renderPipelineState = device->mtl->newRenderPipelineState(descriptor, &error);
         state.primitiveType = mapPrimitiveType(desc.primitiveTopology);
-        state.stencilReference = desc.stencilEnabled ? desc.stencilReference : 0;
+        state.stencilFrontReference = desc.stencilEnabled ? desc.stencilReference : 0;
+        state.stencilBackReference = desc.stencilEnabled && desc.independentStencilMasksAndReference ? desc.stencilBackReference : state.stencilFrontReference;
 
         if (desc.dynamicDepthBiasEnabled) {
             state.dynamicDepthBiasEnabled = true;
@@ -3409,9 +3410,11 @@ namespace plume {
                     activeRenderEncoder->setDepthStencilState(activeRenderState->depthStencilState);
                     stateCache.lastDepthStencilState = activeRenderState->depthStencilState;
                 }
-                if (activeRenderState->stencilReference != stateCache.lastStencilReference) {
-                    activeRenderEncoder->setStencilReferenceValue(activeRenderState->stencilReference);
-                    stateCache.lastStencilReference = activeRenderState->stencilReference;
+                if (activeRenderState->stencilFrontReference != stateCache.lastStencilFrontReference ||
+                    activeRenderState->stencilBackReference != stateCache.lastStencilBackReference) {
+                    activeRenderEncoder->setStencilReferenceValues(activeRenderState->stencilFrontReference, activeRenderState->stencilBackReference);
+                    stateCache.lastStencilFrontReference = activeRenderState->stencilFrontReference;
+                    stateCache.lastStencilBackReference = activeRenderState->stencilBackReference;
                 }
             }
             dirtyGraphicsState.depthStencil = 0;

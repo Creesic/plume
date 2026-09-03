@@ -1604,9 +1604,9 @@ namespace plume {
         depthStencil.back.failOp = toVk(desc.stencilBackFace.failOp);
         depthStencil.back.depthFailOp = toVk(desc.stencilBackFace.depthFailOp);
         depthStencil.back.compareOp = toVk(desc.stencilBackFace.compareFunction);
-        depthStencil.back.compareMask = desc.stencilReadMask;
-        depthStencil.back.writeMask = desc.stencilWriteMask;
-        depthStencil.back.reference = desc.stencilReference;
+        depthStencil.back.compareMask = desc.independentStencilMasksAndReference ? desc.stencilBackReadMask : desc.stencilReadMask;
+        depthStencil.back.writeMask = desc.independentStencilMasksAndReference ? desc.stencilBackWriteMask : desc.stencilWriteMask;
+        depthStencil.back.reference = desc.independentStencilMasksAndReference ? desc.stencilBackReference : desc.stencilReference;
 
         thread_local std::vector<VkDynamicState> dynamicStates;
         dynamicStates.clear();
