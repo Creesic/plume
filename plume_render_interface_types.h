@@ -1283,9 +1283,13 @@ namespace plume {
         bool depthEnabled = false;
         bool depthWriteEnabled = false;
         bool stencilEnabled = false;
+        bool independentStencilMasksAndReference = false;
         uint32_t stencilReadMask = 0xFFFFFFFF;
         uint32_t stencilWriteMask = 0xFFFFFFFF;
         uint32_t stencilReference = 0;
+        uint32_t stencilBackReadMask = 0xFFFFFFFF;
+        uint32_t stencilBackWriteMask = 0xFFFFFFFF;
+        uint32_t stencilBackReference = 0;
         RenderStencilFaceDesc stencilFrontFace;
         RenderStencilFaceDesc stencilBackFace;
         RenderMultisampling multisampling;
