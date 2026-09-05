@@ -149,6 +149,8 @@ namespace plume {
             return DXGI_FORMAT_R8G8B8A8_SINT;
         case RenderFormat::B8G8R8A8_UNORM:
             return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case RenderFormat::R10G10B10A2_UNORM:
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
         case RenderFormat::R16G16_TYPELESS:
             return DXGI_FORMAT_R16G16_TYPELESS;
         case RenderFormat::R16G16_FLOAT:
@@ -2466,14 +2468,14 @@ namespace plume {
         resetSamplePositions();
     }
 
-    void D3D12CommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
+    void D3D12CommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture, uint32_t dstMip, uint32_t dstSlice) {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
         const D3D12Texture *interfaceDstTexture = static_cast<const D3D12Texture *>(dstTexture);
         const D3D12Texture *interfaceSrcTexture = static_cast<const D3D12Texture *>(srcTexture);
         setSamplePositions(interfaceDstTexture);
-        d3d->ResolveSubresource(interfaceDstTexture->d3d, 0, interfaceSrcTexture->d3d, 0, toDXGI(interfaceDstTexture->desc.format));
+        d3d->ResolveSubresource(interfaceDstTexture->d3d, dstMip + dstSlice * interfaceDstTexture->desc.mipLevels, interfaceSrcTexture->d3d, 0, toDXGI(interfaceDstTexture->desc.format));
         resetSamplePositions();
     }
 

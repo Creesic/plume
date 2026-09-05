@@ -208,6 +208,8 @@ namespace plume {
                     return RenderFormat::R8G8B8A8_SINT;
                 case MTL::PixelFormatBGRA8Unorm:
                     return RenderFormat::B8G8R8A8_UNORM;
+                case MTL::PixelFormatRGB10A2Unorm:
+                    return RenderFormat::R10G10B10A2_UNORM;
                 case MTL::PixelFormatRG16Float:
                     return RenderFormat::R16G16_FLOAT;
                 case MTL::PixelFormatRG16Unorm:
@@ -343,6 +345,8 @@ namespace plume {
                 return MTL::PixelFormatRGBA8Sint;
             case RenderFormat::B8G8R8A8_UNORM:
                 return MTL::PixelFormatBGRA8Unorm;
+            case RenderFormat::R10G10B10A2_UNORM:
+                return MTL::PixelFormatRGB10A2Unorm;
             case RenderFormat::R16G16_TYPELESS:
                 return MTL::PixelFormatRG16Float;
             case RenderFormat::R16G16_FLOAT:
@@ -486,6 +490,8 @@ namespace plume {
                 return MTL::VertexFormatUChar4Normalized;
             case RenderFormat::B8G8R8A8_UNORM:
                 return MTL::VertexFormatUChar4Normalized_BGRA;
+            case RenderFormat::R10G10B10A2_UNORM:
+                return MTL::VertexFormatUInt1010102Normalized;
             case RenderFormat::R8G8B8A8_UINT:
                 return MTL::VertexFormatUChar4;
             case RenderFormat::R8G8B8A8_SNORM:
@@ -3086,7 +3092,7 @@ namespace plume {
         activeBlitEncoder->copyFromTexture(src->mtl, dst->mtl);
     }
 
-    void MetalCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
+    void MetalCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture, uint32_t dstMip, uint32_t dstSlice) {
         assert(dstTexture != nullptr);
         assert(srcTexture != nullptr);
 
@@ -3105,6 +3111,8 @@ namespace plume {
 
         colorAttachment->setTexture(src->mtl);
         colorAttachment->setResolveTexture(dst->mtl);
+        colorAttachment->setResolveLevel(dstMip);
+        colorAttachment->setResolveSlice(dstSlice);
         colorAttachment->setLoadAction(MTL::LoadActionLoad);
         colorAttachment->setStoreAction(MTL::StoreActionMultisampleResolve);
 

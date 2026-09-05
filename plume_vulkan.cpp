@@ -149,6 +149,8 @@ namespace plume {
             return VK_FORMAT_R8G8B8A8_SINT;
         case RenderFormat::B8G8R8A8_UNORM:
             return VK_FORMAT_B8G8R8A8_UNORM;
+        case RenderFormat::R10G10B10A2_UNORM:
+            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
         case RenderFormat::R16G16_TYPELESS:
             return VK_FORMAT_R16G16_SFLOAT;
         case RenderFormat::R16G16_FLOAT:
@@ -3315,8 +3317,15 @@ namespace plume {
         vkCmdCopyImage(vk, src->vk, srcLayout, dst->vk, dstLayout, uint32_t(imageCopies.size()), imageCopies.data());
     }
 
-    void VulkanCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
-        resolveTextureRegion(dstTexture, 0, 0, srcTexture, nullptr, RenderResolveMode::AVERAGE);
+    void VulkanCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture, uint32_t dstMip, uint32_t dstSlice) {
+        const VulkanTexture *dst = static_cast<const VulkanTexture *>(dstTexture);
+        const VulkanTexture *src = static_cast<const VulkanTexture *>(srcTexture);
+        VkImageResolve region = {};
+        region.srcSubresource = { toAspectFlags(src->desc.format, src->desc.flags), 0, 0, 1 };
+        region.dstSubresource = { toAspectFlags(dst->desc.format, dst->desc.flags), dstMip, dstSlice, 1 };
+        region.extent = { uint32_t(src->desc.width), src->desc.height, 1 };
+        vkCmdResolveImage(vk, src->vk, toImageLayout(src->textureLayout),
+            dst->vk, toImageLayout(dst->textureLayout), 1, &region);
     }
 
     void VulkanCommandList::resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
