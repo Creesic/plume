@@ -3014,7 +3014,8 @@ namespace plume {
             srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
-            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
+            assert(dstLocation.subresource.aspect != RenderTextureCopyAspect::ALL ||
+                dstTexture->desc.format == srcLocation.placedFootprint.format);
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3042,14 +3043,17 @@ namespace plume {
                 dstTexture->mtl,
                 copy.arrayIndex,
                 copy.mipLevel,
-                dstOrigin
+                dstOrigin,
+                dstLocation.subresource.aspect == RenderTextureCopyAspect::DEPTH && RenderFormatIsStencil(dstTexture->desc.format) ? MTL::BlitOptionDepthFromDepthStencil :
+                    dstLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? MTL::BlitOptionStencilFromDepthStencil : MTL::BlitOptionNone
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT &&
                    srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstBuffer != nullptr);
             assert(srcTexture != nullptr);
-            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert(srcLocation.subresource.aspect != RenderTextureCopyAspect::ALL ||
+                srcTexture->desc.format == dstLocation.placedFootprint.format);
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3086,7 +3090,9 @@ namespace plume {
                 dstBuffer->mtl,
                 copy.offset,
                 copy.rowPitch,
-                copy.bytesPerImage
+                copy.bytesPerImage,
+                srcLocation.subresource.aspect == RenderTextureCopyAspect::DEPTH && RenderFormatIsStencil(srcTexture->desc.format) ? MTL::BlitOptionDepthFromDepthStencil :
+                    srcLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? MTL::BlitOptionStencilFromDepthStencil : MTL::BlitOptionNone
             );
             activeBlitEncoder->popDebugGroup();
         } else if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&

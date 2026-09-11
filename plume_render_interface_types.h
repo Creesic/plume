@@ -1088,6 +1088,10 @@ namespace plume {
         PLACED_FOOTPRINT
     };
 
+    // Explicit aspects are for buffer/depth-stencil copies. ALL retains the
+    // existing whole-resource behavior for color and texture-to-texture copies.
+    enum class RenderTextureCopyAspect { ALL, DEPTH, STENCIL };
+
     struct RenderTextureCopyLocation {
         const RenderTexture *texture = nullptr;
         const RenderBuffer *buffer = nullptr;
@@ -1106,6 +1110,7 @@ namespace plume {
             struct {
                 uint32_t mipLevel;
                 uint32_t arrayIndex;
+                RenderTextureCopyAspect aspect;
             } subresource;
         };
 
@@ -1122,12 +1127,13 @@ namespace plume {
             return loc;
         }
 
-        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0) {
+        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0, RenderTextureCopyAspect aspect = RenderTextureCopyAspect::ALL) {
             RenderTextureCopyLocation loc;
             loc.texture = texture;
             loc.type = RenderTextureCopyType::SUBRESOURCE;
             loc.subresource.mipLevel = mipLevel;
             loc.subresource.arrayIndex = arrayIndex;
+            loc.subresource.aspect = aspect;
             return loc;
         }
     };

@@ -3219,7 +3219,8 @@ namespace plume {
             (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
-            assert(dstTexture->desc.format == srcLocation.placedFootprint.format);
+            assert(dstLocation.subresource.aspect != RenderTextureCopyAspect::ALL ||
+                dstTexture->desc.format == srcLocation.placedFootprint.format);
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3237,7 +3238,8 @@ namespace plume {
             imageCopy.bufferOffset = copy.offset;
             imageCopy.bufferRowLength = copy.rowWidth;
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
-            imageCopy.imageSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
+            imageCopy.imageSubresource.aspectMask = dstLocation.subresource.aspect == RenderTextureCopyAspect::DEPTH ? VK_IMAGE_ASPECT_DEPTH_BIT :
+                dstLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? VK_IMAGE_ASPECT_STENCIL_BIT : toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
@@ -3253,7 +3255,8 @@ namespace plume {
                  (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
             assert(dstBuffer != nullptr);
             assert(srcTexture != nullptr);
-            assert(srcTexture->desc.format == dstLocation.placedFootprint.format);
+            assert(srcLocation.subresource.aspect != RenderTextureCopyAspect::ALL ||
+                srcTexture->desc.format == dstLocation.placedFootprint.format);
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3273,8 +3276,8 @@ namespace plume {
             imageCopy.bufferOffset = copy.offset;
             imageCopy.bufferRowLength = copy.rowWidth;
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
-            imageCopy.imageSubresource.aspectMask =
-                toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+            imageCopy.imageSubresource.aspectMask = srcLocation.subresource.aspect == RenderTextureCopyAspect::DEPTH ? VK_IMAGE_ASPECT_DEPTH_BIT :
+                srcLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? VK_IMAGE_ASPECT_STENCIL_BIT : toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
