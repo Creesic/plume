@@ -65,7 +65,7 @@ namespace plume {
         SizeFreeBlockMap sizeFreeBlockMap;
         std::mutex allocationMutex;
 
-        D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType);
+        D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible = true);
         ~D3D12DescriptorHeapAllocator();
         void addFreeBlock(uint32_t offset, uint32_t size);
         uint32_t allocate(uint32_t size);
@@ -312,6 +312,7 @@ namespace plume {
 
     struct D3D12TextureView : RenderTextureView {
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        D3D12Device *device = nullptr;
         const D3D12Texture *texture = nullptr;
         RenderTextureViewDesc desc;
         RenderTextureViewDimension dimension = RenderTextureViewDimension::UNKNOWN;
@@ -320,9 +321,15 @@ namespace plume {
         uint32_t arraySize = 0;
         uint32_t arrayIndex = 0;
         uint32_t shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        // Immutable CPU descriptor, copied into GPU tables. Owned by this view,
+        // so recycled resource/view addresses cannot return stale descriptors.
+        mutable std::once_flag srvOnce;
+        mutable uint32_t srvOffset = D3D12DescriptorHeapAllocator::INVALID_OFFSET;
 
         D3D12TextureView(const D3D12Texture *texture, const RenderTextureViewDesc &desc);
         ~D3D12TextureView() override;
+        D3D12_SHADER_RESOURCE_VIEW_DESC getSRVDesc() const;
+        D3D12_CPU_DESCRIPTOR_HANDLE getSRV() const;
     };
 
     struct D3D12AccelerationStructure :RenderAccelerationStructure {
@@ -440,6 +447,7 @@ namespace plume {
         std::unique_ptr<RenderPipelineLayout> rtDummyGlobalPipelineLayout;
         std::unique_ptr<RenderPipelineLayout> rtDummyLocalPipelineLayout;
         std::unique_ptr<D3D12DescriptorHeapAllocator> viewHeapAllocator;
+        std::unique_ptr<D3D12DescriptorHeapAllocator> cpuViewHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> samplerHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> colorTargetHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> depthTargetHeapAllocator;

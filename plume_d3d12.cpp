@@ -780,7 +780,7 @@ namespace plume {
 
     // D3D12DescriptorHeapAllocator
 
-    D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType) {
+    D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible) {
         assert(device != nullptr);
         assert(heapSize > 0);
 
@@ -793,7 +793,7 @@ namespace plume {
         heapDesc.Type = heapType;
         descriptorHandleIncrement = device->d3d->GetDescriptorHandleIncrementSize(heapDesc.Type);
 
-        const bool shaderVisible = (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        shaderVisible &= (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
         if (shaderVisible) {
             heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         }
@@ -801,6 +801,7 @@ namespace plume {
         HRESULT res = device->d3d->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
         if (FAILED(res)) {
             fprintf(stderr, "CreateDescriptorHeap failed with error code 0x%lX.\n", res);
+            freeSize = 0;
             return;
         }
         
@@ -1115,74 +1116,20 @@ namespace plume {
         case RenderDescriptorRangeType::TEXTURE: {
             if ((nativeResource != nullptr) && (textureView != nullptr)) {
                 const D3D12TextureView *interfaceTextureView = static_cast<const D3D12TextureView *>(textureView);
-                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                srvDesc.Shader4ComponentMapping = interfaceTextureView->shader4ComponentMapping;
-                srvDesc.Format = interfaceTextureView->format;
-
-                const bool isMSAA = (interfaceTextureView->texture->desc.multisampling.sampleCount > RenderSampleCount::COUNT_1);
-                switch (interfaceTextureView->dimension) {
-                case RenderTextureViewDimension::TEXTURE_1D:
-                    if (interfaceTextureView->arraySize > 1) {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
-                        srvDesc.Texture1DArray.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.Texture1DArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                        srvDesc.Texture1DArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                        srvDesc.Texture1DArray.ArraySize = interfaceTextureView->arraySize;
-                    } else {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-                        srvDesc.Texture1D.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.Texture1D.MostDetailedMip = interfaceTextureView->mipSlice;
-                    }
-                    break;
-                case RenderTextureViewDimension::TEXTURE_2D:
-                    if (isMSAA) {
-                        if (interfaceTextureView->arraySize > 1) {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
-                            srvDesc.Texture2DMSArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                            srvDesc.Texture2DMSArray.ArraySize = interfaceTextureView->arraySize;
-                        } else {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
-                        }
-                    }
-                    else {
-                        if (interfaceTextureView->arraySize > 1) {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                            srvDesc.Texture2DArray.MipLevels = interfaceTextureView->mipLevels;
-                            srvDesc.Texture2DArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                            srvDesc.Texture2DArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                            srvDesc.Texture2DArray.ArraySize = interfaceTextureView->arraySize;
-                        } else {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                            srvDesc.Texture2D.MipLevels = interfaceTextureView->mipLevels;
-                            srvDesc.Texture2D.MostDetailedMip = interfaceTextureView->mipSlice;
-                        }
-                    }
-
-                    break;
-                case RenderTextureViewDimension::TEXTURE_3D:
-                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-                    srvDesc.Texture3D.MipLevels = interfaceTextureView->mipLevels;
-                    srvDesc.Texture3D.MostDetailedMip = interfaceTextureView->mipSlice;
-                    break;
-                case RenderTextureViewDimension::TEXTURE_CUBE:
-                    if (interfaceTextureView->arraySize > 6) {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
-                        srvDesc.TextureCubeArray.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.TextureCubeArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                        srvDesc.TextureCubeArray.First2DArrayFace = interfaceTextureView->arrayIndex;
-                        srvDesc.TextureCubeArray.NumCubes = interfaceTextureView->arraySize / 6;
-                    } else {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-                        srvDesc.TextureCube.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.TextureCube.MostDetailedMip = interfaceTextureView->mipSlice;
-                    }
-                    break;
-                default:
-                    assert(false && "Unknown texture dimension.");
-                    break;
+                // A view may also supply a description for a different texture.
+                // Only the owning resource can use its immutable cached descriptor.
+                const auto source = (interfaceTextureView->texture == interfaceTexture)
+                    ? interfaceTextureView->getSRV() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+                if (source.ptr != 0) {
+                    const uint32_t relative = descriptorIndex - descriptorIndexClamped;
+                    const auto destination = device->viewHeapAllocator->getCPUHandleAt(
+                        viewAllocation.offset + descriptorHeapIndices[descriptorIndexClamped] + relative);
+                    device->d3d->CopyDescriptorsSimple(1, destination, source, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
-
-                setSRV(descriptorIndex, nativeResource, &srvDesc);
+                else {
+                    const auto srvDesc = interfaceTextureView->getSRVDesc();
+                    setSRV(descriptorIndex, nativeResource, &srvDesc);
+                }
             }
             else if (nativeResource != nullptr) {
                 setSRV(descriptorIndex, nativeResource, nullptr);
@@ -2905,6 +2852,7 @@ namespace plume {
         assert(desc.arrayIndex < texture->desc.arraySize);
 
         this->texture = texture;
+        this->device = texture->device;
         this->desc = desc;
         this->format = toDXGITextureView(desc.format);
         this->dimension = desc.dimension;
@@ -2915,7 +2863,98 @@ namespace plume {
         this->shader4ComponentMapping = toD3D12(desc.componentMapping);
     }
 
-    D3D12TextureView::~D3D12TextureView() { }
+    D3D12TextureView::~D3D12TextureView() {
+        if (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
+            device->cpuViewHeapAllocator->free(srvOffset, 1);
+        }
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC D3D12TextureView::getSRVDesc() const {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = shader4ComponentMapping;
+        srvDesc.Format = format;
+
+        const bool isMSAA = (texture->desc.multisampling.sampleCount > RenderSampleCount::COUNT_1);
+        switch (dimension) {
+        case RenderTextureViewDimension::TEXTURE_1D:
+            if (arraySize > 1) {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+                srvDesc.Texture1DArray.MipLevels = mipLevels;
+                srvDesc.Texture1DArray.MostDetailedMip = mipSlice;
+                srvDesc.Texture1DArray.FirstArraySlice = arrayIndex;
+                srvDesc.Texture1DArray.ArraySize = arraySize;
+            } else {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                srvDesc.Texture1D.MipLevels = mipLevels;
+                srvDesc.Texture1D.MostDetailedMip = mipSlice;
+            }
+            break;
+        case RenderTextureViewDimension::TEXTURE_2D:
+            if (isMSAA) {
+                if (arraySize > 1) {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                    srvDesc.Texture2DMSArray.FirstArraySlice = arrayIndex;
+                    srvDesc.Texture2DMSArray.ArraySize = arraySize;
+                } else {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else {
+                if (arraySize > 1) {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                    srvDesc.Texture2DArray.MipLevels = mipLevels;
+                    srvDesc.Texture2DArray.MostDetailedMip = mipSlice;
+                    srvDesc.Texture2DArray.FirstArraySlice = arrayIndex;
+                    srvDesc.Texture2DArray.ArraySize = arraySize;
+                } else {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MipLevels = mipLevels;
+                    srvDesc.Texture2D.MostDetailedMip = mipSlice;
+                }
+            }
+
+            break;
+        case RenderTextureViewDimension::TEXTURE_3D:
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+            srvDesc.Texture3D.MipLevels = mipLevels;
+            srvDesc.Texture3D.MostDetailedMip = mipSlice;
+            break;
+        case RenderTextureViewDimension::TEXTURE_CUBE:
+            if (arraySize > 6) {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                srvDesc.TextureCubeArray.MipLevels = mipLevels;
+                srvDesc.TextureCubeArray.MostDetailedMip = mipSlice;
+                srvDesc.TextureCubeArray.First2DArrayFace = arrayIndex;
+                srvDesc.TextureCubeArray.NumCubes = arraySize / 6;
+            } else {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                srvDesc.TextureCube.MipLevels = mipLevels;
+                srvDesc.TextureCube.MostDetailedMip = mipSlice;
+            }
+            break;
+        default:
+            assert(false && "Unknown texture dimension.");
+            break;
+        }
+
+        return srvDesc;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE D3D12TextureView::getSRV() const {
+        // Views can be used for UAVs/attachments only. Initialize on the first
+        // sampled binding, safely shared by descriptor-writing host threads.
+        std::call_once(srvOnce, [this]() {
+            auto allocator = texture->device->cpuViewHeapAllocator.get();
+            srvOffset = allocator->allocate(1);
+            if (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
+                const auto srvDesc = getSRVDesc();
+                texture->device->d3d->CreateShaderResourceView(texture->d3d, &srvDesc, allocator->getCPUHandleAt(srvOffset));
+            }
+        });
+        // Heap exhaustion keeps the ordinary creation path available.
+        return (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET)
+            ? texture->device->cpuViewHeapAllocator->getCPUHandleAt(srvOffset) : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    }
 
     // D3D12Texture
 
@@ -3965,6 +4004,7 @@ namespace plume {
 
         // Create descriptor heaps allocator.
         viewHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, ShaderDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        cpuViewHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, ShaderDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
         samplerHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, SamplerDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
         colorTargetHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, TargetDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         depthTargetHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, TargetDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -3985,6 +4025,7 @@ namespace plume {
     }
 
     D3D12Device::~D3D12Device() {
+        cpuViewHeapAllocator.reset();
         viewHeapAllocator.reset();
         samplerHeapAllocator.reset();
         rtDummyGlobalPipelineLayout.reset();
