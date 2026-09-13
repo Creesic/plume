@@ -3050,10 +3050,18 @@ namespace plume {
         allocationDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
         allocationDesc.CustomPool = (pool != nullptr) ? pool->d3d : nullptr;
 
-        D3D12_CLEAR_VALUE optimizedClearValue;
+        D3D12_CLEAR_VALUE optimizedClearValue = {};
         if (desc.optimizedClearValue != nullptr) {
-            optimizedClearValue.Format = toDXGI(desc.optimizedClearValue->format);
-            memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
+            if (depthTarget) {
+                // An optimized depth clear requires the typed DSV format even
+                // when the underlying depth/stencil resource is typeless.
+                optimizedClearValue.Format = toDXGIDepthStencilView(desc.optimizedClearValue->format);
+                optimizedClearValue.DepthStencil.Depth = desc.optimizedClearValue->depth.depth;
+            }
+            else {
+                optimizedClearValue.Format = toDXGI(desc.optimizedClearValue->format);
+                memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
+            }
         }
 
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, (desc.optimizedClearValue != nullptr) ? &optimizedClearValue : nullptr, &allocation, IID_PPV_ARGS(&d3d));
@@ -3334,6 +3342,9 @@ namespace plume {
         psoDesc.DepthStencilState.BackFace.StencilFunc = toD3D12(desc.stencilBackFace.compareFunction);
         psoDesc.NumRenderTargets = desc.renderTargetCount;
         psoDesc.BlendState.AlphaToCoverageEnable = desc.alphaToCoverageEnabled;
+        // Honor each attachment's blend/write mask. Logic operations require
+        // independent blending disabled by the D3D12 pipeline contract.
+        psoDesc.BlendState.IndependentBlendEnable = desc.renderTargetCount > 1 && !desc.logicOpEnabled;
 
         for (uint32_t i = 0; i < desc.renderTargetCount; i++) {
             psoDesc.RTVFormats[i] = toDXGI(desc.renderTargetFormat[i]);
