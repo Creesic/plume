@@ -171,7 +171,10 @@ int main(int argc, char* argv[]) {
 
         // Configure common options
         spirv_cross::CompilerGLSL::Options common_options;
-        common_options.vertex.flip_vert_y = true;
+        // xrecomp compiles D3D-convention HLSL straight to SPIR-V (no
+        // -fvk-invert-y); Metal's clip space already matches D3D, so the
+        // vertex Y flip must stay off or every frame renders upside down.
+        common_options.vertex.flip_vert_y = false;
         msl.set_common_options(common_options);
 
         const auto entry_points = msl.get_entry_points_and_stages();
