@@ -1766,27 +1766,35 @@ namespace plume {
     }
 
     void D3D12QueryPool::queryResults(uint32_t queryCount) {
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool D3D12QueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
         if (!readbackBuffer) {
             fprintf(stderr,
                     "D3D12QueryPool::queryResults failed: no readback "
                     "buffer.\n");
-            return;
+            return false;
         }
         void *readbackData = readbackBuffer->map();
         if (readbackData == nullptr)
-            return;
-        const uint32_t resultCount = queryCount == 0
-            ? uint32_t(results.size())
-            : std::min(queryCount, uint32_t(results.size()));
-        memcpy(results.data(), readbackData, sizeof(uint64_t) * resultCount);
+            return false;
+        memcpy(results.data() + firstQuery, static_cast<const uint64_t *>(readbackData) + firstQuery, sizeof(uint64_t) * queryCount);
         readbackBuffer->unmap();
 
         if (type == RenderQueryType::TIMESTAMP) {
-            for (uint32_t i = 0; i < resultCount; ++i) {
+            for (uint32_t i = firstQuery; i < firstQuery + queryCount; ++i) {
                 results[i] = uint64_t(double(results[i]) /
                     double(device->timestampFrequency) * 1000000000.0);
             }
         }
+        return true;
     }
 
     const uint64_t *D3D12QueryPool::getResults() const {
