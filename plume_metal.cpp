@@ -2246,20 +2246,32 @@ namespace plume {
     }
 
     void MetalQueryPool::queryResults(uint32_t queryCount) {
-        MetalAutoreleasePool releasePool;
         const uint32_t resultCount = queryCount == 0
             ? uint32_t(results.size())
             : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool MetalQueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
+        MetalAutoreleasePool releasePool;
         if (type == RenderQueryType::OCCLUSION) {
+            if (!visibilityBuffer) { return false; }
             void *data = visibilityBuffer->map();
-            std::memcpy(results.data(), data,
-                        resultCount * sizeof(uint64_t));
+            if (data == nullptr) { return false; }
+            std::memcpy(results.data() + firstQuery, static_cast<const uint64_t *>(data) + firstQuery,
+                        queryCount * sizeof(uint64_t));
             visibilityBuffer->unmap();
-            return;
+            return true;
         }
 
-        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, resultCount));
-        std::memcpy(results.data(), data->mutableBytes(), resultCount * sizeof(uint64_t));
+        if (sampleBuffer == nullptr) { return false; }
+        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(firstQuery, queryCount));
+        if (data == nullptr || data->mutableBytes() == nullptr || data->length() < queryCount * sizeof(uint64_t)) { return false; }
+        std::memcpy(results.data() + firstQuery, data->mutableBytes(), queryCount * sizeof(uint64_t));
+        return true;
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
