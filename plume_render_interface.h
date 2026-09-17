@@ -224,6 +224,10 @@ namespace plume {
     struct RenderQueryPool {
         virtual ~RenderQueryPool() { }
         virtual void queryResults(uint32_t queryCount = 0) = 0;
+        // Read only the specified nonempty range into getResults()[firstQuery...].
+        // The caller must first observe completion of the submission that wrote
+        // these queries. False means no valid result should be consumed.
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) = 0;
         virtual const uint64_t *getResults() const = 0;
         virtual uint32_t getCount() const = 0;
     };

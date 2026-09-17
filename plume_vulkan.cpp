@@ -2749,14 +2749,23 @@ namespace plume {
         const uint32_t resultCount = queryCount == 0
             ? uint32_t(results.size())
             : std::min(queryCount, uint32_t(results.size()));
-	    VkResult res = vkGetQueryPoolResults(device->vk, vk, 0, resultCount, sizeof(uint64_t) * resultCount, results.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+        queryResultsRange(0, resultCount);
+    }
+
+    bool VulkanQueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
+        VkResult res = vkGetQueryPoolResults(device->vk, vk, firstQuery, queryCount, sizeof(uint64_t) * queryCount, results.data() + firstQuery, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vkGetQueryPoolResults failed with error code 0x%X.\n", res);
-            return;
+            if (res != VK_NOT_READY) {
+                fprintf(stderr, "vkGetQueryPoolResults failed with error code 0x%X.\n", res);
+            }
+            return false;
         }
 
         if (type != RenderQueryType::TIMESTAMP) {
-            return;
+            return true;
         }
 
         // Conversion sourced from Godot Engine's Vulkan Rendering Driver.
@@ -2784,12 +2793,13 @@ namespace plume {
         constexpr uint64_t shift_bits = 16;
         double timestampPeriod = double(device->physicalDeviceProperties.limits.timestampPeriod);
         uint64_t h = 0, l = 0;
-        for (uint32_t i = 0; i < resultCount; ++i) {
+        for (uint32_t i = firstQuery; i < firstQuery + queryCount; ++i) {
             mult64to128(results[i], uint64_t(timestampPeriod * double(1 << shift_bits)), h, l);
             results[i] = l;
             results[i] >>= shift_bits;
             results[i] |= h << (64 - shift_bits);
         }
+        return true;
     }
 
     const uint64_t *VulkanQueryPool::getResults() const {

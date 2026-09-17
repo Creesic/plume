@@ -163,6 +163,7 @@ namespace plume {
                        RenderQueryType type);
         virtual ~D3D12QueryPool() override;
         virtual void queryResults(uint32_t queryCount) override;
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };

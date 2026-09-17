@@ -1589,7 +1589,11 @@ namespace plume {
         MTL::StencilDescriptor *backFaceStencilDescriptor = nullptr;
 
         if (desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            depthStencilDescriptor->setDepthWriteEnabled(desc.depthWriteEnabled);
+            // Match D3D12/Vulkan: a disabled depth test also disables depth
+            // writes. Metal's flags are independent, and writing through a
+            // test-disabled pipeline (e.g. a skybox) would clobber the depth
+            // buffer under everything drawn afterwards.
+            depthStencilDescriptor->setDepthWriteEnabled(desc.depthEnabled && desc.depthWriteEnabled);
             depthStencilDescriptor->setDepthCompareFunction(desc.depthEnabled ? mapCompareFunction(desc.depthFunction) : MTL::CompareFunctionAlways);
 
             if (desc.stencilEnabled) {
@@ -2246,20 +2250,32 @@ namespace plume {
     }
 
     void MetalQueryPool::queryResults(uint32_t queryCount) {
-        MetalAutoreleasePool releasePool;
         const uint32_t resultCount = queryCount == 0
             ? uint32_t(results.size())
             : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool MetalQueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
+        MetalAutoreleasePool releasePool;
         if (type == RenderQueryType::OCCLUSION) {
+            if (!visibilityBuffer) { return false; }
             void *data = visibilityBuffer->map();
-            std::memcpy(results.data(), data,
-                        resultCount * sizeof(uint64_t));
+            if (data == nullptr) { return false; }
+            std::memcpy(results.data() + firstQuery, static_cast<const uint64_t *>(data) + firstQuery,
+                        queryCount * sizeof(uint64_t));
             visibilityBuffer->unmap();
-            return;
+            return true;
         }
 
-        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, resultCount));
-        std::memcpy(results.data(), data->mutableBytes(), resultCount * sizeof(uint64_t));
+        if (sampleBuffer == nullptr) { return false; }
+        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(firstQuery, queryCount));
+        if (data == nullptr || data->mutableBytes() == nullptr || data->length() < queryCount * sizeof(uint64_t)) { return false; }
+        std::memcpy(results.data() + firstQuery, data->mutableBytes(), queryCount * sizeof(uint64_t));
+        return true;
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
@@ -3211,10 +3227,12 @@ namespace plume {
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
 
-        const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
-        const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
+        // Swap chain drawables are ExtendedRenderTextures too; resolve through
+        // the virtual accessor so a whole-texture copy into a drawable works.
+        const ExtendedRenderTexture *dst = static_cast<const ExtendedRenderTexture *>(dstTexture);
+        const ExtendedRenderTexture *src = static_cast<const ExtendedRenderTexture *>(srcTexture);
 
-        activeBlitEncoder->copyFromTexture(src->mtl, dst->mtl);
+        activeBlitEncoder->copyFromTexture(src->getTexture(), dst->getTexture());
     }
 
     void MetalCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
@@ -4078,7 +4096,13 @@ namespace plume {
     }
 
     std::unique_ptr<RenderShader> MetalDevice::createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) {
-        return std::make_unique<MetalShader>(this, data, size, entryPointName, format);
+        auto shader = std::make_unique<MetalShader>(this, data, size, entryPointName, format);
+        // A failed library compile leaves no function to bind; report it as a
+        // missing shader instead of handing back an object that crashes later.
+        if (shader->library == nullptr) {
+            return nullptr;
+        }
+        return shader;
     }
 
     std::unique_ptr<RenderSampler> MetalDevice::createSampler(const RenderSamplerDesc &desc) {
@@ -4090,7 +4114,13 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
-        return std::make_unique<MetalGraphicsPipeline>(this, desc);
+        auto pipeline = std::make_unique<MetalGraphicsPipeline>(this, desc);
+        // newRenderPipelineState failures are already logged; a null state
+        // must surface as a null pipeline so callers can skip the draw.
+        if (pipeline->state.renderPipelineState == nullptr) {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
