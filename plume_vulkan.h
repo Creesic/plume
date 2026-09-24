@@ -383,6 +383,7 @@ namespace plume {
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
         bool pollCommandFence(RenderCommandFence *fence) override;
+        void waitForIdle() override;
     };
 
     struct VulkanPool : RenderPool {

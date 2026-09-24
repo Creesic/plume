@@ -208,6 +208,10 @@ namespace plume {
         // Nonblocking counterpart to waitForCommandFence. A true result
         // consumes/resets the completed fence so it can be submitted again.
         virtual bool pollCommandFence(RenderCommandFence *fence) = 0;
+        // Wait for previously submitted queue work, including queued presents.
+        // Use before destructive swap-chain/resource changes; this does not
+        // consume command fences. The caller must serialize new submissions.
+        virtual void waitForIdle() = 0;
 
         // Concrete implementation shortcuts.
         inline void executeCommandLists(const RenderCommandList *commandList, RenderCommandFence *signalFence = nullptr) {

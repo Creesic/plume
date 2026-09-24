@@ -3923,6 +3923,21 @@ namespace plume {
         mutableCommandList->commit();
     }
 
+    void MetalCommandQueue::waitForIdle() {
+        MetalAutoreleasePool releasePool;
+        MTL::CommandBuffer *buffer = mtl->commandBuffer();
+        if (buffer == nullptr) {
+            fprintf(stderr, "Metal idle command buffer creation failed.\n");
+            std::abort();
+        }
+        buffer->commit();
+        buffer->waitUntilCompleted();
+        if (buffer->status() == MTL::CommandBufferStatusError) {
+            fprintf(stderr, "Metal idle command buffer completed with an error.\n");
+            std::abort();
+        }
+    }
+
     void MetalCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         MetalAutoreleasePool releasePool;
         const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);

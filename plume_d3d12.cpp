@@ -2758,6 +2758,24 @@ namespace plume {
         }
     }
 
+    void D3D12CommandQueue::waitForIdle() {
+        // A separate fence leaves the caller's submission fences untouched.
+        D3D12CommandFence fence(device);
+        if ((fence.d3d == nullptr) || (fence.fenceEvent == NULL)) {
+            fprintf(stderr, "D3D12 idle fence creation failed.\n");
+            std::abort();
+        }
+        HRESULT res = d3d->Signal(fence.d3d, fence.fenceValue);
+        if (SUCCEEDED(res)) {
+            res = fence.d3d->SetEventOnCompletion(fence.fenceValue, fence.fenceEvent);
+        }
+        if (FAILED(res)) {
+            fprintf(stderr, "D3D12 idle fence submission failed with error code 0x%lX.\n", res);
+            std::abort();
+        }
+        waitForCommandFence(&fence);
+    }
+
     void D3D12CommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         assert(fence != nullptr);
 

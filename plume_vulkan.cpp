@@ -3732,6 +3732,7 @@ namespace plume {
         thread_local std::vector<VkSemaphore> waitSemaphoreVector;
         thread_local std::vector<VkSemaphore> signalSemaphoreVector;
         thread_local std::vector<VkCommandBuffer> commandBuffers;
+        thread_local std::vector<VkPipelineStageFlags> waitStages;
         waitSemaphoreVector.clear();
         signalSemaphoreVector.clear();
         commandBuffers.clear();
@@ -3758,11 +3759,13 @@ namespace plume {
         submitInfo.pCommandBuffers = commandBuffers.data();
         submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
 
-        const VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         if (!waitSemaphoreVector.empty()) {
+            // The public API does not restrict the first use to a color
+            // attachment: swap-chain copies and compute also wait here.
+            waitStages.assign(waitSemaphoreVector.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             submitInfo.pWaitSemaphores = waitSemaphoreVector.data();
             submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoreVector.size());
-            submitInfo.pWaitDstStageMask = &waitStages;
+            submitInfo.pWaitDstStageMask = waitStages.data();
         }
 
         if (!signalSemaphoreVector.empty()) {
@@ -3788,6 +3791,16 @@ namespace plume {
         }
     }
     
+    void VulkanCommandQueue::waitForIdle() {
+        // Unlike a submission fence, this also covers later queued presents.
+        const std::scoped_lock queueLock(*queue->mutex);
+        const VkResult res = vkQueueWaitIdle(queue->vk);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "vkQueueWaitIdle failed with error code 0x%X.\n", res);
+            std::abort();
+        }
+    }
+
     void VulkanCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         assert(fence != nullptr);
 
