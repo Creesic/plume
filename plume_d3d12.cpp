@@ -2759,6 +2759,8 @@ namespace plume {
     }
 
     void D3D12CommandQueue::waitForIdle() {
+        // A failed native queue constructor cannot have submitted any work.
+        if (d3d == nullptr) { return; }
         // A separate fence leaves the caller's submission fences untouched.
         D3D12CommandFence fence(device);
         if ((fence.d3d == nullptr) || (fence.fenceEvent == NULL)) {
