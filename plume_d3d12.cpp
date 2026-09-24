@@ -2983,6 +2983,7 @@ namespace plume {
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srvDesc.Texture2D.MipLevels = mipLevels;
                     srvDesc.Texture2D.MostDetailedMip = mipSlice;
+                    srvDesc.Texture2D.PlaneSlice = desc.planeSlice;
                 }
             }
 
