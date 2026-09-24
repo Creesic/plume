@@ -1036,6 +1036,8 @@ namespace plume {
         uint32_t arraySize = UINT32_MAX;
         uint32_t arrayIndex = 0;
         RenderComponentMapping componentMapping;
+        // 0 = depth or color plane. 1 = stencil plane of a depth-stencil texture.
+        uint32_t planeSlice = 0;
 
         RenderTextureViewDesc() = default;
 

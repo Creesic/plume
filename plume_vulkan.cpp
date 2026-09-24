@@ -1095,6 +1095,12 @@ namespace plume {
         viewInfo.components.b = toVk(desc.componentMapping.b);
         viewInfo.components.a = toVk(desc.componentMapping.a);
         viewInfo.subresourceRange.aspectMask = toViewAspectFlags(texture->desc.flags);
+        if (desc.planeSlice == 1) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        } else if ((texture->desc.flags & RenderTextureFlag::DEPTH_TARGET)
+            && (desc.format == RenderFormat::R32_FLOAT || desc.format == RenderFormat::D32_FLOAT)) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
         viewInfo.subresourceRange.baseMipLevel = desc.mipSlice;
         viewInfo.subresourceRange.levelCount = mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = desc.arrayIndex;
