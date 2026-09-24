@@ -3682,11 +3682,13 @@ namespace plume {
         submitInfo.pCommandBuffers = commandBuffers.data();
         submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
 
-        const VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // Vulkan requires one stage mask per wait semaphore.
+        thread_local std::vector<VkPipelineStageFlags> waitStages;
+        waitStages.assign(waitSemaphoreVector.size(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         if (!waitSemaphoreVector.empty()) {
             submitInfo.pWaitSemaphores = waitSemaphoreVector.data();
             submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoreVector.size());
-            submitInfo.pWaitDstStageMask = &waitStages;
+            submitInfo.pWaitDstStageMask = waitStages.data();
         }
 
         if (!signalSemaphoreVector.empty()) {
