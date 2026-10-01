@@ -74,6 +74,11 @@ namespace plume {
     };
     
     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME,
+        VK_KHR_16BIT_STORAGE_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME,
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
         VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
@@ -1504,15 +1509,11 @@ namespace plume {
             inputAssembly.primitiveRestartEnable = VK_TRUE;
         }
 
-        uint32_t renderTargetCount = desc.renderTargetCount;
-        if (renderTargetCount == 0 && desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            renderTargetCount = 1;
-        }
-
         VkPipelineViewportStateCreateInfo viewportState = {};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = renderTargetCount;
-        viewportState.scissorCount = renderTargetCount;
+        // Attachments share a viewport; MRT count is not a viewport count.
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rasterization = {};
         rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -3914,10 +3915,34 @@ namespace plume {
 
         // Check for supported features.
         void *featuresChain = nullptr;
+        // External compute effects (including FSR) query physical-device FP16
+        // support. Enable the supported features on the logical device too.
+        VkPhysicalDeviceShaderFloat16Int8Features float16Features = {};
+        const bool float16Found = supportedOptionalExtensions.count(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) != 0;
+        if (float16Found) {
+            float16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+            float16Features.pNext = featuresChain;
+            featuresChain = &float16Features;
+        }
+        VkPhysicalDevice16BitStorageFeatures storage16Features = {};
+        const bool storage16Found = supportedOptionalExtensions.count(VK_KHR_16BIT_STORAGE_EXTENSION_NAME) != 0;
+        if (storage16Found) {
+            storage16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+            storage16Features.pNext = featuresChain;
+            featuresChain = &storage16Features;
+        }
         VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures = {};
+        VkPhysicalDeviceSubgroupSizeControlFeaturesEXT subgroupFeatures = {};
+        const bool subgroupFound = supportedOptionalExtensions.count(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) != 0;
+        if (subgroupFound) {
+            subgroupFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT;
+            subgroupFeatures.pNext = featuresChain;
+            featuresChain = &subgroupFeatures;
+        }
         const bool descriptorIndexingFound = supportedOptionalExtensions.find(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) != supportedOptionalExtensions.end();
         if (descriptorIndexingFound) {
             indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+            indexingFeatures.pNext = featuresChain;
             featuresChain = &indexingFeatures;
         }
 
@@ -4006,6 +4031,18 @@ namespace plume {
 
         // Build the device creation chain.
         void *createDeviceChain = nullptr;
+        if (subgroupFound) {
+            subgroupFeatures.pNext = createDeviceChain;
+            createDeviceChain = &subgroupFeatures;
+        }
+        if (float16Found) {
+            float16Features.pNext = createDeviceChain;
+            createDeviceChain = &float16Features;
+        }
+        if (storage16Found) {
+            storage16Features.pNext = createDeviceChain;
+            createDeviceChain = &storage16Features;
+        }
         const bool rayTracingSupported = rayTracingPipelineFeatures.rayTracingPipeline && accelerationStructureFeatures.accelerationStructure;
         if (rayTracingSupported) {
             rayTracingPipelineFeatures.pNext = createDeviceChain;
