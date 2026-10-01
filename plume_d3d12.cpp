@@ -2246,6 +2246,10 @@ namespace plume {
 #   endif
     }
 
+    void D3D12CommandList::setBlendFactor(const float *rgba) {
+        d3d->OMSetBlendFactor(rgba);
+    }
+
     void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
         assert(targetFramebuffer != nullptr);
         assert(attachmentIndex < targetFramebuffer->colorTargets.size());

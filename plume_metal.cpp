@@ -2815,6 +2815,13 @@ namespace plume {
         dirtyGraphicsState.depthBias = 1;
     }
 
+    void MetalCommandList::setBlendFactor(const float *rgba) {
+        for (int i = 0; i < 4; i++) {
+            dynamicBlendColor[i] = rgba[i];
+        }
+        dirtyGraphicsState.blendColor = 1;
+    }
+
     void MetalCommandList::setCommonClearState() const {
         activeRenderEncoder->setViewport({ 0, 0, static_cast<float>(targetFramebuffer->width), static_cast<float>(targetFramebuffer->height), 0.0f, 1.0f });
         activeRenderEncoder->setScissorRect(clampScissorRectIfNecessary({ 0, 0, static_cast<int32_t>(targetFramebuffer->width), static_cast<int32_t>(targetFramebuffer->height) }, targetFramebuffer));
@@ -3646,6 +3653,11 @@ namespace plume {
                 stateCache.lastDepthBiasClamp = newClamp;
             }
             dirtyGraphicsState.depthBias = 0;
+        }
+
+        if (dirtyGraphicsState.blendColor) {
+            activeRenderEncoder->setBlendColor(dynamicBlendColor[0], dynamicBlendColor[1], dynamicBlendColor[2], dynamicBlendColor[3]);
+            dirtyGraphicsState.blendColor = 0;
         }
 
         // Viewports

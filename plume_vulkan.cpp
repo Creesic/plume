@@ -1644,6 +1644,9 @@ namespace plume {
         dynamicStates.clear();
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
+        // Every graphics pipeline takes its blend constants from setBlendFactor;
+        // begin() sets the D3D default (1,1,1,1) so draws never see them unset.
+        dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
 
         if (desc.dynamicDepthBiasEnabled) {
             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
@@ -2863,6 +2866,9 @@ namespace plume {
             fprintf(stderr, "vkBeginCommandBuffer failed with error code 0x%X.\n", res);
             return;
         }
+
+        const float defaultBlendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        vkCmdSetBlendConstants(vk, defaultBlendFactor);
     }
 
     void VulkanCommandList::end() {
@@ -3169,6 +3175,10 @@ namespace plume {
 
     void VulkanCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+    }
+
+    void VulkanCommandList::setBlendFactor(const float *rgba) {
+        vkCmdSetBlendConstants(vk, rgba);
     }
 
     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
