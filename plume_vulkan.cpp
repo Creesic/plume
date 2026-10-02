@@ -1615,6 +1615,7 @@ namespace plume {
         colorBlend.logicOp = toVk(desc.logicOp);
         colorBlend.pAttachments = !colorBlendAttachments.empty() ? colorBlendAttachments.data() : nullptr;
         colorBlend.attachmentCount = uint32_t(colorBlendAttachments.size());
+        memcpy(colorBlend.blendConstants, desc.blendConstants, sizeof(colorBlend.blendConstants));
         
         VkPipelineDepthStencilStateCreateInfo depthStencil = {};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

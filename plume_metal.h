@@ -193,6 +193,7 @@ namespace plume {
         MTL::Winding winding = MTL::WindingClockwise;
         MTL::PrimitiveType primitiveType = MTL::PrimitiveTypeTriangle;
         uint32_t stencilReference = 0;
+        float blendConstants[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         float depthBiasConstantFactor;
         float depthBiasClamp;
         float depthBiasSlopeFactor;
@@ -379,6 +380,7 @@ namespace plume {
             // Depth/stencil state
             MTL::DepthStencilState* lastDepthStencilState = nullptr;
             uint32_t lastStencilReference = 0;
+            float lastBlendConstants[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
             // Rasterizer state
             MTL::CullMode lastCullMode = MTL::CullModeNone;
@@ -402,6 +404,7 @@ namespace plume {
                 lastComputePipelineState = nullptr;
                 lastDepthStencilState = nullptr;
                 lastStencilReference = 0;
+                for (float &constant : lastBlendConstants) constant = 0.0f;
                 lastCullMode = MTL::CullModeNone;
                 lastWinding = MTL::WindingClockwise;
                 lastDepthClipMode = MTL::DepthClipModeClip;

@@ -1294,6 +1294,8 @@ namespace plume {
         uint32_t stencilReadMask = 0xFFFFFFFF;
         uint32_t stencilWriteMask = 0xFFFFFFFF;
         uint32_t stencilReference = 0;
+        // Constant for RenderBlend::BLEND_FACTOR / INV_BLEND_FACTOR.
+        float blendConstants[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         RenderStencilFaceDesc stencilFrontFace;
         RenderStencilFaceDesc stencilBackFace;
         RenderMultisampling multisampling;

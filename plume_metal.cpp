@@ -1625,6 +1625,7 @@ namespace plume {
         state.renderPipelineState = device->mtl->newRenderPipelineState(descriptor, &error);
         state.primitiveType = mapPrimitiveType(desc.primitiveTopology);
         state.stencilReference = desc.stencilEnabled ? desc.stencilReference : 0;
+        memcpy(state.blendConstants, desc.blendConstants, sizeof(state.blendConstants));
 
         if (desc.dynamicDepthBiasEnabled) {
             state.dynamicDepthBiasEnabled = true;
@@ -3608,6 +3609,11 @@ namespace plume {
                 if (activeRenderState->stencilReference != stateCache.lastStencilReference) {
                     activeRenderEncoder->setStencilReferenceValue(activeRenderState->stencilReference);
                     stateCache.lastStencilReference = activeRenderState->stencilReference;
+                }
+                if (memcmp(activeRenderState->blendConstants, stateCache.lastBlendConstants, sizeof(stateCache.lastBlendConstants)) != 0) {
+                    const float *constants = activeRenderState->blendConstants;
+                    activeRenderEncoder->setBlendColor(constants[0], constants[1], constants[2], constants[3]);
+                    memcpy(stateCache.lastBlendConstants, constants, sizeof(stateCache.lastBlendConstants));
                 }
             }
             dirtyGraphicsState.depthStencil = 0;

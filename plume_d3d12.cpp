@@ -1884,6 +1884,7 @@ namespace plume {
         activeGraphicsPipeline = nullptr;
         activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         activeStencilRef = 0;
+        for (float &constant : activeBlendConstants) constant = 1.0f;
         descriptorHeapsSet = false;
     }
     
@@ -2494,6 +2495,10 @@ namespace plume {
         if (activeStencilRef != graphicsPipeline->stencilRef) {
             d3d->OMSetStencilRef(graphicsPipeline->stencilRef);
             activeStencilRef = graphicsPipeline->stencilRef;
+        }
+        if (memcmp(activeBlendConstants, graphicsPipeline->blendConstants, sizeof(activeBlendConstants)) != 0) {
+            d3d->OMSetBlendFactor(graphicsPipeline->blendConstants);
+            memcpy(activeBlendConstants, graphicsPipeline->blendConstants, sizeof(activeBlendConstants));
         }
     }
     
@@ -3304,6 +3309,7 @@ namespace plume {
 
         topology = toD3D12(desc.primitiveTopology);
         stencilRef = desc.stencilReference;
+        memcpy(blendConstants, desc.blendConstants, sizeof(blendConstants));
 
         const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);

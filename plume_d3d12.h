@@ -186,6 +186,8 @@ namespace plume {
         bool descriptorHeapsSet = false;
         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         uint32_t activeStencilRef = 0;
+        // D3D12 command lists start with a blend factor of one.
+        float activeBlendConstants[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
         bool activeSamplePositions = false;
 
         D3D12CommandList(D3D12CommandQueue *queue);
@@ -411,6 +413,7 @@ namespace plume {
         std::vector<RenderInputSlot> inputSlots;
         D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         uint32_t stencilRef = 0;
+        float blendConstants[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
         D3D12GraphicsPipeline(D3D12Device *device, const RenderGraphicsPipelineDesc &desc);
         ~D3D12GraphicsPipeline() override;
