@@ -82,6 +82,12 @@ namespace plume {
         virtual void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr, uint64_t bufferOffset = 0) = 0;
         virtual void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView = nullptr) = 0;
         virtual void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) = 0;
+        virtual void setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+            for (uint32_t i = 0; i < count; ++i) setTexture(first + i, textures[i], layout, views ? views[i] : nullptr);
+        }
+        virtual void setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+            for (uint32_t i = 0; i < count; ++i) setSampler(first + i, samplers[i]);
+        }
         virtual void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) = 0;
     };
 

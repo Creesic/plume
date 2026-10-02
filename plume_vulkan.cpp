@@ -2032,7 +2032,46 @@ namespace plume {
         setDescriptor(descriptorIndex, nullptr, nullptr, nullptr, &setAccelerationStructure);
     }
 
-    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+    void VulkanDescriptorSet::setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *texture = static_cast<const VulkanTexture *>(textures[base + i]);
+                if (!texture) continue;
+                const auto *view = views ? static_cast<const VulkanTextureView *>(views[base + i]) : nullptr;
+                images[i].imageLayout = toImageLayout(layout);
+                images[i].imageView = view ? view->vk : texture->imageView;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *sampler = static_cast<const VulkanSampler *>(samplers[base + i]);
+                if (sampler) images[i].sampler = sampler->vk;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setImageDescriptors(uint32_t first, uint32_t count, const VkDescriptorImageInfo *images) {
+        assert(count <= 4);
+        VkWriteDescriptorSet writes[4] = {};
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!images[i].imageView && !images[i].sampler) continue;
+            writes[n] = descriptorWrite(first + i);
+            writes[n++].pImageInfo = &images[i];
+        }
+        if (n) vkUpdateDescriptorSets(device->vk, n, writes, 0, nullptr);
+    }
+
+    VkWriteDescriptorSet VulkanDescriptorSet::descriptorWrite(uint32_t descriptorIndex) const {
         assert(descriptorIndex < setLayout->descriptorBindingIndices.size());
 
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
@@ -2040,12 +2079,17 @@ namespace plume {
         const VkDescriptorSetLayoutBinding &setLayoutBinding = setLayout->setBindings[bindingIndex];
         VkWriteDescriptorSet writeDescriptor = {};
         writeDescriptor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptor.pNext = pNext;
         writeDescriptor.dstSet = vk;
         writeDescriptor.dstBinding = setLayoutBinding.binding;
         writeDescriptor.dstArrayElement = descriptorIndex - indexBase;
         writeDescriptor.descriptorCount = 1;
         writeDescriptor.descriptorType = setLayoutBinding.descriptorType;
+        return writeDescriptor;
+    }
+
+    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+        VkWriteDescriptorSet writeDescriptor = descriptorWrite(descriptorIndex);
+        writeDescriptor.pNext = pNext;
         writeDescriptor.pBufferInfo = bufferInfo;
         writeDescriptor.pImageInfo = imageInfo;
         writeDescriptor.pTexelBufferView = texelBufferView;
