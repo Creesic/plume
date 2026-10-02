@@ -3432,16 +3432,74 @@ namespace plume {
             &psoDesc, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
             const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+            const auto &rt0 = psoDesc.BlendState.RenderTarget[0];
+            const uint32_t vsMagic = psoDesc.VS.BytecodeLength >= 4
+                ? *reinterpret_cast<const uint32_t *>(psoDesc.VS.pShaderBytecode)
+                : 0;
+            const uint32_t psMagic = psoDesc.PS.BytecodeLength >= 4
+                ? *reinterpret_cast<const uint32_t *>(psoDesc.PS.pShaderBytecode)
+                : 0;
             fprintf(stderr,
-                    "CreateGraphicsPipelineState failed: hr=0x%08lX "
-                    "device_removed=0x%08lX topology=%u rt=0x%X "
-                    "depth=0x%X inputs=%u.\n",
+                    "CreateGraphicsPipelineState failed: hr=0x%08lX vs_entry=%s ps_entry=%s "
+                    "device_removed=0x%08lX topology=%u topoType=%u "
+                    "rt=0x%X rtv=0x%X depth=0x%X dsv=0x%X inputs=%u "
+                    "samples=%u stripCut=%u root=%p vs=%u/0x%08X ps=%u/0x%08X gs=%u "
+                    "depthEn=%u depthWrite=%u depthFunc=%u "
+                    "stencilEn=%u sFail=%u sZFail=%u sPass=%u sFunc=%u "
+                    "blendEn=%u src=%u dst=%u op=%u srcA=%u dstA=%u opA=%u "
+                    "logicEn=%u logic=%u mask=%u cull=%u ccw=%u clip=%u "
+                    "bias=%d slope=%g clamp=%g.\n",
                     static_cast<unsigned long>(res),
+                    vertexShader ? vertexShader->entryPointName.c_str() : "",
+                    pixelShader ? pixelShader->entryPointName.c_str() : "",
                     static_cast<unsigned long>(removed),
                     static_cast<unsigned>(desc.primitiveTopology),
+                    static_cast<unsigned>(psoDesc.PrimitiveTopologyType),
                     static_cast<unsigned>(desc.renderTargetFormat[0]),
+                    static_cast<unsigned>(psoDesc.RTVFormats[0]),
                     static_cast<unsigned>(desc.depthTargetFormat),
-                    desc.inputElementsCount);
+                    static_cast<unsigned>(psoDesc.DSVFormat),
+                    desc.inputElementsCount,
+                    psoDesc.SampleDesc.Count,
+                    static_cast<unsigned>(psoDesc.IBStripCutValue),
+                    static_cast<const void *>(psoDesc.pRootSignature),
+                    static_cast<unsigned>(psoDesc.VS.BytecodeLength), vsMagic,
+                    static_cast<unsigned>(psoDesc.PS.BytecodeLength), psMagic,
+                    static_cast<unsigned>(psoDesc.GS.BytecodeLength),
+                    psoDesc.DepthStencilState.DepthEnable ? 1u : 0u,
+                    static_cast<unsigned>(psoDesc.DepthStencilState.DepthWriteMask),
+                    static_cast<unsigned>(psoDesc.DepthStencilState.DepthFunc),
+                    psoDesc.DepthStencilState.StencilEnable ? 1u : 0u,
+                    static_cast<unsigned>(psoDesc.DepthStencilState.FrontFace.StencilFailOp),
+                    static_cast<unsigned>(psoDesc.DepthStencilState.FrontFace.StencilDepthFailOp),
+                    static_cast<unsigned>(psoDesc.DepthStencilState.FrontFace.StencilPassOp),
+                    static_cast<unsigned>(psoDesc.DepthStencilState.FrontFace.StencilFunc),
+                    rt0.BlendEnable ? 1u : 0u,
+                    static_cast<unsigned>(rt0.SrcBlend),
+                    static_cast<unsigned>(rt0.DestBlend),
+                    static_cast<unsigned>(rt0.BlendOp),
+                    static_cast<unsigned>(rt0.SrcBlendAlpha),
+                    static_cast<unsigned>(rt0.DestBlendAlpha),
+                    static_cast<unsigned>(rt0.BlendOpAlpha),
+                    rt0.LogicOpEnable ? 1u : 0u,
+                    static_cast<unsigned>(rt0.LogicOp),
+                    static_cast<unsigned>(rt0.RenderTargetWriteMask),
+                    static_cast<unsigned>(psoDesc.RasterizerState.CullMode),
+                    psoDesc.RasterizerState.FrontCounterClockwise ? 1u : 0u,
+                    psoDesc.RasterizerState.DepthClipEnable ? 1u : 0u,
+                    psoDesc.RasterizerState.DepthBias,
+                    psoDesc.RasterizerState.SlopeScaledDepthBias,
+                    psoDesc.RasterizerState.DepthBiasClamp);
+            for (UINT i = 0; i < psoDesc.InputLayout.NumElements && i < 8; ++i) {
+                const D3D12_INPUT_ELEMENT_DESC &el = psoDesc.InputLayout.pInputElementDescs[i];
+                fprintf(stderr,
+                        "  input[%u] %s%u fmt=%u slot=%u off=%u class=%u step=%u\n",
+                        i, el.SemanticName ? el.SemanticName : "?",
+                        el.SemanticIndex, static_cast<unsigned>(el.Format),
+                        el.InputSlot, el.AlignedByteOffset,
+                        static_cast<unsigned>(el.InputSlotClass),
+                        el.InstanceDataStepRate);
+            }
         }
     }
 
