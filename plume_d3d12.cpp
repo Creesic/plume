@@ -1373,9 +1373,13 @@ namespace plume {
             return false;
         }
 
+        // A failed ResizeBuffers leaves these released; the retry must not
+        // release them again.
         for (uint32_t i = 0; i < desc.textureCount; i++) {
-            textures[i].d3d->Release();
-            textures[i].d3d = nullptr;
+            if (textures[i].d3d != nullptr) {
+                textures[i].d3d->Release();
+                textures[i].d3d = nullptr;
+            }
         }
 
         HRESULT res = d3d->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, swapChainFlags);
