@@ -1041,6 +1041,8 @@ namespace plume {
         uint32_t arraySize = UINT32_MAX;
         uint32_t arrayIndex = 0;
         RenderComponentMapping componentMapping;
+        // 0 = depth or color plane. 1 = stencil plane of a depth-stencil texture.
+        uint32_t planeSlice = 0;
 
         RenderTextureViewDesc() = default;
 
@@ -1093,6 +1095,10 @@ namespace plume {
         PLACED_FOOTPRINT
     };
 
+    // Explicit aspects are for buffer/depth-stencil copies. ALL retains the
+    // existing whole-resource behavior for color and texture-to-texture copies.
+    enum class RenderTextureCopyAspect { ALL, DEPTH, STENCIL };
+
     struct RenderTextureCopyLocation {
         const RenderTexture *texture = nullptr;
         const RenderBuffer *buffer = nullptr;
@@ -1111,7 +1117,7 @@ namespace plume {
             struct {
                 uint32_t mipLevel;
                 uint32_t arrayIndex;
-                uint32_t planeIndex;
+                RenderTextureCopyAspect aspect;
             } subresource;
         };
 
@@ -1128,13 +1134,13 @@ namespace plume {
             return loc;
         }
 
-        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0, uint32_t planeIndex = 0) {
+        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0, RenderTextureCopyAspect aspect = RenderTextureCopyAspect::ALL) {
             RenderTextureCopyLocation loc;
             loc.texture = texture;
             loc.type = RenderTextureCopyType::SUBRESOURCE;
             loc.subresource.mipLevel = mipLevel;
             loc.subresource.arrayIndex = arrayIndex;
-            loc.subresource.planeIndex = planeIndex;
+            loc.subresource.aspect = aspect;
             return loc;
         }
     };

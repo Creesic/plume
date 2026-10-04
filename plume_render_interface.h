@@ -8,11 +8,28 @@
 #pragma once
 
 #include <climits>
+#include <atomic>
 
 #include "plume_render_interface_types.h"
 
 namespace plume {
     // Interfaces.
+
+    // Descriptor cache keys must distinguish resources whose addresses are reused.
+    // Reading an identity needs no registry/lock. Copying or replacing a resource
+    // wrapper (including a swapchain image) receives a fresh identity too.
+    class RenderResourceIdentity {
+        inline static std::atomic<uint64_t> nextId{1};
+        uint64_t resourceId = nextId.fetch_add(1, std::memory_order_relaxed);
+    public:
+        RenderResourceIdentity() = default;
+        RenderResourceIdentity(const RenderResourceIdentity &) : RenderResourceIdentity() { }
+        RenderResourceIdentity &operator=(const RenderResourceIdentity &other) {
+            if (this != &other) resourceId = nextId.fetch_add(1, std::memory_order_relaxed);
+            return *this;
+        }
+        uint64_t getResourceId() const { return resourceId; }
+    };
 
     struct RenderBufferFormattedView {
         virtual ~RenderBufferFormattedView() { }
@@ -32,11 +49,11 @@ namespace plume {
         }
     };
 
-    struct RenderTextureView {
+    struct RenderTextureView : RenderResourceIdentity {
         virtual ~RenderTextureView() { }
     };
 
-    struct RenderTexture {
+    struct RenderTexture : RenderResourceIdentity {
         virtual ~RenderTexture() { }
         virtual std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) const = 0;
         virtual void setName(const std::string &name) = 0;
@@ -51,7 +68,7 @@ namespace plume {
         virtual void setName(const std::string &name) = 0;
     };
 
-    struct RenderSampler {
+    struct RenderSampler : RenderResourceIdentity {
         virtual ~RenderSampler() { }
     };
 
@@ -82,6 +99,12 @@ namespace plume {
         virtual void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr, uint64_t bufferOffset = 0) = 0;
         virtual void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView = nullptr) = 0;
         virtual void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) = 0;
+        virtual void setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+            for (uint32_t i = 0; i < count; ++i) setTexture(first + i, textures[i], layout, views ? views[i] : nullptr);
+        }
+        virtual void setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+            for (uint32_t i = 0; i < count; ++i) setSampler(first + i, samplers[i]);
+        }
         virtual void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) = 0;
     };
 

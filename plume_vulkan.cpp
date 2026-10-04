@@ -75,6 +75,11 @@ namespace plume {
     };
     
     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME,
+        VK_KHR_16BIT_STORAGE_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME,
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
         VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
@@ -1126,6 +1131,12 @@ namespace plume {
         viewInfo.components.b = toVk(desc.componentMapping.b);
         viewInfo.components.a = toVk(desc.componentMapping.a);
         viewInfo.subresourceRange.aspectMask = toViewAspectFlags(texture->desc.flags);
+        if (desc.planeSlice == 1) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        } else if ((texture->desc.flags & RenderTextureFlag::DEPTH_TARGET)
+            && (desc.format == RenderFormat::R32_FLOAT || desc.format == RenderFormat::D32_FLOAT)) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
         viewInfo.subresourceRange.baseMipLevel = desc.mipSlice;
         viewInfo.subresourceRange.levelCount = mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = desc.arrayIndex;
@@ -1529,15 +1540,11 @@ namespace plume {
             inputAssembly.primitiveRestartEnable = VK_TRUE;
         }
 
-        uint32_t renderTargetCount = desc.renderTargetCount;
-        if (renderTargetCount == 0 && desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            renderTargetCount = 1;
-        }
-
         VkPipelineViewportStateCreateInfo viewportState = {};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = renderTargetCount;
-        viewportState.scissorCount = renderTargetCount;
+        // Attachments share a viewport; MRT count is not a viewport count.
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rasterization = {};
         rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -2056,7 +2063,46 @@ namespace plume {
         setDescriptor(descriptorIndex, nullptr, nullptr, nullptr, &setAccelerationStructure);
     }
 
-    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+    void VulkanDescriptorSet::setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *texture = static_cast<const VulkanTexture *>(textures[base + i]);
+                if (!texture) continue;
+                const auto *view = views ? static_cast<const VulkanTextureView *>(views[base + i]) : nullptr;
+                images[i].imageLayout = toImageLayout(layout);
+                images[i].imageView = view ? view->vk : texture->imageView;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *sampler = static_cast<const VulkanSampler *>(samplers[base + i]);
+                if (sampler) images[i].sampler = sampler->vk;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setImageDescriptors(uint32_t first, uint32_t count, const VkDescriptorImageInfo *images) {
+        assert(count <= 4);
+        VkWriteDescriptorSet writes[4] = {};
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!images[i].imageView && !images[i].sampler) continue;
+            writes[n] = descriptorWrite(first + i);
+            writes[n++].pImageInfo = &images[i];
+        }
+        if (n) vkUpdateDescriptorSets(device->vk, n, writes, 0, nullptr);
+    }
+
+    VkWriteDescriptorSet VulkanDescriptorSet::descriptorWrite(uint32_t descriptorIndex) const {
         assert(descriptorIndex < setLayout->descriptorBindingIndices.size());
 
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
@@ -2064,12 +2110,17 @@ namespace plume {
         const VkDescriptorSetLayoutBinding &setLayoutBinding = setLayout->setBindings[bindingIndex];
         VkWriteDescriptorSet writeDescriptor = {};
         writeDescriptor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptor.pNext = pNext;
         writeDescriptor.dstSet = vk;
         writeDescriptor.dstBinding = setLayoutBinding.binding;
         writeDescriptor.dstArrayElement = descriptorIndex - indexBase;
         writeDescriptor.descriptorCount = 1;
         writeDescriptor.descriptorType = setLayoutBinding.descriptorType;
+        return writeDescriptor;
+    }
+
+    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+        VkWriteDescriptorSet writeDescriptor = descriptorWrite(descriptorIndex);
+        writeDescriptor.pNext = pNext;
         writeDescriptor.pBufferInfo = bufferInfo;
         writeDescriptor.pImageInfo = imageInfo;
         writeDescriptor.pTexelBufferView = texelBufferView;
@@ -3273,7 +3324,7 @@ namespace plume {
             assert(srcBuffer != nullptr);
             assert(copyFootprintCompatible(
                 dstTexture->desc.format, srcLocation.placedFootprint.format,
-                dstLocation.subresource.planeIndex));
+                (dstLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u)));
 
             const NormalizedTextureToBufferCopy copy =
                 NormalizeTextureToBufferCopy(
@@ -3293,7 +3344,7 @@ namespace plume {
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
             imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
                 dstTexture->desc.format, dstTexture->desc.flags,
-                dstLocation.subresource.planeIndex);
+                (dstLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u));
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
@@ -3311,7 +3362,7 @@ namespace plume {
             assert(srcTexture != nullptr);
             assert(copyFootprintCompatible(
                 srcTexture->desc.format, dstLocation.placedFootprint.format,
-                srcLocation.subresource.planeIndex));
+                (srcLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u)));
             assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
 
             const NormalizedTextureToBufferCopy copy =
@@ -3333,7 +3384,7 @@ namespace plume {
             imageCopy.bufferImageHeight = copy.bufferImageHeight;
             imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
                 srcTexture->desc.format, srcTexture->desc.flags,
-                srcLocation.subresource.planeIndex);
+                (srcLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u));
             imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
             imageCopy.imageSubresource.mipLevel = copy.mipLevel;
@@ -3361,13 +3412,13 @@ namespace plume {
             VkImageCopy imageCopy = {};
             imageCopy.srcSubresource.aspectMask = toCopyAspectFlags(
                 srcTexture->desc.format, srcTexture->desc.flags,
-                srcLocation.subresource.planeIndex);
+                (srcLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u));
             imageCopy.srcSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
             imageCopy.srcSubresource.layerCount = 1;
             imageCopy.srcSubresource.mipLevel = srcLocation.subresource.mipLevel;
             imageCopy.dstSubresource.aspectMask = toCopyAspectFlags(
                 dstTexture->desc.format, dstTexture->desc.flags,
-                dstLocation.subresource.planeIndex);
+                (dstLocation.subresource.aspect == RenderTextureCopyAspect::STENCIL ? 1u : 0u));
             imageCopy.dstSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
             imageCopy.dstSubresource.layerCount = 1;
             imageCopy.dstSubresource.mipLevel = dstLocation.subresource.mipLevel;
@@ -3758,11 +3809,13 @@ namespace plume {
         submitInfo.pCommandBuffers = commandBuffers.data();
         submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
 
-        const VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // Vulkan requires one stage mask per wait semaphore.
+        thread_local std::vector<VkPipelineStageFlags> waitStages;
+        waitStages.assign(waitSemaphoreVector.size(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
         if (!waitSemaphoreVector.empty()) {
             submitInfo.pWaitSemaphores = waitSemaphoreVector.data();
             submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoreVector.size());
-            submitInfo.pWaitDstStageMask = &waitStages;
+            submitInfo.pWaitDstStageMask = waitStages.data();
         }
 
         if (!signalSemaphoreVector.empty()) {
@@ -4012,10 +4065,34 @@ namespace plume {
 
         // Check for supported features.
         void *featuresChain = nullptr;
+        // External compute effects (including FSR) query physical-device FP16
+        // support. Enable the supported features on the logical device too.
+        VkPhysicalDeviceShaderFloat16Int8Features float16Features = {};
+        const bool float16Found = supportedOptionalExtensions.count(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) != 0;
+        if (float16Found) {
+            float16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+            float16Features.pNext = featuresChain;
+            featuresChain = &float16Features;
+        }
+        VkPhysicalDevice16BitStorageFeatures storage16Features = {};
+        const bool storage16Found = supportedOptionalExtensions.count(VK_KHR_16BIT_STORAGE_EXTENSION_NAME) != 0;
+        if (storage16Found) {
+            storage16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+            storage16Features.pNext = featuresChain;
+            featuresChain = &storage16Features;
+        }
         VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures = {};
+        VkPhysicalDeviceSubgroupSizeControlFeaturesEXT subgroupFeatures = {};
+        const bool subgroupFound = supportedOptionalExtensions.count(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) != 0;
+        if (subgroupFound) {
+            subgroupFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT;
+            subgroupFeatures.pNext = featuresChain;
+            featuresChain = &subgroupFeatures;
+        }
         const bool descriptorIndexingFound = supportedOptionalExtensions.find(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) != supportedOptionalExtensions.end();
         if (descriptorIndexingFound) {
             indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+            indexingFeatures.pNext = featuresChain;
             featuresChain = &indexingFeatures;
         }
 
@@ -4104,6 +4181,18 @@ namespace plume {
 
         // Build the device creation chain.
         void *createDeviceChain = nullptr;
+        if (subgroupFound) {
+            subgroupFeatures.pNext = createDeviceChain;
+            createDeviceChain = &subgroupFeatures;
+        }
+        if (float16Found) {
+            float16Features.pNext = createDeviceChain;
+            createDeviceChain = &float16Features;
+        }
+        if (storage16Found) {
+            storage16Features.pNext = createDeviceChain;
+            createDeviceChain = &storage16Features;
+        }
         const bool rayTracingSupported = rayTracingPipelineFeatures.rayTracingPipeline && accelerationStructureFeatures.accelerationStructure;
         if (rayTracingSupported) {
             rayTracingPipelineFeatures.pNext = createDeviceChain;

@@ -691,9 +691,11 @@ namespace plume {
             uint32_t arraySize = interfaceTexture->desc.arraySize;
             loc.pResource = (interfaceTexture != nullptr) ? interfaceTexture->d3d : nullptr;
             loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            loc.SubresourceIndex = location.subresource.mipLevel +
-                location.subresource.arrayIndex * mipLevels +
-                location.subresource.planeIndex * mipLevels * arraySize;
+            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels;
+            if (location.subresource.aspect == RenderTextureCopyAspect::STENCIL) {
+                assert(RenderFormatIsStencil(interfaceTexture->desc.format));
+                loc.SubresourceIndex += mipLevels * arraySize;
+            }
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
@@ -2309,8 +2311,23 @@ namespace plume {
             copyBox.back = srcBox->back;
         }
 
-        const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
-        const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
+        D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
+        D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
+        // D3D12 requires the native plane format, not the parent D32S8 format.
+        auto planeFootprint = [](const RenderTextureCopyLocation &sub,
+                const RenderTextureCopyLocation &buffer, D3D12_TEXTURE_COPY_LOCATION &native) {
+            if (sub.type != RenderTextureCopyType::SUBRESOURCE ||
+                    buffer.type != RenderTextureCopyType::PLACED_FOOTPRINT ||
+                    sub.subresource.aspect == RenderTextureCopyAspect::ALL) return;
+            const auto *texture = static_cast<const D3D12Texture *>(sub.texture);
+            const auto desc = texture->d3d->GetDesc();
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+            texture->device->d3d->GetCopyableFootprints(&desc,
+                toD3D12(sub).SubresourceIndex, 1, 0, &footprint, nullptr, nullptr, nullptr);
+            native.PlacedFootprint.Footprint.Format = footprint.Footprint.Format;
+        };
+        planeFootprint(srcLocation, dstLocation, copyDstLocation);
+        planeFootprint(dstLocation, srcLocation, copySrcLocation);
         setSamplePositions((dstLocation.texture != nullptr) ? dstLocation.texture : srcLocation.texture);
         d3d->CopyTextureRegion(&copyDstLocation, dstX, dstY, dstZ, &copySrcLocation, (srcBox != nullptr) ? &copyBox : nullptr);
         resetSamplePositions();
@@ -2983,6 +3000,7 @@ namespace plume {
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srvDesc.Texture2D.MipLevels = mipLevels;
                     srvDesc.Texture2D.MostDetailedMip = mipSlice;
+                    srvDesc.Texture2D.PlaneSlice = desc.planeSlice;
                 }
             }
 
