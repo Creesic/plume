@@ -1529,15 +1529,10 @@ namespace plume {
             inputAssembly.primitiveRestartEnable = VK_TRUE;
         }
 
-        uint32_t renderTargetCount = desc.renderTargetCount;
-        if (renderTargetCount == 0 && desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            renderTargetCount = 1;
-        }
-
         VkPipelineViewportStateCreateInfo viewportState = {};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = renderTargetCount;
-        viewportState.scissorCount = renderTargetCount;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rasterization = {};
         rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -1644,6 +1639,9 @@ namespace plume {
         dynamicStates.clear();
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
+        // Every graphics pipeline takes its blend constants from setBlendFactor;
+        // begin() sets the D3D default (1,1,1,1) so draws never see them unset.
+        dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
 
         if (desc.dynamicDepthBiasEnabled) {
             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
@@ -2863,6 +2861,9 @@ namespace plume {
             fprintf(stderr, "vkBeginCommandBuffer failed with error code 0x%X.\n", res);
             return;
         }
+
+        const float defaultBlendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        vkCmdSetBlendConstants(vk, defaultBlendFactor);
     }
 
     void VulkanCommandList::end() {
@@ -3169,6 +3170,10 @@ namespace plume {
 
     void VulkanCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+    }
+
+    void VulkanCommandList::setBlendFactor(const float *rgba) {
+        vkCmdSetBlendConstants(vk, rgba);
     }
 
     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {

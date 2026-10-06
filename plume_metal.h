@@ -118,6 +118,7 @@ namespace plume {
                 uint32_t depthBias : 1;
                 uint32_t depthStencil : 1;
                 uint32_t rasterizer : 1;
+                uint32_t blendColor : 1;
             };
             uint32_t value;
         };
@@ -129,7 +130,7 @@ namespace plume {
         uint32_t vertexBufferSlots;
 
         void setAll() {
-            value = 0x1FF; // All 9 bits set
+            value = 0x3FF; // All 10 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
         }
@@ -432,6 +433,8 @@ namespace plume {
             float slopeScaledDepthBias;
         } dynamicDepthBias;
 
+        float dynamicBlendColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
         struct {
             uint32_t updateDirtyBits = ~0;
             int update[MetalBarrierStage::COUNT] = {};
@@ -486,6 +489,7 @@ namespace plume {
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+        void setBlendFactor(const float *rgba) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
