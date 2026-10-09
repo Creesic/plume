@@ -3669,7 +3669,11 @@ namespace plume {
         const VulkanQueryPool *interfaceQueryPool =
             static_cast<const VulkanQueryPool *>(queryPool);
         assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
-        checkActiveRenderPass();
+        // Without a target framebuffer the query begins outside any render
+        // pass: it may then span several passes and must end outside one too.
+        if (targetFramebuffer != nullptr) {
+            checkActiveRenderPass();
+        }
         vkCmdBeginQuery(vk, interfaceQueryPool->vk, queryIndex, 0);
     }
 
@@ -3679,7 +3683,9 @@ namespace plume {
         const VulkanQueryPool *interfaceQueryPool =
             static_cast<const VulkanQueryPool *>(queryPool);
         assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
-        checkActiveRenderPass();
+        if (targetFramebuffer != nullptr) {
+            checkActiveRenderPass();
+        }
         vkCmdEndQuery(vk, interfaceQueryPool->vk, queryIndex);
     }
 
