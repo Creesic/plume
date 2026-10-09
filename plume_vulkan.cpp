@@ -4417,6 +4417,7 @@ namespace plume {
 
         // Fill capabilities.
         capabilities.geometryShader = deviceFeatures.features.geometryShader;
+        capabilities.queryOutsideRenderPass = true;
         capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);

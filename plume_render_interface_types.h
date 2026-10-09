@@ -1775,6 +1775,10 @@ namespace plume {
         // Geometry shaders.
         bool geometryShader = false;
 
+        // Occlusion queries may begin and end outside a render pass and span
+        // several (Metal scopes visibility to one render encoder).
+        bool queryOutsideRenderPass = false;
+
         // Raytracing.
         bool raytracing = false;
         bool raytracingStateUpdate = false;
