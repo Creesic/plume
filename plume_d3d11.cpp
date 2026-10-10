@@ -1934,7 +1934,12 @@ namespace plume {
         const D3D11_VIEWPORT &viewport, const D3D11_RECT &scissor, ID3D11PixelShader *pixelShader,
         ID3D11ShaderResourceView *source, uint32_t depthStencilIndex, uint32_t stencilReference)
     {
-        // Targets first: a source still bound as a target cannot be read.
+        // The last draw's textures may be this pass's target, and a source still
+        // bound as a target cannot be read: unbind both before binding the target.
+        ID3D11ShaderResourceView *noViews[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+        context->VSSetShaderResources(0, 16, noViews);
+        context->GSSetShaderResources(0, 16, noViews);
+        context->PSSetShaderResources(0, 16, noViews);
         context->OMSetRenderTargets(target ? 1 : 0, &target, depth);
         context->UpdateSubresource(internalConstants.Get(), 0, nullptr, &internal, 0, 0);
         ID3D11Buffer *buffer = internalConstants.Get();
