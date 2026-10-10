@@ -455,6 +455,9 @@ namespace plume {
         IDXGIAdapter1 *adapter = nullptr;
         D3D12MA::Allocator *allocator = nullptr;
         D3D_SHADER_MODEL shaderModel = D3D_SHADER_MODEL(0);
+        // DXBC (Shader Model 5.0) shaders declare every register in space 0, so
+        // root signatures place every descriptor set in space 0 too.
+        bool flatRegisterSpaces = false;
         std::unique_ptr<RenderPipelineLayout> rtDummyGlobalPipelineLayout;
         std::unique_ptr<RenderPipelineLayout> rtDummyLocalPipelineLayout;
         std::unique_ptr<D3D12DescriptorHeapAllocator> viewHeapAllocator;
@@ -512,6 +515,10 @@ namespace plume {
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
         bool allowTearing = false;
+        // Use the WARP software adapter instead of the hardware adapters.
+        bool softwareAdapter = false;
+        // Take DXBC shaders even when the device supports Shader Model 6.
+        bool forceDxbc = false;
 
         D3D12Interface();
         ~D3D12Interface() override;

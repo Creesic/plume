@@ -3192,7 +3192,7 @@ namespace plume {
         assert(data != nullptr);
         assert(size > 0);
         assert(format != RenderShaderFormat::UNKNOWN);
-        assert(format == RenderShaderFormat::DXIL);
+        assert((format == RenderShaderFormat::DXIL) || (format == RenderShaderFormat::DXBC));
 
         this->device = device;
         this->format = format;
@@ -3784,7 +3784,7 @@ namespace plume {
             rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
             rootParameter.Constants.ShaderRegister = range.binding;
-            rootParameter.Constants.RegisterSpace = range.set;
+            rootParameter.Constants.RegisterSpace = device->flatRegisterSpaces ? 0 : range.set;
             rootParameter.Constants.Num32BitValues = (range.size + sizeof(uint32_t) - 1) / sizeof(uint32_t);
             rootParameters.emplace_back(rootParameter);
             pushConstantRanges.emplace_back(range);
@@ -3845,7 +3845,7 @@ namespace plume {
                         staticSampler.MinLOD = samplerDesc.MinLOD;
                         staticSampler.MaxLOD = samplerDesc.MaxLOD;
                         staticSampler.ShaderRegister = renderRange.binding;
-                        staticSampler.RegisterSpace = i;
+                        staticSampler.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                         staticSampler.ShaderVisibility = toD3D12(sampler->shaderVisibility);
                         staticSamplers.emplace_back(staticSampler);
                     }
@@ -3856,7 +3856,7 @@ namespace plume {
                     descriptorRange.RangeType = toRangeType(renderRange.type);
                     descriptorRange.NumDescriptors = isRangeBoundless ? UINT_MAX : renderRange.count;
                     descriptorRange.BaseShaderRegister = renderRange.binding;
-                    descriptorRange.RegisterSpace = i;
+                    descriptorRange.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                     descriptorRange.OffsetInDescriptorsFromTableStart = samplerTableOffset;
                     samplerTableSize++;
                     samplerTableOffset += renderRange.count;
@@ -3866,7 +3866,7 @@ namespace plume {
                     descriptorRange.RangeType = toRangeType(renderRange.type);
                     descriptorRange.NumDescriptors = isRangeBoundless ? UINT_MAX : renderRange.count;
                     descriptorRange.BaseShaderRegister = renderRange.binding;
-                    descriptorRange.RegisterSpace = i;
+                    descriptorRange.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                     descriptorRange.OffsetInDescriptorsFromTableStart = viewTableOffset;
                     viewTableSize++;
                     viewTableOffset += renderRange.count;
@@ -3973,12 +3973,21 @@ namespace plume {
         HRESULT res;
         UINT adapterIndex = 0;
         IDXGIAdapter1 *adapterOption = nullptr;
-        while (renderInterface->dxgiFactory->EnumAdapters1(adapterIndex++, &adapterOption) != DXGI_ERROR_NOT_FOUND) {
+        // The software interface offers WARP alone; otherwise every hardware adapter.
+        auto nextAdapter = [&]() {
+            if (renderInterface->softwareAdapter) {
+                return (adapterIndex++ == 0) && SUCCEEDED(renderInterface->dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&adapterOption)));
+            }
+
+            return renderInterface->dxgiFactory->EnumAdapters1(adapterIndex++, &adapterOption) != DXGI_ERROR_NOT_FOUND;
+        };
+
+        while (nextAdapter()) {
             DXGI_ADAPTER_DESC1 adapterDesc;
             adapterOption->GetDesc1(&adapterDesc);
 
             // Ignore remote or software adapters.
-            if (adapterDesc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            if (!renderInterface->softwareAdapter && (adapterDesc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE))) {
                 adapterOption->Release();
                 continue;
             }
@@ -3990,12 +3999,9 @@ namespace plume {
                 continue;
             }
 
-            // Determine the shader model supported by the device.
-#       if SM_5_1_SUPPORTED
+            // Determine the shader model supported by the device. A device below
+            // Shader Model 6 takes DXBC shaders instead of DXIL.
             const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0, D3D_SHADER_MODEL_5_1 };
-#       else
-            const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0 };
-#       endif
             D3D12_FEATURE_DATA_SHADER_MODEL dataShaderModel = {};
             for (uint32_t i = 0; i < _countof(supportedShaderModels); i++) {
                 dataShaderModel.HighestShaderModel = supportedShaderModels[i];
@@ -4118,6 +4124,9 @@ namespace plume {
             fprintf(stderr, "Unable to create a D3D12 device with the required features.\n");
             return;
         }
+
+        flatRegisterSpaces = renderInterface->forceDxbc || (shaderModel < D3D_SHADER_MODEL_6_0);
+        renderInterface->capabilities.shaderFormat = flatRegisterSpaces ? RenderShaderFormat::DXBC : RenderShaderFormat::DXIL;
 
         #ifdef D3D12_DEBUG_SET_STABLE_POWER_STATE
             d3d->SetStablePowerState(TRUE);
@@ -4642,8 +4651,18 @@ namespace plume {
 
     // Global creation function.
     
-    std::unique_ptr<RenderInterface> CreateD3D12Interface() {
+    std::unique_ptr<RenderInterface> CreateD3D12Interface(bool softwareAdapter, bool forceDxbc) {
         std::unique_ptr<D3D12Interface> createdInterface = std::make_unique<D3D12Interface>();
-        return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
+        if (!createdInterface->isValid()) {
+            return nullptr;
+        }
+
+        createdInterface->softwareAdapter = softwareAdapter;
+        createdInterface->forceDxbc = forceDxbc;
+        return createdInterface;
+    }
+
+    std::unique_ptr<RenderInterface> CreateD3D12Interface() {
+        return CreateD3D12Interface(false, false);
     }
 };

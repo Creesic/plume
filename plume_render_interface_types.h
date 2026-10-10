@@ -378,7 +378,10 @@ namespace plume {
         DXIL,
         SPIRV,
         METAL,
-        METAL_SOURCE
+        METAL_SOURCE,
+        // Shader Model 5.0 bytecode with every register in space 0 (D3D11, and
+        // D3D12 devices without Shader Model 6).
+        DXBC
     };
 
     enum class RenderRaytracingPipelineLibrarySymbolType {
