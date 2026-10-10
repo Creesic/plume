@@ -94,6 +94,7 @@ namespace plume {
         VK_KHR_PRESENT_ID_EXTENSION_NAME,
         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME,
         // Vulkan spec requires this to be enabled if supported by the driver.
         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
     };
@@ -1690,10 +1691,34 @@ namespace plume {
         pipelineInfo.layout = pipelineLayout->vk;
         pipelineInfo.renderPass = renderPass;
 
-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
+        // With the host's cache attached, ask the driver whether it was served from it.
+        const bool cached = device->pipelineCache != VK_NULL_HANDLE;
+        const bool tracked = cached && device->pipelineCreationFeedbackSupported;
+        VkPipelineCreationFeedback feedback = {};
+        std::vector<VkPipelineCreationFeedback> stageFeedback(stages.size());
+        VkPipelineCreationFeedbackCreateInfoEXT feedbackInfo = {};
+        if (tracked) {
+            feedbackInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT;
+            feedbackInfo.pPipelineCreationFeedback = &feedback;
+            feedbackInfo.pipelineStageCreationFeedbackCount = uint32_t(stageFeedback.size());
+            feedbackInfo.pPipelineStageCreationFeedbacks = stageFeedback.data();
+            pipelineInfo.pNext = &feedbackInfo;
+        }
+
+        VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
             return;
+        }
+
+        if (cached) {
+            const VkPipelineCreationFeedbackFlags hit = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT | VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+            if (tracked && (feedback.flags & hit) == hit) {
+                device->pipelineCacheHits.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                device->pipelineCacheMisses.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -4447,6 +4472,7 @@ namespace plume {
 
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        pipelineCreationFeedbackSupported = supportedOptionalExtensions.find(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME) != supportedOptionalExtensions.end();
 
         if (!nullDescriptorSupported) {
             nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
@@ -4730,6 +4756,11 @@ namespace plume {
     void VulkanDevice::release() {
         nullBuffer = nullptr; // force destruction before destroying allocator
 
+        if (pipelineCache != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
+
         if (allocator != VK_NULL_HANDLE) {
             vmaDestroyAllocator(allocator);
             allocator = VK_NULL_HANDLE;
@@ -4743,6 +4774,69 @@ namespace plume {
 
     bool VulkanDevice::isValid() const {
         return vk != nullptr;
+    }
+
+    bool VulkanDevice::setPipelineCacheData(const void *data, uint64_t size) {
+        if (vk == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        if (pipelineCache != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
+
+        VkPipelineCacheCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        createInfo.initialDataSize = (data != nullptr) ? size_t(size) : 0;
+        createInfo.pInitialData = (data != nullptr && size != 0) ? data : nullptr;
+        VkResult res = vkCreatePipelineCache(vk, &createInfo, nullptr, &pipelineCache);
+        if (res != VK_SUCCESS && createInfo.initialDataSize != 0) {
+            // Keep caching with an empty cache when the driver refuses the blob.
+            createInfo.initialDataSize = 0;
+            createInfo.pInitialData = nullptr;
+            res = vkCreatePipelineCache(vk, &createInfo, nullptr, &pipelineCache);
+        }
+
+        if (res != VK_SUCCESS) {
+            pipelineCache = VK_NULL_HANDLE;
+            return false;
+        }
+
+        pipelineCacheHits = 0;
+        pipelineCacheMisses = 0;
+        return true;
+    }
+
+    std::vector<uint8_t> VulkanDevice::getPipelineCacheData() {
+        std::vector<uint8_t> data;
+        if (pipelineCache == VK_NULL_HANDLE) {
+            return data;
+        }
+
+        size_t size = 0;
+        if (vkGetPipelineCacheData(vk, pipelineCache, &size, nullptr) != VK_SUCCESS || size == 0) {
+            return data;
+        }
+
+        data.resize(size);
+        const VkResult res = vkGetPipelineCacheData(vk, pipelineCache, &size, data.data());
+        if (res != VK_SUCCESS && res != VK_INCOMPLETE) {
+            data.clear();
+        }
+        else {
+            data.resize(size);
+        }
+
+        return data;
+    }
+
+    RenderPipelineCacheStats VulkanDevice::getPipelineCacheStats() const {
+        RenderPipelineCacheStats stats;
+        stats.hits = pipelineCacheHits.load(std::memory_order_relaxed);
+        stats.misses = pipelineCacheMisses.load(std::memory_order_relaxed);
+        stats.tracked = (pipelineCache != VK_NULL_HANDLE) && pipelineCreationFeedbackSupported;
+        return stats;
     }
 
     bool VulkanDevice::beginCapture() {

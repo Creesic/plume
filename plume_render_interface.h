@@ -261,6 +261,14 @@ namespace plume {
         virtual uint32_t getCount() const = 0;
     };
 
+    // Graphics pipelines served from the persisted driver cache versus built by
+    // the driver. `tracked` is false where the driver cannot say which.
+    struct RenderPipelineCacheStats {
+        uint32_t hits = 0;
+        uint32_t misses = 0;
+        bool tracked = false;
+    };
+
     struct RenderDevice {
         virtual ~RenderDevice() { }
         virtual std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) = 0;
@@ -289,6 +297,13 @@ namespace plume {
         virtual RenderSampleCounts getSampleCountsSupported(RenderFormat format) const = 0;
         virtual bool beginCapture() = 0;
         virtual bool endCapture() = 0;
+        // Driver pipeline cache the host persists between runs. Call before the
+        // first pipeline; the device then caches every graphics pipeline it builds.
+        // `data` is a blob from getPipelineCacheData() (or empty); a blob the driver
+        // rejects is ignored. Returns whether the device is now caching.
+        virtual bool setPipelineCacheData(const void *data, uint64_t size) { return false; }
+        virtual std::vector<uint8_t> getPipelineCacheData() { return {}; }
+        virtual RenderPipelineCacheStats getPipelineCacheStats() const { return {}; }
     };
 
     struct RenderInterface {

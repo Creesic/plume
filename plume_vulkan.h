@@ -429,6 +429,10 @@ namespace plume {
         std::unique_ptr<RenderBuffer> nullBuffer;
         bool loadStoreOpNoneSupported = false;
         bool nullDescriptorSupported = false;
+        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+        bool pipelineCreationFeedbackSupported = false;
+        std::atomic<uint32_t> pipelineCacheHits{0};
+        std::atomic<uint32_t> pipelineCacheMisses{0};
 
         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
         ~VulkanDevice() override;
@@ -459,6 +463,9 @@ namespace plume {
         bool isValid() const;
         bool beginCapture() override;
         bool endCapture() override;
+        bool setPipelineCacheData(const void *data, uint64_t size) override;
+        std::vector<uint8_t> getPipelineCacheData() override;
+        RenderPipelineCacheStats getPipelineCacheStats() const override;
     };
 
     struct VulkanInterface : RenderInterface {

@@ -3255,6 +3255,50 @@ namespace plume {
 
     D3D12Sampler::~D3D12Sampler() { }
 
+    // Names of pipelines in the persisted library: a hash of everything that
+    // defines the pipeline. The library itself rejects a name whose stored
+    // description differs, so a collision costs a rebuild, never a wrong pipeline.
+    static constexpr uint64_t kPipelineHashSeed = 1469598103934665603ull;
+
+    static uint64_t pipelineHash(uint64_t hash, const void *data, size_t size) {
+        const uint8_t *bytes = static_cast<const uint8_t *>(data);
+        for (size_t i = 0; i < size; i++) {
+            hash = (hash ^ bytes[i]) * 1099511628211ull;
+        }
+
+        return hash;
+    }
+
+    static std::wstring graphicsPipelineName(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &psoDesc, const D3D12PipelineLayout *layout, const std::vector<D3D12_INPUT_ELEMENT_DESC> &inputElements) {
+        // Pointers differ between runs; their contents are hashed below.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC state;
+        memcpy(&state, &psoDesc, sizeof(state)); // Keeps the zeroed padding.
+        state.pRootSignature = nullptr;
+        state.VS.pShaderBytecode = nullptr;
+        state.GS.pShaderBytecode = nullptr;
+        state.PS.pShaderBytecode = nullptr;
+        state.InputLayout.pInputElementDescs = nullptr;
+        uint64_t hash = pipelineHash(kPipelineHashSeed, &state, sizeof(state));
+        hash = pipelineHash(hash, &layout->signatureHash, sizeof(layout->signatureHash));
+        for (const D3D12_SHADER_BYTECODE *shader : { &psoDesc.VS, &psoDesc.GS, &psoDesc.PS }) {
+            hash = pipelineHash(hash, shader->pShaderBytecode, shader->BytecodeLength);
+        }
+
+        for (const D3D12_INPUT_ELEMENT_DESC &element : inputElements) {
+            hash = pipelineHash(hash, element.SemanticName, strlen(element.SemanticName) + 1);
+            hash = pipelineHash(hash, &element.SemanticIndex, sizeof(element.SemanticIndex));
+            hash = pipelineHash(hash, &element.Format, sizeof(element.Format));
+            hash = pipelineHash(hash, &element.InputSlot, sizeof(element.InputSlot));
+            hash = pipelineHash(hash, &element.AlignedByteOffset, sizeof(element.AlignedByteOffset));
+            hash = pipelineHash(hash, &element.InputSlotClass, sizeof(element.InputSlotClass));
+            hash = pipelineHash(hash, &element.InstanceDataStepRate, sizeof(element.InstanceDataStepRate));
+        }
+
+        wchar_t name[17];
+        swprintf(name, _countof(name), L"%016llx", static_cast<unsigned long long>(hash));
+        return name;
+    }
+
     // D3D12Pipeline
 
     D3D12Pipeline::D3D12Pipeline(D3D12Device *device, Type type) {
@@ -3318,7 +3362,9 @@ namespace plume {
         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
         const D3D12Shader *geometryShader = static_cast<const D3D12Shader *>(desc.geometryShader);
         const D3D12Shader *pixelShader = static_cast<const D3D12Shader *>(desc.pixelShader);
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        // Zeroed whole, padding included: the pipeline's cache name hashes these bytes.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+        memset(&psoDesc, 0, sizeof(psoDesc));
         psoDesc.pRootSignature = pipelineLayout->rootSignature;
         psoDesc.VS.pShaderBytecode = (vertexShader != nullptr) ? vertexShader->d3d.data() : nullptr;
         psoDesc.VS.BytecodeLength = (vertexShader != nullptr) ? vertexShader->d3d.size() : 0;
@@ -3435,10 +3481,34 @@ namespace plume {
             inputSlots.emplace_back(desc.inputSlots[i]);
         }
 
-        psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
+        // Member-wise: assigning a braced temporary would copy its stack padding
+        // over the zeroed bytes the pipeline's cache name hashes.
+        psoDesc.InputLayout.pInputElementDescs = inputElements.data();
+        psoDesc.InputLayout.NumElements = UINT(inputElements.size());
 
-        const HRESULT res = device->d3d->CreateGraphicsPipelineState(
-            &psoDesc, IID_PPV_ARGS(&d3d));
+        HRESULT res = E_FAIL;
+        if (device->pipelineLibrary != nullptr) {
+            // The library hands back a pipeline the driver compiled in an earlier
+            // run; otherwise build it and keep it for the next one.
+            const std::wstring name = graphicsPipelineName(psoDesc, pipelineLayout, inputElements);
+            res = device->pipelineLibrary->LoadGraphicsPipeline(name.c_str(), &psoDesc, IID_PPV_ARGS(&d3d));
+            if (SUCCEEDED(res)) {
+                device->pipelineCacheHits.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                d3d = nullptr;
+                res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+                if (SUCCEEDED(res)) {
+                    // A name already stored with a different description stays as it is.
+                    device->pipelineLibrary->StorePipeline(name.c_str(), d3d);
+                    device->pipelineCacheMisses.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+        else {
+            res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+        }
+
         if (FAILED(res)) {
             const HRESULT removed = device->d3d->GetDeviceRemovedReason();
             fprintf(stderr,
@@ -3882,6 +3952,8 @@ namespace plume {
             fprintf(stderr, "CreateRootSignature failed with error code 0x%lX.\n", res);
             return;
         }
+
+        signatureHash = pipelineHash(kPipelineHashSeed, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize());
     }
 
     D3D12PipelineLayout::~D3D12PipelineLayout() {
@@ -4140,6 +4212,11 @@ namespace plume {
     }
 
     D3D12Device::~D3D12Device() {
+        if (pipelineLibrary != nullptr) {
+            pipelineLibrary->Release();
+            pipelineLibrary = nullptr;
+        }
+
         cpuViewHeapAllocator.reset();
         viewHeapAllocator.reset();
         samplerHeapAllocator.reset();
@@ -4426,6 +4503,56 @@ namespace plume {
 
     bool D3D12Device::isValid() const {
         return d3d != nullptr;
+    }
+
+    bool D3D12Device::setPipelineCacheData(const void *data, uint64_t size) {
+        if (pipelineLibrary != nullptr) {
+            pipelineLibrary->Release();
+            pipelineLibrary = nullptr;
+        }
+
+        pipelineLibraryBlob.clear();
+        if (data != nullptr && size != 0) {
+            pipelineLibraryBlob.assign(static_cast<const uint8_t *>(data), static_cast<const uint8_t *>(data) + size);
+        }
+
+        // A blob from another driver or adapter fails here; start empty instead.
+        HRESULT res = d3d->CreatePipelineLibrary(pipelineLibraryBlob.data(), pipelineLibraryBlob.size(), IID_PPV_ARGS(&pipelineLibrary));
+        if (FAILED(res) && !pipelineLibraryBlob.empty()) {
+            pipelineLibraryBlob.clear();
+            res = d3d->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipelineLibrary));
+        }
+
+        if (FAILED(res)) {
+            pipelineLibrary = nullptr;
+            return false;
+        }
+
+        pipelineCacheHits = 0;
+        pipelineCacheMisses = 0;
+        return true;
+    }
+
+    std::vector<uint8_t> D3D12Device::getPipelineCacheData() {
+        std::vector<uint8_t> data;
+        if (pipelineLibrary == nullptr) {
+            return data;
+        }
+
+        data.resize(pipelineLibrary->GetSerializedSize());
+        if (data.empty() || FAILED(pipelineLibrary->Serialize(data.data(), data.size()))) {
+            data.clear();
+        }
+
+        return data;
+    }
+
+    RenderPipelineCacheStats D3D12Device::getPipelineCacheStats() const {
+        RenderPipelineCacheStats stats;
+        stats.hits = pipelineCacheHits.load(std::memory_order_relaxed);
+        stats.misses = pipelineCacheMisses.load(std::memory_order_relaxed);
+        stats.tracked = pipelineLibrary != nullptr;
+        return stats;
     }
 
     bool D3D12Device::beginCapture() {

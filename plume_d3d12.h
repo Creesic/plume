@@ -9,6 +9,7 @@
 
 #include "plume_render_interface.h"
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -441,6 +442,8 @@ namespace plume {
         std::vector<std::pair<uint32_t, RenderRootDescriptorType>> rootDescriptorRootIndicesAndTypes;
         uint32_t setCount = 0;
         uint32_t rootCount = 0;
+        // Identity of the serialized root signature, stable across runs.
+        uint64_t signatureHash = 0;
 
         D3D12PipelineLayout(D3D12Device *device, const RenderPipelineLayoutDesc &desc);
         ~D3D12PipelineLayout() override;
@@ -464,6 +467,11 @@ namespace plume {
         RenderDeviceDescription description;
         uint64_t timestampFrequency = 1;
         bool gpuUploadHeapFallback = false;
+        // The library reads the host's blob in place for its whole lifetime.
+        ID3D12PipelineLibrary *pipelineLibrary = nullptr;
+        std::vector<uint8_t> pipelineLibraryBlob;
+        std::atomic<uint32_t> pipelineCacheHits{0};
+        std::atomic<uint32_t> pipelineCacheMisses{0};
 
         D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
         ~D3D12Device() override;
@@ -494,6 +502,9 @@ namespace plume {
         bool isValid() const;
         bool beginCapture() override;
         bool endCapture() override;
+        bool setPipelineCacheData(const void *data, uint64_t size) override;
+        std::vector<uint8_t> getPipelineCacheData() override;
+        RenderPipelineCacheStats getPipelineCacheStats() const override;
     };
 
     struct D3D12Interface : RenderInterface {
