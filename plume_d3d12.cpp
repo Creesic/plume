@@ -780,6 +780,19 @@ namespace plume {
         object->SetName(wideCharName.c_str());
     }
 
+    // Constructors can fail after allocating the C++ wrapper. Never publish
+    // that wrapper as a usable native resource.
+    template<class T, class Native>
+    static std::unique_ptr<T> checkedResource(std::unique_ptr<T> object,
+            Native T::*member, D3D12Device *device) {
+        const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+        if (!((*object).*member) || FAILED(removed)) {
+            fprintf(stderr, "D3D12 startup resource unavailable: device_removed=0x%08lX.\n", removed);
+            return nullptr;
+        }
+        return object;
+    }
+
     // D3D12DescriptorHeapAllocator
 
     D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible) {
@@ -2704,14 +2717,15 @@ namespace plume {
     }
 
     std::unique_ptr<RenderCommandList> D3D12CommandQueue::createCommandList() {
-        return std::make_unique<D3D12CommandList>(this);
+        return checkedResource(std::make_unique<D3D12CommandList>(this), &D3D12CommandList::d3d, device);
     }
 
     std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
-        return std::make_unique<D3D12SwapChain>(this, desc);
+        return checkedResource(std::make_unique<D3D12SwapChain>(this, desc), &D3D12SwapChain::d3d, device);
     }
 
     void D3D12CommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
+        if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
         assert(commandLists != nullptr);
         assert(commandListCount > 0);
 
@@ -2722,6 +2736,7 @@ namespace plume {
                 interfaceSemaphore->semaphoreValue);
             if (FAILED(waitResult)) {
                 fprintf(stderr, "ID3D12CommandQueue::Wait failed with error code 0x%lX.\n", waitResult);
+                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
                 std::abort();
             }
         }
@@ -2745,6 +2760,7 @@ namespace plume {
                 interfaceSemaphore->semaphoreValue);
             if (FAILED(signalResult)) {
                 fprintf(stderr, "ID3D12CommandQueue::Signal(semaphore) failed with error code 0x%lX.\n", signalResult);
+                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
                 std::abort();
             }
         }
@@ -2760,6 +2776,7 @@ namespace plume {
                 : signalResult;
             if (FAILED(signalResult) || FAILED(eventResult)) {
                 fprintf(stderr, "D3D12 fence submission failed with error code 0x%lX.\n", FAILED(signalResult) ? signalResult : eventResult);
+                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
                 std::abort();
             }
             interfaceFence->fenceValue++;
@@ -2768,11 +2785,12 @@ namespace plume {
 
     void D3D12CommandQueue::waitForIdle() {
         // A failed native queue constructor cannot have submitted any work.
-        if (d3d == nullptr) { return; }
+        if (d3d == nullptr || FAILED(device->d3d->GetDeviceRemovedReason())) { return; }
         // A separate fence leaves the caller's submission fences untouched.
         D3D12CommandFence fence(device);
         if ((fence.d3d == nullptr) || (fence.fenceEvent == NULL)) {
             fprintf(stderr, "D3D12 idle fence creation failed.\n");
+            if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
             std::abort();
         }
         HRESULT res = d3d->Signal(fence.d3d, fence.fenceValue);
@@ -2781,12 +2799,14 @@ namespace plume {
         }
         if (FAILED(res)) {
             fprintf(stderr, "D3D12 idle fence submission failed with error code 0x%lX.\n", res);
+            if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
             std::abort();
         }
         waitForCommandFence(&fence);
     }
 
     void D3D12CommandQueue::waitForCommandFence(RenderCommandFence *fence) {
+        if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
         assert(fence != nullptr);
 
         D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
@@ -2857,7 +2877,7 @@ namespace plume {
 
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, nullptr, &allocation, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
-            fprintf(stderr, "CreateResource failed with error code 0x%lX.\n", res);
+            fprintf(stderr, "CreateResource failed: hr=0x%08lX device_removed=0x%08lX.\n", res, device->d3d->GetDeviceRemovedReason());
             return;
         }
     }
@@ -3103,7 +3123,7 @@ namespace plume {
 
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, (desc.optimizedClearValue != nullptr) ? &optimizedClearValue : nullptr, &allocation, IID_PPV_ARGS(&d3d));
         if (FAILED(res)) {
-            fprintf(stderr, "CreateResource failed with error code 0x%lX.\n", res);
+            fprintf(stderr, "CreateResource failed: hr=0x%08lX device_removed=0x%08lX.\n", res, device->d3d->GetDeviceRemovedReason());
             return;
         }
     }
@@ -3949,7 +3969,7 @@ namespace plume {
 
         res = device->d3d->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
         if (FAILED(res)) {
-            fprintf(stderr, "CreateRootSignature failed with error code 0x%lX.\n", res);
+            fprintf(stderr, "CreateRootSignature failed: hr=0x%08lX device_removed=0x%08lX.\n", res, device->d3d->GetDeviceRemovedReason());
             return;
         }
 
@@ -4267,20 +4287,20 @@ namespace plume {
     }
 
     std::unique_ptr<RenderCommandQueue> D3D12Device::createCommandQueue(RenderCommandListType type) {
-        return std::make_unique<D3D12CommandQueue>(this, type);
+        return checkedResource(std::make_unique<D3D12CommandQueue>(this, type), &D3D12CommandQueue::d3d, this);
     }
     
     std::unique_ptr<RenderBuffer> D3D12Device::createBuffer(const RenderBufferDesc &desc) {
         if ((desc.heapType == RenderHeapType::GPU_UPLOAD) && gpuUploadHeapFallback) {
-            return std::make_unique<D3D12Buffer>(this, customUploadPool.get(), desc);
+            return checkedResource(std::make_unique<D3D12Buffer>(this, customUploadPool.get(), desc), &D3D12Buffer::d3d, this);
         }
         else {
-            return std::make_unique<D3D12Buffer>(this, nullptr, desc);
+            return checkedResource(std::make_unique<D3D12Buffer>(this, nullptr, desc), &D3D12Buffer::d3d, this);
         }
     }
 
     std::unique_ptr<RenderTexture> D3D12Device::createTexture(const RenderTextureDesc &desc) {
-        return std::make_unique<D3D12Texture>(this, nullptr, desc);
+        return checkedResource(std::make_unique<D3D12Texture>(this, nullptr, desc), &D3D12Texture::d3d, this);
     }
 
     std::unique_ptr<RenderAccelerationStructure> D3D12Device::createAccelerationStructure(const RenderAccelerationStructureDesc &desc) {
@@ -4292,19 +4312,27 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipelineLayout> D3D12Device::createPipelineLayout(const RenderPipelineLayoutDesc &desc) {
-        return std::make_unique<D3D12PipelineLayout>(this, desc);
+        return checkedResource(std::make_unique<D3D12PipelineLayout>(this, desc), &D3D12PipelineLayout::rootSignature, this);
     }
 
     std::unique_ptr<RenderCommandFence> D3D12Device::createCommandFence() {
-        return std::make_unique<D3D12CommandFence>(this);
+        auto fence = checkedResource(std::make_unique<D3D12CommandFence>(this), &D3D12CommandFence::d3d, this);
+        if (fence && !fence->fenceEvent) return nullptr;
+        return fence;
     }
 
     std::unique_ptr<RenderCommandSemaphore> D3D12Device::createCommandSemaphore() {
-        return std::make_unique<D3D12CommandSemaphore>(this);
+        return checkedResource(std::make_unique<D3D12CommandSemaphore>(this), &D3D12CommandSemaphore::d3d, this);
     }
 
     std::unique_ptr<RenderFramebuffer> D3D12Device::createFramebuffer(const RenderFramebufferDesc &desc) {
-        return std::make_unique<D3D12Framebuffer>(this, desc);
+        if (FAILED(d3d->GetDeviceRemovedReason())) return nullptr;
+        auto framebuffer = std::make_unique<D3D12Framebuffer>(this, desc);
+        if (framebuffer->colorHandles.size() != desc.colorAttachmentsCount
+            || std::any_of(framebuffer->colorHandles.begin(), framebuffer->colorHandles.end(),
+                [](D3D12_CPU_DESCRIPTOR_HANDLE handle) { return handle.ptr == 0; })
+            || (desc.depthAttachment && framebuffer->depthHandle.ptr == 0)) return nullptr;
+        return framebuffer;
     }
 
     std::unique_ptr<RenderQueryPool> D3D12Device::createQueryPool(
