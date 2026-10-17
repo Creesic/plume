@@ -64,6 +64,10 @@ namespace plume {
     };
 
     static const std::unordered_set<std::string> OptionalInstanceExtensions = {
+#   if defined(_WIN64)
+        // Needed by VK_EXT_full_screen_exclusive.
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+#   endif
 #   if defined(__APPLE__)
         // Tells the system Vulkan loader to enumerate portability drivers, if supported.
         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
@@ -95,6 +99,10 @@ namespace plume {
         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
         VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME,
+#   if defined(_WIN64)
+        // Lets swap chains refuse exclusive fullscreen (see VulkanSwapChain::resize).
+        VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
+#   endif
         // Vulkan spec requires this to be enabled if supported by the driver.
         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
     };
@@ -2462,6 +2470,14 @@ namespace plume {
         createInfo.clipped = VK_TRUE;
         createInfo.oldSwapchain = vk;
 
+        // A borderless window covering the monitor must stay composited: drivers
+        // that present natively (NVIDIA "Prefer native") otherwise take it into
+        // exclusive fullscreen, which also switches an HDR display's mode.
+        VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = {};
+        fullScreenInfo.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
+        fullScreenInfo.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+        createInfo.pNext = commandQueue->device->fullScreenExclusiveSupported ? &fullScreenInfo : nullptr;
+
         VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateSwapchainKHR failed with error code 0x%X.\n", res);
@@ -4101,6 +4117,12 @@ namespace plume {
             }
 #       endif
         }
+
+#   if defined(_WIN64)
+        if (!renderInterface->surfaceCapabilities2Supported) {
+            supportedOptionalExtensions.erase(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+        }
+#   endif
         
         if (!missingRequiredExtensions.empty()) {
             for (const std::string &extension : missingRequiredExtensions) {
@@ -4473,6 +4495,9 @@ namespace plume {
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
         pipelineCreationFeedbackSupported = supportedOptionalExtensions.find(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME) != supportedOptionalExtensions.end();
+#   if defined(_WIN64)
+        fullScreenExclusiveSupported = supportedOptionalExtensions.count(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME) != 0;
+#   endif
 
         if (!nullDescriptorSupported) {
             nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
@@ -4942,6 +4967,8 @@ namespace plume {
         for (const std::string &extension : supportedOptionalExtensions) {
             enabledExtensions.push_back(extension.c_str());
         }
+
+        surfaceCapabilities2Supported = supportedOptionalExtensions.count(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) != 0;
 
         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
         createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());

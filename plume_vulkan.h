@@ -431,6 +431,7 @@ namespace plume {
         bool nullDescriptorSupported = false;
         VkPipelineCache pipelineCache = VK_NULL_HANDLE;
         bool pipelineCreationFeedbackSupported = false;
+        bool fullScreenExclusiveSupported = false;
         std::atomic<uint32_t> pipelineCacheHits{0};
         std::atomic<uint32_t> pipelineCacheMisses{0};
 
@@ -473,6 +474,7 @@ namespace plume {
         VkApplicationInfo appInfo = {};
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
+        bool surfaceCapabilities2Supported = false;
 
 #   if PLUME_SDL_VULKAN_ENABLED
         VulkanInterface(RenderWindow sdlWindow);
