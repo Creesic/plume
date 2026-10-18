@@ -4037,6 +4037,14 @@ namespace plume {
                 }
             }
 
+            // Determine if the device supports double-precision shader arithmetic.
+            bool float64Option = false;
+            D3D12_FEATURE_DATA_D3D12_OPTIONS d3d12Options = {};
+            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &d3d12Options, sizeof(d3d12Options));
+            if (SUCCEEDED(res)) {
+                float64Option = d3d12Options.DoublePrecisionFloatShaderOps;
+            }
+
             // Determine if the device supports sample locations.
             bool resolveRegionOption = false;
             bool samplePositionsOption = false;
@@ -4105,6 +4113,7 @@ namespace plume {
                 d3d = deviceOption;
                 shaderModel = dataShaderModel.HighestShaderModel;
                 capabilities.geometryShader = true;
+                capabilities.shaderFloat64 = float64Option;
                 capabilities.queryOutsideRenderPass = true;
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;

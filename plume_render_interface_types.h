@@ -1778,6 +1778,9 @@ namespace plume {
         // Geometry shaders.
         bool geometryShader = false;
 
+        // 64-bit float arithmetic, including division, in shaders.
+        bool shaderFloat64 = false;
+
         // Occlusion queries may begin and end outside a render pass and span
         // several (Metal scopes visibility to one render encoder).
         bool queryOutsideRenderPass = false;

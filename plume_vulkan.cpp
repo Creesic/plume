@@ -4464,6 +4464,8 @@ namespace plume {
 
         // Fill capabilities.
         capabilities.geometryShader = deviceFeatures.features.geometryShader;
+        // Every supported core feature is enabled (pEnabledFeatures above).
+        capabilities.shaderFloat64 = deviceFeatures.features.shaderFloat64;
         capabilities.queryOutsideRenderPass = true;
         capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
