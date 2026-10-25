@@ -2982,6 +2982,18 @@ namespace plume {
         this->arraySize = std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex);
         this->arrayIndex = desc.arrayIndex;
         this->shader4ComponentMapping = toD3D12(desc.componentMapping);
+
+        // Plane 1 of a depth-stencil texture is its stencil, which D3D12 reads as
+        // X32_TYPELESS_G8X24_UINT in green. Vulkan's stencil aspect returns it in
+        // red, so red reads green here and shaders see the same value on both.
+        if ((desc.planeSlice == 1) && (this->format == DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS)) {
+            this->format = DXGI_FORMAT_X32_TYPELESS_G8X24_UINT;
+            const auto green = [](RenderSwizzle swizzle) { return swizzle == RenderSwizzle::R ? RenderSwizzle::G : swizzle; };
+            const RenderComponentMapping &mapping = desc.componentMapping;
+            this->shader4ComponentMapping = toD3D12(RenderComponentMapping(
+                mapping.r == RenderSwizzle::IDENTITY ? RenderSwizzle::G : green(mapping.r),
+                green(mapping.g), green(mapping.b), green(mapping.a)));
+        }
     }
 
     D3D12TextureView::~D3D12TextureView() {
