@@ -2470,6 +2470,7 @@ namespace plume {
         createInfo.clipped = VK_TRUE;
         createInfo.oldSwapchain = vk;
 
+#   if defined(_WIN64)
         // A borderless window covering the monitor must stay composited: drivers
         // that present natively (NVIDIA "Prefer native") otherwise take it into
         // exclusive fullscreen, which also switches an HDR display's mode.
@@ -2477,6 +2478,7 @@ namespace plume {
         fullScreenInfo.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
         fullScreenInfo.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
         createInfo.pNext = commandQueue->device->fullScreenExclusiveSupported ? &fullScreenInfo : nullptr;
+#   endif
 
         VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
