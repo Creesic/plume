@@ -4033,6 +4033,54 @@ namespace plume {
         queues[virtualQueue->queueIndex].virtualQueues.erase(virtualQueue);
     }
 
+    // Enumeration can race a changing device list. Never inspect handles from a
+    // failed or incomplete query: the loader may abort on an invalid handle.
+    static bool enumeratePhysicalDevices(VkInstance instance, std::vector<VkPhysicalDevice> &physicalDevices) {
+        constexpr uint32_t MaxAttempts = 3;
+        for (uint32_t attempt = 0; attempt < MaxAttempts; attempt++) {
+            uint32_t deviceCount = 0;
+            VkResult res = vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+            if (res != VK_SUCCESS) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices (count) failed with error code 0x%X.\n", res);
+                return false;
+            }
+
+            if (deviceCount == 0) {
+                fprintf(stderr, "Unable to find devices that support Vulkan.\n");
+                return false;
+            }
+
+            physicalDevices.assign(deviceCount, VK_NULL_HANDLE);
+            res = vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
+            if (res == VK_INCOMPLETE) {
+                continue;
+            }
+
+            if (res != VK_SUCCESS) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices (list) failed with error code 0x%X.\n", res);
+                return false;
+            }
+
+            if ((deviceCount == 0) || (deviceCount > physicalDevices.size())) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices returned an invalid device count: %u.\n", deviceCount);
+                return false;
+            }
+
+            physicalDevices.resize(deviceCount);
+            for (VkPhysicalDevice physicalDevice : physicalDevices) {
+                if (physicalDevice == VK_NULL_HANDLE) {
+                    fprintf(stderr, "vkEnumeratePhysicalDevices returned a null physical device.\n");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        fprintf(stderr, "vkEnumeratePhysicalDevices remained incomplete after %u attempts.\n", MaxAttempts);
+        return false;
+    }
+
     // VulkanDevice
     
     VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName) {
@@ -4040,15 +4088,10 @@ namespace plume {
 
         this->renderInterface = renderInterface;
 
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, nullptr);
-        if (deviceCount == 0) {
-            fprintf(stderr, "Unable to find devices that support Vulkan.\n");
+        std::vector<VkPhysicalDevice> physicalDevices;
+        if (!enumeratePhysicalDevices(renderInterface->instance, physicalDevices)) {
             return;
         }
-        
-        std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-        vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, physicalDevices.data());
 
         uint32_t currentDeviceTypeScore = 0;
         uint32_t deviceTypeScoreTable[] = {
@@ -4059,7 +4102,7 @@ namespace plume {
             1   // VK_PHYSICAL_DEVICE_TYPE_CPU
         };
 
-        for (uint32_t i = 0; i < deviceCount; i++) {
+        for (uint32_t i = 0; i < physicalDevices.size(); i++) {
             VkPhysicalDeviceProperties deviceProperties;
             vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
 
@@ -4464,6 +4507,8 @@ namespace plume {
 
         // Fill capabilities.
         capabilities.geometryShader = deviceFeatures.features.geometryShader;
+        // Every supported core feature is enabled (pEnabledFeatures above).
+        capabilities.shaderFloat64 = deviceFeatures.features.shaderFloat64;
         capabilities.queryOutsideRenderPass = true;
         capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
@@ -5004,19 +5049,17 @@ namespace plume {
         capabilities.shaderFormat = RenderShaderFormat::SPIRV;
 
         // Fill device names.
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-        if (deviceCount > 0) {
-            std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-            vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
+        std::vector<VkPhysicalDevice> physicalDevices;
+        if (!enumeratePhysicalDevices(instance, physicalDevices)) {
+            return;
+        }
 
-            for (uint32_t i = 0; i < deviceCount; i++) {
-                VkPhysicalDeviceProperties deviceProperties;
-                vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
-                uint32_t deviceTypeIndex = deviceProperties.deviceType;
-                if (deviceTypeIndex <= 4) {
-                    deviceNames.emplace_back(deviceProperties.deviceName);
-                }
+        for (VkPhysicalDevice physicalDevice : physicalDevices) {
+            VkPhysicalDeviceProperties deviceProperties;
+            vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+            uint32_t deviceTypeIndex = deviceProperties.deviceType;
+            if (deviceTypeIndex <= 4) {
+                deviceNames.emplace_back(deviceProperties.deviceName);
             }
         }
     }
@@ -5028,6 +5071,10 @@ namespace plume {
     }
 
     std::unique_ptr<RenderDevice> VulkanInterface::createDevice(const std::string &preferredDeviceName) {
+        if (!isValid()) {
+            return nullptr;
+        }
+
         std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
     }
@@ -5041,7 +5088,7 @@ namespace plume {
     }
 
     bool VulkanInterface::isValid() const {
-        return instance != nullptr;
+        return (instance != VK_NULL_HANDLE) && !deviceNames.empty();
     }
 
     // Global creation function.

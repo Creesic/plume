@@ -234,7 +234,7 @@ namespace plume {
         }
     }
 
-    static DXGI_FORMAT toDXGITextureView(RenderFormat format) {
+    static DXGI_FORMAT toDXGITextureView(RenderFormat format, uint32_t planeSlice) {
         const DXGI_FORMAT dxgiFormat = toDXGI(format);
         if (dxgiFormat == DXGI_FORMAT_D32_FLOAT) {
             // D3D12 and Vulkan disagree on whether D32 is usable as a texture view format.
@@ -242,8 +242,8 @@ namespace plume {
             return DXGI_FORMAT_R32_FLOAT;
         }
         if (dxgiFormat == DXGI_FORMAT_R32G8X24_TYPELESS) {
-            // Specialize into depth view of depth-stencil texture.
-            return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+            return planeSlice == 1 ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+                                   : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
         }
         return dxgiFormat;
     }
@@ -2975,13 +2975,27 @@ namespace plume {
         this->texture = texture;
         this->device = texture->device;
         this->desc = desc;
-        this->format = toDXGITextureView(desc.format);
+        this->format = toDXGITextureView(desc.format, desc.planeSlice);
         this->dimension = desc.dimension;
         this->mipLevels = std::min(desc.mipLevels, texture->desc.mipLevels - desc.mipSlice);
         this->mipSlice = desc.mipSlice;
         this->arraySize = std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex);
         this->arrayIndex = desc.arrayIndex;
         this->shader4ComponentMapping = toD3D12(desc.componentMapping);
+        if (this->format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT) {
+            // The stencil SRV stores its byte in G. Expose a logical R8_UINT
+            // plane, composing the caller's swizzles with that native layout.
+            const UINT channels[] = {D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1};
+            const auto channel = [&](UINT output) {
+                const UINT source = D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(output, this->shader4ComponentMapping);
+                return source < 4 ? channels[source] : source;
+            };
+            this->shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+                channel(0), channel(1), channel(2), channel(3));
+        }
     }
 
     D3D12TextureView::~D3D12TextureView() {
@@ -3027,6 +3041,7 @@ namespace plume {
                     srvDesc.Texture2DArray.MostDetailedMip = mipSlice;
                     srvDesc.Texture2DArray.FirstArraySlice = arrayIndex;
                     srvDesc.Texture2DArray.ArraySize = arraySize;
+                    srvDesc.Texture2DArray.PlaneSlice = desc.planeSlice;
                 } else {
                     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srvDesc.Texture2D.MipLevels = mipLevels;
@@ -4037,6 +4052,14 @@ namespace plume {
                 }
             }
 
+            // Determine if the device supports double-precision shader arithmetic.
+            bool float64Option = false;
+            D3D12_FEATURE_DATA_D3D12_OPTIONS d3d12Options = {};
+            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &d3d12Options, sizeof(d3d12Options));
+            if (SUCCEEDED(res)) {
+                float64Option = d3d12Options.DoublePrecisionFloatShaderOps;
+            }
+
             // Determine if the device supports sample locations.
             bool resolveRegionOption = false;
             bool samplePositionsOption = false;
@@ -4105,6 +4128,7 @@ namespace plume {
                 d3d = deviceOption;
                 shaderModel = dataShaderModel.HighestShaderModel;
                 capabilities.geometryShader = true;
+                capabilities.shaderFloat64 = float64Option;
                 capabilities.queryOutsideRenderPass = true;
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
