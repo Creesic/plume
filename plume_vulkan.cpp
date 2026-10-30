@@ -30,6 +30,8 @@
 // - Fix resource pools.
 
 namespace plume {
+    std::atomic<uint32_t> vulkanCommandCounts[4];
+
     // Backend constants.
 
     // Required buffer alignment for acceleration structures.
@@ -650,6 +652,24 @@ namespace plume {
         }
 
         return flags;
+    }
+
+    // MEMORY_READ/WRITE already cover every access, but some mobile drivers
+    // only flush or invalidate for the specific bits (Adreno sampled garbage
+    // tiles from just-rendered targets), so name each access the stages allow.
+    static VkAccessFlags toAccessFlags(VkPipelineStageFlags stages) {
+        VkAccessFlags access = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT) access |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        if (stages & VK_PIPELINE_STAGE_VERTEX_INPUT_BIT) access |= VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        if (stages & (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+            access |= VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) access |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+        if (stages & (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT))
+            access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) access |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_TRANSFER_BIT) access |= VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_HOST_BIT) access |= VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        return access;
     }
 
     static VkShaderStageFlagBits toStage(RenderRaytracingPipelineLibrarySymbolType type) {
@@ -2328,6 +2348,15 @@ namespace plume {
             }
         }
 
+        // Android surfaces offer RGBA but no BGRA: take RGBA and record it, so
+        // copies of BGRA images into the swap chain blit (see blitsChannels).
+        for (uint32_t i = 0; compatibleSurfaceFormats.empty() && (i < surfaceFormatCount); i++) {
+            if ((requestedFormat == VK_FORMAT_B8G8R8A8_UNORM) && (surfaceFormats[i].format == VK_FORMAT_R8G8B8A8_UNORM)) {
+                compatibleSurfaceFormats.emplace_back(surfaceFormats[i]);
+                this->desc.format = RenderFormat::R8G8B8A8_UNORM;
+            }
+        }
+
         if (compatibleSurfaceFormats.empty()) {
             fprintf(stderr, "No compatible surface formats were found.\n");
             return;
@@ -2473,10 +2502,12 @@ namespace plume {
         // A borderless window covering the monitor must stay composited: drivers
         // that present natively (NVIDIA "Prefer native") otherwise take it into
         // exclusive fullscreen, which also switches an HDR display's mode.
+#   if defined(_WIN64)
         VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = {};
         fullScreenInfo.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
         fullScreenInfo.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
         createInfo.pNext = commandQueue->device->fullScreenExclusiveSupported ? &fullScreenInfo : nullptr;
+#   endif
 
         VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
@@ -3001,8 +3032,8 @@ namespace plume {
             VulkanBuffer *interfaceBuffer = static_cast<VulkanBuffer *>(bufferBarrier.buffer);
             VkBufferMemoryBarrier bufferMemoryBarrier = {};
             bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-            bufferMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
-            bufferMemoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
+            bufferMemoryBarrier.srcAccessMask = toAccessFlags(toStageFlags(interfaceBuffer->barrierStages, geometryEnabled, rtEnabled));
+            bufferMemoryBarrier.dstAccessMask = toAccessFlags(dstStageMask);
             bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             bufferMemoryBarrier.buffer = interfaceBuffer->vk;
@@ -3019,8 +3050,8 @@ namespace plume {
             VkImageMemoryBarrier imageMemoryBarrier = {};
             imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             imageMemoryBarrier.image = interfaceTexture->vk;
-            imageMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
+            imageMemoryBarrier.srcAccessMask = toAccessFlags(toStageFlags(interfaceTexture->barrierStages, geometryEnabled, rtEnabled));
+            imageMemoryBarrier.dstAccessMask = toAccessFlags(dstStageMask);
             imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             imageMemoryBarrier.oldLayout = toImageLayout(interfaceTexture->textureLayout);
@@ -3038,6 +3069,7 @@ namespace plume {
             return;
         }
 
+        vulkanCommandCounts[1].fetch_add(1, std::memory_order_relaxed);
         vkCmdPipelineBarrier(vk, srcStageMask, dstStageMask, 0, 0, nullptr, uint32_t(bufferMemoryBarriers.size()), bufferMemoryBarriers.data(), uint32_t(imageMemoryBarriers.size()), imageMemoryBarriers.data());
     }
 
@@ -3085,6 +3117,7 @@ namespace plume {
         assert(activeGraphicsPipelineLayout != nullptr);
         checkActiveRenderPass();
 
+        vulkanCommandCounts[3].fetch_add(1, std::memory_order_relaxed);
         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
     }
     
@@ -3092,6 +3125,7 @@ namespace plume {
         assert(activeGraphicsPipelineLayout != nullptr);
         checkActiveRenderPass();
 
+        vulkanCommandCounts[3].fetch_add(1, std::memory_order_relaxed);
         vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
     }
 
@@ -3344,6 +3378,7 @@ namespace plume {
     }
 
     void VulkanCommandList::copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstBuffer.ref != nullptr);
@@ -3358,7 +3393,15 @@ namespace plume {
         vkCmdCopyBuffer(vk, interfaceSrcBuffer->vk, interfaceDstBuffer->vk, 1, &bufferCopy);
     }
 
+    // BGRA and RGBA 8-bit differ only in channel order: a blit converts between
+    // them (a BGRA scene into an RGBA swap chain), a raw copy would swap red and blue.
+    static bool blitsChannels(RenderFormat a, RenderFormat b) {
+        auto rgba8 = [](RenderFormat f) { return (f == RenderFormat::B8G8R8A8_UNORM) || (f == RenderFormat::R8G8B8A8_UNORM); };
+        return (a != b) && rgba8(a) && rgba8(b);
+    }
+
     void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
         
         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
@@ -3493,7 +3536,19 @@ namespace plume {
                 imageCopy.extent.depth = srcTexture->desc.depth;
             }
 
-            vkCmdCopyImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+            if (blitsChannels(dstTexture->desc.format, srcTexture->desc.format)) {
+                VkImageBlit blit = {};
+                blit.srcSubresource = imageCopy.srcSubresource;
+                blit.dstSubresource = imageCopy.dstSubresource;
+                blit.srcOffsets[0] = imageCopy.srcOffset;
+                blit.srcOffsets[1] = { imageCopy.srcOffset.x + int32_t(imageCopy.extent.width), imageCopy.srcOffset.y + int32_t(imageCopy.extent.height), imageCopy.srcOffset.z + int32_t(imageCopy.extent.depth) };
+                blit.dstOffsets[0] = imageCopy.dstOffset;
+                blit.dstOffsets[1] = { imageCopy.dstOffset.x + int32_t(imageCopy.extent.width), imageCopy.dstOffset.y + int32_t(imageCopy.extent.height), imageCopy.dstOffset.z + int32_t(imageCopy.extent.depth) };
+                vkCmdBlitImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &blit, VK_FILTER_NEAREST);
+            }
+            else {
+                vkCmdCopyImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+            }
         }
         else {
             assert(false && "Unsupported Vulkan texture copy location pair.");
@@ -3501,6 +3556,7 @@ namespace plume {
     }
 
     void VulkanCommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstBuffer != nullptr);
@@ -3516,6 +3572,7 @@ namespace plume {
     }
 
     void VulkanCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstTexture != nullptr);
@@ -3538,6 +3595,16 @@ namespace plume {
         imageCopy.extent.width = uint32_t(dst->desc.width);
         imageCopy.extent.height = dst->desc.height;
         imageCopy.extent.depth = dst->desc.depth;
+
+        if (blitsChannels(dst->desc.format, src->desc.format)) {
+            VkImageBlit blit = {};
+            blit.srcSubresource = imageCopy.srcSubresource;
+            blit.dstSubresource = imageCopy.dstSubresource;
+            blit.srcOffsets[1] = { int32_t(src->desc.width), int32_t(src->desc.height), 1 };
+            blit.dstOffsets[1] = { int32_t(dst->desc.width), int32_t(dst->desc.height), 1 };
+            vkCmdBlitImage(vk, src->vk, srcLayout, dst->vk, dstLayout, 1, &blit, VK_FILTER_NEAREST);
+            return;
+        }
 
         assert(dst->desc.mipLevels > 0);
         assert(src->desc.mipLevels == dst->desc.mipLevels);
@@ -3740,6 +3807,7 @@ namespace plume {
             beginInfo.framebuffer = targetFramebuffer->vk;
             beginInfo.renderArea.extent.width = targetFramebuffer->width;
             beginInfo.renderArea.extent.height = targetFramebuffer->height;
+            vulkanCommandCounts[0].fetch_add(1, std::memory_order_relaxed);
             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
             activeRenderPass = targetFramebuffer->renderPass;
         }

@@ -9,6 +9,7 @@
 
 #include "plume_render_interface.h"
 
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -42,6 +43,10 @@
 #endif
 
 namespace plume {
+    // Commands recorded since the host last took them: render passes begun,
+    // pipeline barriers, copies, draws.
+    extern std::atomic<uint32_t> vulkanCommandCounts[4];
+
     struct VulkanCommandQueue;
     struct VulkanDevice;
     struct VulkanInterface;

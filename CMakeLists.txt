@@ -14,6 +14,9 @@ if(APPLE)
 endif()
 
 string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
+if(ANDROID)
+    set(IS_LINUX TRUE) # SDL creates the Vulkan surface on Android too
+endif()
 
 # Project options
 include(CMakeDependentOption)
