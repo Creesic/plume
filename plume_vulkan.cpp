@@ -2447,6 +2447,7 @@ namespace plume {
 #else
         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
 #endif
+            commandQueue->device->reportDeviceLost(res, "vkQueuePresentKHR");
             return false;
         }
 
@@ -2651,6 +2652,7 @@ namespace plume {
         VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphore);
         VkResult res = vkAcquireNextImageKHR(commandQueue->device->vk, vk, UINT64_MAX, interfaceSemaphore->vk, VK_NULL_HANDLE, textureIndex);
         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
+            commandQueue->device->reportDeviceLost(res, "vkAcquireNextImageKHR");
             return false;
         }
 
@@ -3962,6 +3964,7 @@ namespace plume {
 
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkQueueSubmit");
             std::abort();
         }
     }
@@ -3972,6 +3975,7 @@ namespace plume {
         const VkResult res = vkQueueWaitIdle(queue->vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkQueueWaitIdle failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkQueueWaitIdle");
             std::abort();
         }
     }
@@ -3983,12 +3987,14 @@ namespace plume {
         VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk, VK_TRUE, UINT64_MAX);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkWaitForFences");
             std::abort();
         }
 
         res = vkResetFences(device->vk, 1, &interfaceFence->vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkResetFences");
             std::abort();
         }
     }
@@ -4002,12 +4008,14 @@ namespace plume {
             return false;
         if (status != VK_SUCCESS) {
             fprintf(stderr, "vkGetFenceStatus failed with error code 0x%X.\n", status);
+            device->reportDeviceLost(status, "vkGetFenceStatus");
             std::abort();
         }
         const VkResult reset = vkResetFences(
             device->vk, 1, &interfaceFence->vk);
         if (reset != VK_SUCCESS) {
             fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", reset);
+            device->reportDeviceLost(reset, "vkResetFences");
             std::abort();
         }
         return true;

@@ -420,6 +420,12 @@ namespace plume {
     };
 
     struct VulkanDevice : RenderDevice {
+        // Installed before the device is published to rendering workers.
+        void (*deviceLostCallback)(const char *operation, int32_t result) = nullptr;
+        void reportDeviceLost(VkResult result, const char *operation) const {
+            if (result == VK_ERROR_DEVICE_LOST && deviceLostCallback)
+                deviceLostCallback(operation, static_cast<int32_t>(result));
+        }
         VkDevice vk = VK_NULL_HANDLE;
         VulkanInterface *renderInterface = nullptr;
         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
