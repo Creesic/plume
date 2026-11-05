@@ -475,6 +475,9 @@ namespace plume {
         std::vector<uint8_t> pipelineLibraryBlob;
         std::atomic<uint32_t> pipelineCacheHits{0};
         std::atomic<uint32_t> pipelineCacheMisses{0};
+        // Armed by the host after initialization; startup keeps its normal fallback.
+        std::atomic<void (*)(const char *, int32_t)> deviceLostCallback{nullptr};
+        bool checkDeviceLoss(const char *operation) const;
 
         D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
         ~D3D12Device() override;

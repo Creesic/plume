@@ -780,13 +780,23 @@ namespace plume {
         object->SetName(wideCharName.c_str());
     }
 
+    bool D3D12Device::checkDeviceLoss(const char *operation) const {
+        if (!d3d) return false;
+        const HRESULT result = d3d->GetDeviceRemovedReason();
+        if (SUCCEEDED(result)) return false;
+        if (auto callback = deviceLostCallback.load(std::memory_order_acquire))
+            callback(operation, static_cast<int32_t>(result));
+        return true;
+    }
+
     // Constructors can fail after allocating the C++ wrapper. Never publish
     // that wrapper as a usable native resource.
     template<class T, class Native>
     static std::unique_ptr<T> checkedResource(std::unique_ptr<T> object,
             Native T::*member, D3D12Device *device) {
-        const HRESULT removed = device->d3d->GetDeviceRemovedReason();
-        if (!((*object).*member) || FAILED(removed)) {
+        const bool lost = device->checkDeviceLoss("resource creation");
+        if (!((*object).*member) || lost) {
+            const HRESULT removed = device->d3d->GetDeviceRemovedReason();
             fprintf(stderr, "D3D12 startup resource unavailable: device_removed=0x%08lX.\n", removed);
             return nullptr;
         }
@@ -816,6 +826,7 @@ namespace plume {
         HRESULT res = device->d3d->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
         if (FAILED(res)) {
             fprintf(stderr, "CreateDescriptorHeap failed with error code 0x%lX.\n", res);
+            device->checkDeviceLoss("descriptor heap creation");
             freeSize = 0;
             return;
         }
@@ -1362,11 +1373,13 @@ namespace plume {
     }
 
     bool D3D12SwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) {
+        if (commandQueue->device->checkDeviceLoss("present")) return false;
         // If using present wait, we prefer using a SyncInterval of 0 even when Vsync is enabled. Tearing won't happen if DXGI_PRESENT_ALLOW_TEARING is not specified.
         const bool tearingAllowed = (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0U;
         UINT syncInterval = (vsyncEnabled && !desc.enablePresentWait) ? 1 : 0;
         UINT flags = (!vsyncEnabled && tearingAllowed) ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT res = d3d->Present(syncInterval, flags);
+        if (FAILED(res)) commandQueue->device->checkDeviceLoss("present");
         return SUCCEEDED(res);
     }
 
@@ -1374,11 +1387,15 @@ namespace plume {
         assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
 
         if (waitableObject != NULL) {
-            WaitForSingleObject(waitableObject, INFINITE);
+            while (WaitForSingleObject(waitableObject, 100) == WAIT_TIMEOUT) {
+                if (commandQueue->device->checkDeviceLoss("present wait")) return;
+            }
+            commandQueue->device->checkDeviceLoss("present wait");
         }
     }
 
     bool D3D12SwapChain::resize() {
+        if (commandQueue->device->checkDeviceLoss("swapchain resize")) return false;
         getWindowSize(width, height);
 
         // Don't resize the swap chain at all if the window doesn't have a valid size.
@@ -1398,6 +1415,7 @@ namespace plume {
         HRESULT res = d3d->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, swapChainFlags);
         if (FAILED(res)) {
             fprintf(stderr, "ResizeBuffers failed with error code 0x%lX.\n", res);
+            commandQueue->device->checkDeviceLoss("swapchain resize");
             return false;
         }
 
@@ -1456,6 +1474,7 @@ namespace plume {
     }
 
     bool D3D12SwapChain::acquireTexture(RenderCommandSemaphore *signalSemaphore, uint32_t *textureIndex) {
+        if (commandQueue->device->checkDeviceLoss("swapchain acquire")) return false;
         assert(textureIndex != nullptr);
         *textureIndex = d3d->GetCurrentBackBufferIndex();
         return true;
@@ -1879,20 +1898,33 @@ namespace plume {
     }
 
     void D3D12CommandList::begin() {
+        if (queue->device->checkDeviceLoss("command list begin")) return;
         assert(!open);
 
-        commandAllocator->Reset();
-        d3d->Reset(commandAllocator, nullptr);
+        const HRESULT allocatorResult = commandAllocator->Reset();
+        if (FAILED(allocatorResult)) {
+            queue->device->checkDeviceLoss("command allocator reset");
+            fprintf(stderr, "Command allocator reset failed: 0x%08lX.\n", allocatorResult);
+            return;
+        }
+        const HRESULT listResult = d3d->Reset(commandAllocator, nullptr);
+        if (FAILED(listResult)) {
+            queue->device->checkDeviceLoss("command list reset");
+            fprintf(stderr, "Command list reset failed: 0x%08lX.\n", listResult);
+            return;
+        }
         open = true;
     }
 
     void D3D12CommandList::end() {
+        if (queue->device->checkDeviceLoss("command list end")) return;
         assert(open);
 
         // It's required to reset the sample positions before the command list ends.
         resetSamplePositions();
 
-        d3d->Close();
+        const HRESULT result = d3d->Close();
+        if (FAILED(result)) queue->device->checkDeviceLoss("command list close");
         open = false;
         targetFramebuffer = nullptr;
         targetFramebufferSamplePositionsSet = false;
@@ -2725,7 +2757,7 @@ namespace plume {
     }
 
     void D3D12CommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
-        if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+        if (device->checkDeviceLoss("queue submit")) return;
         assert(commandLists != nullptr);
         assert(commandListCount > 0);
 
@@ -2736,7 +2768,7 @@ namespace plume {
                 interfaceSemaphore->semaphoreValue);
             if (FAILED(waitResult)) {
                 fprintf(stderr, "ID3D12CommandQueue::Wait failed with error code 0x%lX.\n", waitResult);
-                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+                if (device->checkDeviceLoss("queue semaphore wait")) return;
                 std::abort();
             }
         }
@@ -2750,6 +2782,7 @@ namespace plume {
 
         if (!executionVector.empty()) {
             d3d->ExecuteCommandLists(UINT(executionVector.size()), executionVector.data());
+            if (device->checkDeviceLoss("queue submit")) return;
         }
 
         for (uint32_t i = 0; i < signalSemaphoreCount; i++) {
@@ -2760,7 +2793,7 @@ namespace plume {
                 interfaceSemaphore->semaphoreValue);
             if (FAILED(signalResult)) {
                 fprintf(stderr, "ID3D12CommandQueue::Signal(semaphore) failed with error code 0x%lX.\n", signalResult);
-                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+                if (device->checkDeviceLoss("queue semaphore signal")) return;
                 std::abort();
             }
         }
@@ -2776,7 +2809,7 @@ namespace plume {
                 : signalResult;
             if (FAILED(signalResult) || FAILED(eventResult)) {
                 fprintf(stderr, "D3D12 fence submission failed with error code 0x%lX.\n", FAILED(signalResult) ? signalResult : eventResult);
-                if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+                if (device->checkDeviceLoss("queue fence signal")) return;
                 std::abort();
             }
             interfaceFence->fenceValue++;
@@ -2785,12 +2818,12 @@ namespace plume {
 
     void D3D12CommandQueue::waitForIdle() {
         // A failed native queue constructor cannot have submitted any work.
-        if (d3d == nullptr || FAILED(device->d3d->GetDeviceRemovedReason())) { return; }
+        if (d3d == nullptr || device->checkDeviceLoss("queue idle")) { return; }
         // A separate fence leaves the caller's submission fences untouched.
         D3D12CommandFence fence(device);
         if ((fence.d3d == nullptr) || (fence.fenceEvent == NULL)) {
             fprintf(stderr, "D3D12 idle fence creation failed.\n");
-            if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+            if (device->checkDeviceLoss("idle fence creation")) return;
             std::abort();
         }
         HRESULT res = d3d->Signal(fence.d3d, fence.fenceValue);
@@ -2799,31 +2832,36 @@ namespace plume {
         }
         if (FAILED(res)) {
             fprintf(stderr, "D3D12 idle fence submission failed with error code 0x%lX.\n", res);
-            if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+            if (device->checkDeviceLoss("idle fence signal")) return;
             std::abort();
         }
         waitForCommandFence(&fence);
     }
 
     void D3D12CommandQueue::waitForCommandFence(RenderCommandFence *fence) {
-        if (FAILED(device->d3d->GetDeviceRemovedReason())) return;
+        if (device->checkDeviceLoss("fence wait")) return;
         assert(fence != nullptr);
 
         D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
-        if (WaitForSingleObjectEx(
-                interfaceFence->fenceEvent, INFINITE, FALSE) !=
-            WAIT_OBJECT_0) {
+        for (;;) {
+            const DWORD result = WaitForSingleObjectEx(interfaceFence->fenceEvent, 100, FALSE);
+            // Removal can signal the event while we are already waiting.
+            if (device->checkDeviceLoss("fence wait")) return;
+            if (result == WAIT_OBJECT_0) return;
+            if (result == WAIT_TIMEOUT) continue;
             fprintf(stderr, "D3D12 fence wait failed.\n");
             std::abort();
         }
     }
 
     bool D3D12CommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        if (device->checkDeviceLoss("fence poll")) return false;
         assert(fence != nullptr);
 
         D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
         const DWORD result = WaitForSingleObjectEx(
             interfaceFence->fenceEvent, 0, FALSE);
+        if (device->checkDeviceLoss("fence poll")) return false;
         if (result == WAIT_OBJECT_0)
             return true;
         if (result == WAIT_TIMEOUT)
@@ -2890,6 +2928,7 @@ namespace plume {
     }
 
     void *D3D12Buffer::map(uint32_t subresource, const RenderRange *readRange) {
+        if (device && device->checkDeviceLoss("buffer map")) return nullptr;
         if (d3d == nullptr) {
             fprintf(stderr,
                     "D3D12Buffer::map failed: resource unavailable "
@@ -2911,6 +2950,7 @@ namespace plume {
             subresource, (readRange != nullptr) ? &range : nullptr,
             &outputData);
         if (FAILED(res) || outputData == nullptr) {
+            if (device) device->checkDeviceLoss("buffer map");
             const HRESULT removed =
                 (device != nullptr && device->d3d != nullptr)
                     ? device->d3d->GetDeviceRemovedReason()
@@ -4350,7 +4390,7 @@ namespace plume {
     }
 
     std::unique_ptr<RenderFramebuffer> D3D12Device::createFramebuffer(const RenderFramebufferDesc &desc) {
-        if (FAILED(d3d->GetDeviceRemovedReason())) return nullptr;
+        if (checkDeviceLoss("framebuffer creation")) return nullptr;
         auto framebuffer = std::make_unique<D3D12Framebuffer>(this, desc);
         if (framebuffer->colorHandles.size() != desc.colorAttachmentsCount
             || std::any_of(framebuffer->colorHandles.begin(), framebuffer->colorHandles.end(),
