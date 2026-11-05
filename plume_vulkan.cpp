@@ -4989,12 +4989,26 @@ namespace plume {
 
     // VulkanInterface
 
+#if defined(__ANDROID__)
+    // Defined by the Android runner (runner/android/turnip.c); weak so plume links without it.
+    extern "C" __attribute__((weak)) PFN_vkGetInstanceProcAddr xrecomp_android_vulkan_loader(void);
+#endif
+
 #if PLUME_SDL_VULKAN_ENABLED
     VulkanInterface::VulkanInterface(RenderWindow sdlWindow) {
 #else
     VulkanInterface::VulkanInterface() {
 #endif
+#   if defined(__ANDROID__)
+        // A Vulkan driver packaged in the app (Turnip), when the runner provides and enables one.
+        PFN_vkGetInstanceProcAddr packagedDriver = &xrecomp_android_vulkan_loader != nullptr ? xrecomp_android_vulkan_loader() : nullptr;
+        if (packagedDriver != nullptr) {
+            volkInitializeCustom(packagedDriver);
+        }
+        VkResult res = packagedDriver != nullptr ? VK_SUCCESS : volkInitialize();
+#   else
         VkResult res = volkInitialize();
+#   endif
         if (res != VK_SUCCESS) {
             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
             return;
