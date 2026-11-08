@@ -518,6 +518,7 @@ namespace plume {
         void syncMirror(D3D11Buffer::Mirror &mirror, const D3D11Buffer &buffer, uint64_t begin, uint64_t end);
         ID3D11Buffer *geometryMirror(D3D11Buffer &buffer);
         ID3D11Buffer *constantMirror(D3D11Buffer &buffer);
+        void uploadConstants(D3D11Buffer &buffer, uint64_t begin, uint64_t end);
         ID3D11Buffer *structuredMirror(D3D11Buffer &buffer, uint32_t stride);
     };
 
@@ -1146,6 +1147,25 @@ namespace plume {
         return buffer.constant.buffer.Get();
     }
 
+    // A constant buffer takes a box only through UpdateSubresource1 with
+    // COPY_NO_OVERWRITE or COPY_DISCARD (UpdateSubresource dropped it: every
+    // constant read zero and MC3 drew with no textures). DISCARD renames the
+    // buffer, so draws still in flight keep theirs, and leaves the rest undefined:
+    // one box per replay holds every range its draws bind (D3D11BufferUse).
+    void D3D11Replay::uploadConstants(D3D11Buffer &buffer, uint64_t begin, uint64_t end) {
+        end = std::min<uint64_t>(end, buffer.data.size());
+        if ((begin >= end) || (constantMirror(buffer) == nullptr)) {
+            return;
+        }
+
+        buffer.resolveReadbacks();
+        D3D11_BOX box = { UINT(begin), 0, 0, UINT(end), 1, 1 };
+        device->context1->UpdateSubresource1(buffer.constant.buffer.Get(), 0, &box, buffer.data.data() + begin, 0, 0, D3D11_COPY_DISCARD);
+        buffer.constant.epoch = epoch;
+        buffer.constant.ranges.clear();
+        buffer.constant.ranges[begin] = end;
+    }
+
     ID3D11Buffer *D3D11Replay::structuredMirror(D3D11Buffer &buffer, uint32_t stride) {
         D3D11Buffer::Mirror &mirror = buffer.structured[stride];
         if (mirror.buffer == nullptr) {
@@ -1307,10 +1327,12 @@ namespace plume {
                         D3D11Device::DynamicConstants &constants = device->constants[descriptor.binding];
                         const bool unchanged = (constants.source == &buffer) && (constants.sourceOffset == descriptor.offset) && (constants.sourceEpoch == epoch);
                         // Bound by offset into the buffer's constant mirror: no copy per draw.
+                        // A range a replayed write invalidated keeps the copy below.
                         const uint64_t span = ((descriptor.offset & 255) == 0) ? constantSpan(buffer, descriptor.offset, size) : 0;
-                        ID3D11Buffer *mirror = (span != 0) ? constantMirror(buffer) : nullptr;
+                        const auto covered = (span != 0) && (buffer.constant.epoch == epoch) ? buffer.constant.ranges.upper_bound(descriptor.offset) : buffer.constant.ranges.begin();
+                        ID3D11Buffer *mirror = ((span != 0) && (buffer.constant.epoch == epoch) && (covered != buffer.constant.ranges.begin())
+                            && (std::prev(covered)->second >= descriptor.offset + span)) ? buffer.constant.buffer.Get() : nullptr;
                         if (mirror != nullptr) {
-                            syncMirror(buffer.constant, buffer, descriptor.offset, descriptor.offset + span);
                             if (!unchanged) {
                                 const UINT first = UINT(descriptor.offset / 16);
                                 const UINT count = UINT(span / 16);
@@ -1840,9 +1862,15 @@ namespace plume {
                 case D3D11BufferUse::GEOMETRY:
                     if (replay.geometryMirror(buffer) != nullptr) replay.syncMirror(buffer.geometry, buffer, span.begin, span.end);
                     break;
-                case D3D11BufferUse::CONSTANT:
-                    if (replay.constantMirror(buffer) != nullptr) replay.syncMirror(buffer.constant, buffer, span.begin, span.end);
+                case D3D11BufferUse::CONSTANT: {
+                    // One box from the first range to the last (see uploadConstants).
+                    while ((i < uses.size()) && (uses[i].buffer == span.buffer) && (uses[i].kind == span.kind)) {
+                        span.end = std::max(span.end, uses[i++].end);
+                    }
+
+                    replay.uploadConstants(buffer, span.begin, span.end);
                     break;
+                }
                 case D3D11BufferUse::STRUCTURED:
                     if (replay.structuredMirror(buffer, span.stride) != nullptr) replay.syncMirror(buffer.structured[span.stride], buffer, span.begin, span.end);
                     break;
@@ -2069,12 +2097,10 @@ namespace plume {
             D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
             if (SUCCEEDED(d3d->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options)))) {
                 logicOps = options.OutputMergerLogicOp;
-                // Off unless XRECOMP_D3D11_CONSTANT_OFFSETS=1: on an RTX card MC3's pixel
-                // constants read wrong this way (every texture missing, 2026-11-08), so draws
-                // keep a WRITE_DISCARD copy each until that is understood.
+                // XRECOMP_D3D11_CONSTANT_OFFSETS=0: a WRITE_DISCARD copy per draw, as before.
                 const char *offsets = std::getenv("XRECOMP_D3D11_CONSTANT_OFFSETS");
                 constantOffsets = options.ConstantBufferOffsetting && options.ConstantBufferPartialUpdate
-                    && (offsets != nullptr) && (offsets[0] == '1') && SUCCEEDED(context.As(&context1));
+                    && !((offsets != nullptr) && (offsets[0] == '0')) && SUCCEEDED(context.As(&context1));
             }
         }
 
