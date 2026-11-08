@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -309,6 +310,10 @@ namespace plume {
         std::vector<uint8_t> data;
         Mirror geometry;
         std::map<uint32_t, Mirror> structured; // By stride.
+        // Uniform data bound by offset (D3D11.1 *SetConstantBuffers1); refused once
+        // when the device can't make one this size, which keeps the per-draw copy.
+        Mirror constant;
+        bool constantRefused = false;
         std::map<std::tuple<uint32_t, uint64_t, uint64_t>, ComPtr<ID3D11ShaderResourceView>> structuredViews;
 
         D3D11Buffer(D3D11Device *device, const RenderBufferDesc &desc) : device(device), desc(desc) {
@@ -316,7 +321,19 @@ namespace plume {
             data.resize(size_t((desc.size + 255) & ~uint64_t(255)));
         }
 
-        void *map(uint32_t, const RenderRange *) override { return data.data(); }
+        // Readbacks the GPU copied to staging during a replay. Their bytes reach
+        // `data` when something reads it (map, or a later replayed use), by then
+        // usually without a wait: mapping at the copy stalled the replay until
+        // the GPU caught up (~20% of MC3's DX11 render thread, 2026-11-08).
+        struct Readback {
+            ComPtr<ID3D11Texture2D> staging;
+            std::function<void(const D3D11_MAPPED_SUBRESOURCE &)> write;
+        };
+        std::vector<Readback> readbacks; // Under the device's context mutex.
+        std::atomic<uint32_t> pendingReadbacks{0}; // Its size, read without the mutex.
+        void resolveReadbacks();
+
+        void *map(uint32_t, const RenderRange *) override { resolveReadbacks(); return data.data(); }
         void unmap(uint32_t, const RenderRange *) override { }
         std::unique_ptr<RenderBufferFormattedView> createBufferFormattedView(RenderFormat) override { return std::make_unique<RenderBufferFormattedView>(); }
         void setName(const std::string &) override { }
@@ -325,6 +342,7 @@ namespace plume {
         // A replayed write to `data` leaves every mirror stale.
         void invalidateMirrors() {
             geometry.ranges.clear();
+            constant.ranges.clear();
             for (auto &entry : structured) entry.second.ranges.clear();
         }
     };
@@ -497,15 +515,36 @@ namespace plume {
         void markTargetsWritten();
         void bindConstantBuffer(uint32_t slot, const uint8_t *bytes, uint64_t size);
         void syncMirror(D3D11Buffer::Mirror &mirror, const D3D11Buffer &buffer, uint64_t begin, uint64_t end);
+        ID3D11Buffer *geometryMirror(D3D11Buffer &buffer);
+        ID3D11Buffer *constantMirror(D3D11Buffer &buffer);
+        ID3D11Buffer *structuredMirror(D3D11Buffer &buffer, uint32_t stride);
     };
+
+    // A buffer range a recorded command reads. Before a replay runs, each buffer's
+    // ranges upload as a few merged spans, not one copy per draw.
+    struct D3D11BufferUse {
+        enum Kind : uint8_t { GEOMETRY, CONSTANT, STRUCTURED };
+        D3D11Buffer *buffer = nullptr;
+        Kind kind = GEOMETRY;
+        uint32_t stride = 0;
+        uint64_t begin = 0;
+        uint64_t end = 0;
+    };
+
+    // The 256-byte-aligned span a uniform descriptor binds (at most 4096 constants).
+    uint64_t constantSpan(const D3D11Buffer &buffer, uint64_t offset, uint64_t size) {
+        const uint64_t available = (buffer.data.size() > offset) ? buffer.data.size() - offset : 0;
+        return std::min<uint64_t>(std::min<uint64_t>((size + 255) & ~uint64_t(255), 65536), available & ~uint64_t(255));
+    }
 
     struct D3D11CommandList : RenderCommandList {
         D3D11Device *device = nullptr;
         std::vector<std::function<void(D3D11Replay &)>> commands;
+        std::vector<D3D11BufferUse> uses;
         // The layout at this point of recording; push constant sizes come from it.
         const D3D11PipelineLayout *recordedLayout = nullptr;
 
-        void begin() override { commands.clear(); recordedLayout = nullptr; }
+        void begin() override { commands.clear(); uses.clear(); recordedLayout = nullptr; }
         void end() override { }
         void barriers(RenderBarrierStages, const RenderBufferBarrier *, uint32_t, const RenderTextureBarrier *, uint32_t) override { }
         void dispatch(uint32_t, uint32_t, uint32_t) override { assert(false && "D3D11 backend has no compute pipelines."); }
@@ -574,13 +613,19 @@ namespace plume {
         ComPtr<ID3D11Device> d3d;
         ComPtr<ID3D11Device1> d3d1;
         ComPtr<ID3D11DeviceContext> context;
+        ComPtr<ID3D11DeviceContext1> context1;
         ComPtr<ID3D11InfoQueue> infoQueue;
         bool logicOps = false;
+        // Constant buffers bind a 256-byte-aligned range of a larger buffer and update in part.
+        bool constantOffsets = false;
         // Every use of the immediate context holds this.
         std::recursive_mutex contextMutex;
         uint64_t epoch = 0;
         RenderDeviceCapabilities capabilities;
         RenderDeviceDescription description;
+
+        // Staging textures of resolved readbacks, reused by the next of their size.
+        std::vector<ComPtr<ID3D11Texture2D>> stagingPool;
 
         // Per-slot constant buffers that draws write with WRITE_DISCARD.
         struct DynamicConstants {
@@ -982,6 +1027,30 @@ namespace plume {
         return ps.Get();
     }
 
+    void D3D11Buffer::resolveReadbacks() {
+        if (pendingReadbacks.load(std::memory_order_acquire) == 0) {
+            return;
+        }
+
+        std::lock_guard<std::recursive_mutex> lock(device->contextMutex);
+        for (Readback &readback : readbacks) {
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            if (SUCCEEDED(device->context->Map(readback.staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+                readback.write(mapped);
+                device->context->Unmap(readback.staging.Get(), 0);
+            }
+
+            // ponytail: 16 pooled staging textures; MC3 reads back ~8 small surfaces a frame.
+            if (device->stagingPool.size() < 16) {
+                device->stagingPool.push_back(std::move(readback.staging));
+            }
+        }
+
+        readbacks.clear();
+        pendingReadbacks.store(0, std::memory_order_release);
+        invalidateMirrors();
+    }
+
     // D3D11QueryPool
 
     bool D3D11QueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
@@ -1011,6 +1080,7 @@ namespace plume {
     // D3D11Replay
 
     void D3D11Replay::syncMirror(D3D11Buffer::Mirror &mirror, const D3D11Buffer &buffer, uint64_t begin, uint64_t end) {
+        const_cast<D3D11Buffer &>(buffer).resolveReadbacks();
         if (mirror.epoch != epoch) {
             mirror.epoch = epoch;
             mirror.ranges.clear();
@@ -1042,6 +1112,52 @@ namespace plume {
         }
 
         mirror.ranges[begin] = end;
+    }
+
+    ID3D11Buffer *D3D11Replay::geometryMirror(D3D11Buffer &buffer) {
+        if (buffer.geometry.buffer == nullptr) {
+            D3D11_BUFFER_DESC bufferDesc = {};
+            bufferDesc.ByteWidth = UINT(buffer.data.size());
+            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+            bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER;
+            device->d3d->CreateBuffer(&bufferDesc, nullptr, buffer.geometry.buffer.GetAddressOf());
+        }
+
+        return buffer.geometry.buffer.Get();
+    }
+
+    ID3D11Buffer *D3D11Replay::constantMirror(D3D11Buffer &buffer) {
+        if (!device->constantOffsets || buffer.constantRefused) {
+            return nullptr;
+        }
+
+        if (buffer.constant.buffer == nullptr) {
+            D3D11_BUFFER_DESC bufferDesc = {};
+            bufferDesc.ByteWidth = UINT(buffer.data.size());
+            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+            bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            if (FAILED(device->d3d->CreateBuffer(&bufferDesc, nullptr, buffer.constant.buffer.GetAddressOf()))) {
+                buffer.constantRefused = true;
+                return nullptr;
+            }
+        }
+
+        return buffer.constant.buffer.Get();
+    }
+
+    ID3D11Buffer *D3D11Replay::structuredMirror(D3D11Buffer &buffer, uint32_t stride) {
+        D3D11Buffer::Mirror &mirror = buffer.structured[stride];
+        if (mirror.buffer == nullptr) {
+            D3D11_BUFFER_DESC bufferDesc = {};
+            bufferDesc.ByteWidth = UINT(buffer.data.size() / stride * stride);
+            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
+            bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+            bufferDesc.StructureByteStride = stride;
+            device->d3d->CreateBuffer(&bufferDesc, nullptr, mirror.buffer.GetAddressOf());
+        }
+
+        return mirror.buffer.Get();
     }
 
     void D3D11Replay::bindConstantBuffer(uint32_t slot, const uint8_t *bytes, uint64_t size) {
@@ -1149,16 +1265,8 @@ namespace plume {
             }
 
             D3D11Buffer &buffer = *vertex.buffer;
-            if (buffer.geometry.buffer == nullptr) {
-                D3D11_BUFFER_DESC bufferDesc = {};
-                bufferDesc.ByteWidth = UINT(buffer.data.size());
-                bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-                bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER;
-                device->d3d->CreateBuffer(&bufferDesc, nullptr, buffer.geometry.buffer.GetAddressOf());
-            }
-
+            vertexBuffers[i] = geometryMirror(buffer);
             syncMirror(buffer.geometry, buffer, vertex.offset, vertex.offset + vertex.size);
-            vertexBuffers[i] = buffer.geometry.buffer.Get();
             strides[i] = vertex.stride;
             offsets[i] = UINT(vertex.offset);
         }
@@ -1166,16 +1274,9 @@ namespace plume {
         context->IASetVertexBuffers(0, 16, vertexBuffers, strides, offsets);
         if (indices.buffer != nullptr) {
             D3D11Buffer &buffer = *indices.buffer;
-            if (buffer.geometry.buffer == nullptr) {
-                D3D11_BUFFER_DESC bufferDesc = {};
-                bufferDesc.ByteWidth = UINT(buffer.data.size());
-                bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-                bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER | D3D11_BIND_INDEX_BUFFER;
-                device->d3d->CreateBuffer(&bufferDesc, nullptr, buffer.geometry.buffer.GetAddressOf());
-            }
-
+            ID3D11Buffer *native = geometryMirror(buffer);
             syncMirror(buffer.geometry, buffer, indices.offset, indices.offset + indices.size);
-            context->IASetIndexBuffer(buffer.geometry.buffer.Get(), indices.format, UINT(indices.offset));
+            context->IASetIndexBuffer(native, indices.format, UINT(indices.offset));
         }
 
         // Every register is in space 0, so a descriptor's binding is its slot.
@@ -1200,11 +1301,28 @@ namespace plume {
                     break;
                 case RenderDescriptorRangeType::CONSTANT_BUFFER:
                     if ((descriptor.buffer != nullptr) && (descriptor.binding < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT)) {
-                        const D3D11Buffer &buffer = *descriptor.buffer;
+                        D3D11Buffer &buffer = *descriptor.buffer;
                         const uint64_t size = descriptor.size ? descriptor.size : buffer.desc.size - descriptor.offset;
                         D3D11Device::DynamicConstants &constants = device->constants[descriptor.binding];
                         const bool unchanged = (constants.source == &buffer) && (constants.sourceOffset == descriptor.offset) && (constants.sourceEpoch == epoch);
-                        if (!unchanged) {
+                        // Bound by offset into the buffer's constant mirror: no copy per draw.
+                        const uint64_t span = ((descriptor.offset & 255) == 0) ? constantSpan(buffer, descriptor.offset, size) : 0;
+                        ID3D11Buffer *mirror = (span != 0) ? constantMirror(buffer) : nullptr;
+                        if (mirror != nullptr) {
+                            syncMirror(buffer.constant, buffer, descriptor.offset, descriptor.offset + span);
+                            if (!unchanged) {
+                                const UINT first = UINT(descriptor.offset / 16);
+                                const UINT count = UINT(span / 16);
+                                device->context1->VSSetConstantBuffers1(descriptor.binding, 1, &mirror, &first, &count);
+                                device->context1->GSSetConstantBuffers1(descriptor.binding, 1, &mirror, &first, &count);
+                                device->context1->PSSetConstantBuffers1(descriptor.binding, 1, &mirror, &first, &count);
+                                constants.source = &buffer;
+                                constants.sourceOffset = descriptor.offset;
+                                constants.sourceEpoch = epoch;
+                            }
+                        }
+                        else if (!unchanged) {
+                            const_cast<D3D11Buffer &>(buffer).resolveReadbacks();
                             bindConstantBuffer(descriptor.binding, buffer.data.data() + descriptor.offset, std::min<uint64_t>(size, 65536));
                             constants.source = &buffer;
                             constants.sourceOffset = descriptor.offset;
@@ -1215,16 +1333,8 @@ namespace plume {
                 case RenderDescriptorRangeType::STRUCTURED_BUFFER:
                     if ((descriptor.buffer != nullptr) && (descriptor.stride != 0) && (descriptor.binding < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT)) {
                         D3D11Buffer &buffer = *descriptor.buffer;
+                        structuredMirror(buffer, descriptor.stride);
                         D3D11Buffer::Mirror &mirror = buffer.structured[descriptor.stride];
-                        if (mirror.buffer == nullptr) {
-                            D3D11_BUFFER_DESC bufferDesc = {};
-                            bufferDesc.ByteWidth = UINT(buffer.data.size() / descriptor.stride * descriptor.stride);
-                            bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-                            bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                            bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-                            bufferDesc.StructureByteStride = descriptor.stride;
-                            device->d3d->CreateBuffer(&bufferDesc, nullptr, mirror.buffer.GetAddressOf());
-                        }
 
                         const uint64_t size = descriptor.size ? descriptor.size : buffer.desc.size - descriptor.offset;
                         syncMirror(mirror, buffer, descriptor.offset, descriptor.offset + size);
@@ -1313,6 +1423,20 @@ namespace plume {
     void D3D11CommandList::setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) {
         // Descriptors are read now: Vulkan forbids changing a bound set before it runs.
         std::vector<D3D11Descriptor> descriptors = static_cast<D3D11DescriptorSet *>(descriptorSet)->descriptors;
+        for (const D3D11Descriptor &descriptor : descriptors) {
+            if (descriptor.buffer == nullptr) continue;
+            const uint64_t size = descriptor.size ? descriptor.size : descriptor.buffer->desc.size - descriptor.offset;
+            if (descriptor.type == RenderDescriptorRangeType::CONSTANT_BUFFER) {
+                const uint64_t span = constantSpan(*descriptor.buffer, descriptor.offset, size);
+                if (((descriptor.offset & 255) == 0) && (span != 0)) {
+                    uses.push_back({ descriptor.buffer, D3D11BufferUse::CONSTANT, 0, descriptor.offset, descriptor.offset + span });
+                }
+            }
+            else if ((descriptor.type == RenderDescriptorRangeType::STRUCTURED_BUFFER) && (descriptor.stride != 0)) {
+                uses.push_back({ descriptor.buffer, D3D11BufferUse::STRUCTURED, descriptor.stride, descriptor.offset, descriptor.offset + size });
+            }
+        }
+
         commands.emplace_back([setIndex, descriptors = std::move(descriptors)](D3D11Replay &r) {
             if (setIndex < 8) r.sets[setIndex] = descriptors;
             r.dirty = true;
@@ -1326,6 +1450,9 @@ namespace plume {
             index.offset = view->buffer.offset;
             index.size = view->size;
             index.format = (view->format == RenderFormat::R16_UINT) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+            if (index.buffer != nullptr) {
+                uses.push_back({ index.buffer, D3D11BufferUse::GEOMETRY, 0, index.offset, index.offset + index.size });
+            }
         }
 
         commands.emplace_back([=](D3D11Replay &r) { r.indices = index; r.dirty = true; });
@@ -1338,6 +1465,9 @@ namespace plume {
             vertices[i].offset = views[i].buffer.offset;
             vertices[i].size = views[i].size;
             vertices[i].stride = inputSlots ? inputSlots[i].stride : 0;
+            if (vertices[i].buffer != nullptr) {
+                uses.push_back({ vertices[i].buffer, D3D11BufferUse::GEOMETRY, 0, vertices[i].offset, vertices[i].offset + vertices[i].size });
+            }
         }
 
         commands.emplace_back([startSlot, vertices = std::move(vertices)](D3D11Replay &r) {
@@ -1441,6 +1571,8 @@ namespace plume {
         const uint64_t dstOffset = dstBuffer.offset;
         const uint64_t srcOffset = srcBuffer.offset;
         commands.emplace_back([=](D3D11Replay &r) {
+            const_cast<D3D11Buffer *>(src)->resolveReadbacks();
+            dst->resolveReadbacks();
             std::memmove(dst->data.data() + dstOffset, src->data.data() + srcOffset, size_t(size));
             dst->invalidateMirrors();
             r.dirty = true;
@@ -1464,7 +1596,17 @@ namespace plume {
             desc.Usage = D3D11_USAGE_STAGING;
             desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
             ComPtr<ID3D11Texture2D> staging;
-            if (FAILED(r.device->d3d->CreateTexture2D(&desc, nullptr, staging.GetAddressOf()))) {
+            auto &pool = r.device->stagingPool;
+            for (auto it = pool.begin(); it != pool.end(); ++it) {
+                D3D11_TEXTURE2D_DESC pooled = {};
+                (*it)->GetDesc(&pooled);
+                if ((pooled.Width == desc.Width) && (pooled.Height == desc.Height) && (pooled.Format == desc.Format)) {
+                    staging = std::move(*it);
+                    pool.erase(it);
+                    break;
+                }
+            }
+            if ((staging == nullptr) && FAILED(r.device->d3d->CreateTexture2D(&desc, nullptr, staging.GetAddressOf()))) {
                 return nullptr;
             }
 
@@ -1479,6 +1621,24 @@ namespace plume {
 
         uint32_t depthPlaneOffset(RenderFormat format, uint32_t plane) {
             return ((format == RenderFormat::D32_FLOAT_S8_UINT) && (plane == 1)) ? 4 : 0;
+        }
+
+        // One row of plane elements between strided texels: a memcpy call per
+        // texel was most of a render thread converting MC3's full-size depth.
+        void copyPlaneRow(uint8_t *dst, size_t dstStride, const uint8_t *src, size_t srcStride, uint32_t count, uint32_t element) {
+            if (element == 4) {
+                for (uint32_t x = 0; x < count; x++) {
+                    uint32_t value;
+                    std::memcpy(&value, src + x * srcStride, 4);
+                    std::memcpy(dst + x * dstStride, &value, 4);
+                }
+            }
+            else if (element == 1) {
+                for (uint32_t x = 0; x < count; x++) dst[x * dstStride] = src[x * srcStride];
+            }
+            else {
+                for (uint32_t x = 0; x < count; x++) std::memcpy(dst + x * dstStride, src + x * srcStride, element);
+            }
         }
     }
 
@@ -1509,6 +1669,7 @@ namespace plume {
                 // Upload: the footprint's bytes go straight from the buffer's memory.
                 auto *texture = const_cast<D3D11Texture *>(static_cast<const D3D11Texture *>(dst.texture));
                 const auto *buffer = static_cast<const D3D11Buffer *>(src.buffer);
+                const_cast<D3D11Buffer *>(buffer)->resolveReadbacks();
                 const auto &footprint = src.placedFootprint;
                 const uint32_t rowPitch = blockRowBytes(footprint.format, footprint.rowWidth);
                 const uint32_t depthPitch = rowPitch * blockRows(footprint.format, footprint.height);
@@ -1527,9 +1688,7 @@ namespace plume {
                     const uint32_t height = std::min(footprint.height, mipExtent(texture->desc.height, mip) - std::min(dstY, mipExtent(texture->desc.height, mip)));
                     for (uint32_t y = 0; y < height; y++) {
                         uint8_t *row = static_cast<uint8_t *>(mapped.pData) + size_t(dstY + y) * mapped.RowPitch;
-                        for (uint32_t x = 0; x < width; x++) {
-                            std::memcpy(row + size_t(dstX + x) * texel + planeOffset, bytes + size_t(y) * rowPitch + size_t(x) * element, element);
-                        }
+                        copyPlaneRow(row + size_t(dstX) * texel + planeOffset, texel, bytes + size_t(y) * rowPitch, element, width, element);
                     }
 
                     r.context->Unmap(staging.Get(), 0);
@@ -1561,36 +1720,38 @@ namespace plume {
                 const uint32_t mip = src.subresource.mipLevel;
                 const UINT subresource = texture->subresource(mip, src.subresource.arrayIndex);
                 ComPtr<ID3D11Texture2D> staging = stagingCopy(r, *texture, subresource, mip);
-                D3D11_MAPPED_SUBRESOURCE mapped = {};
-                if ((staging == nullptr) || FAILED(r.context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return;
-                const uint32_t rowPitch = blockRowBytes(footprint.format, footprint.rowWidth);
-                uint8_t *bytes = buffer->data.data() + footprint.offset;
+                if (staging == nullptr) return;
+                const RenderFormat format = footprint.format;
+                const uint64_t offset = footprint.offset;
+                const uint32_t rowPitch = blockRowBytes(format, footprint.rowWidth);
                 const uint32_t left = hasBox ? uint32_t(box.left) : 0;
                 const uint32_t top = hasBox ? uint32_t(box.top) : 0;
                 const uint32_t width = std::min(footprint.width, mipExtent(texture->desc.width, mip) - std::min(left, mipExtent(texture->desc.width, mip)));
                 const uint32_t height = std::min(footprint.height, mipExtent(texture->desc.height, mip) - std::min(top, mipExtent(texture->desc.height, mip)));
-                if (RenderFormatIsDepth(texture->desc.format)) {
-                    const uint32_t texel = depthTexelBytes(texture->desc.format);
-                    const uint32_t planeOffset = depthPlaneOffset(texture->desc.format, src.subresource.planeIndex);
-                    const uint32_t element = RenderFormatSize(footprint.format);
-                    for (uint32_t y = 0; y < height; y++) {
-                        const uint8_t *row = static_cast<const uint8_t *>(mapped.pData) + size_t(top + y) * mapped.RowPitch;
-                        for (uint32_t x = 0; x < width; x++) {
-                            std::memcpy(bytes + size_t(y) * rowPitch + size_t(x) * element, row + size_t(left + x) * texel + planeOffset, element);
+                const bool depth = RenderFormatIsDepth(texture->desc.format);
+                const uint32_t texel = depth ? depthTexelBytes(texture->desc.format) : 0;
+                const uint32_t planeOffset = depth ? depthPlaneOffset(texture->desc.format, src.subresource.planeIndex) : 0;
+                // Read when `data` is next used (D3D11Buffer::Readback): the staging
+                // copy is a snapshot, kept out of the pool until then.
+                buffer->readbacks.push_back({std::move(staging), [=](const D3D11_MAPPED_SUBRESOURCE &mapped) {
+                    uint8_t *bytes = buffer->data.data() + offset;
+                    if (depth) {
+                        const uint32_t element = RenderFormatSize(format);
+                        for (uint32_t y = 0; y < height; y++) {
+                            const uint8_t *row = static_cast<const uint8_t *>(mapped.pData) + size_t(top + y) * mapped.RowPitch;
+                            copyPlaneRow(bytes + size_t(y) * rowPitch, element, row + size_t(left) * texel + planeOffset, texel, width, element);
                         }
                     }
-                }
-                else {
-                    const uint32_t rowBytes = blockRowBytes(footprint.format, width);
-                    const uint32_t rowOffset = blockRowBytes(footprint.format, left);
-                    const uint32_t block = RenderFormatBlockWidth(footprint.format);
-                    for (uint32_t y = 0; y < blockRows(footprint.format, height); y++) {
-                        std::memcpy(bytes + size_t(y) * rowPitch, static_cast<const uint8_t *>(mapped.pData) + size_t(top / block + y) * mapped.RowPitch + rowOffset, rowBytes);
+                    else {
+                        const uint32_t rowBytes = blockRowBytes(format, width);
+                        const uint32_t rowOffset = blockRowBytes(format, left);
+                        const uint32_t block = RenderFormatBlockWidth(format);
+                        for (uint32_t y = 0; y < blockRows(format, height); y++) {
+                            std::memcpy(bytes + size_t(y) * rowPitch, static_cast<const uint8_t *>(mapped.pData) + size_t(top / block + y) * mapped.RowPitch + rowOffset, rowBytes);
+                        }
                     }
-                }
-
-                r.context->Unmap(staging.Get(), 0);
-                buffer->invalidateMirrors();
+                }});
+                buffer->pendingReadbacks.store(uint32_t(buffer->readbacks.size()), std::memory_order_release);
             }
         });
     }
@@ -1649,6 +1810,43 @@ namespace plume {
         replay.device = device;
         replay.context = device->context.Get();
         replay.epoch = ++device->epoch;
+        {
+            // One upload per merged span of each buffer, before the first draw: a copy per
+            // draw range was most of the DX11 render thread's buffer work (MC3, 2026-11-08).
+            // A range a later replayed write changes uploads again at its draw (syncMirror).
+            std::vector<D3D11BufferUse> uses;
+            for (uint32_t i = 0; i < commandListCount; i++) {
+                const auto &listed = static_cast<const D3D11CommandList *>(commandLists[i])->uses;
+                uses.insert(uses.end(), listed.begin(), listed.end());
+            }
+
+            std::sort(uses.begin(), uses.end(), [](const D3D11BufferUse &a, const D3D11BufferUse &b) {
+                return std::tie(a.buffer, a.kind, a.stride, a.begin) < std::tie(b.buffer, b.kind, b.stride, b.begin);
+            });
+            // Gaps under this many bytes upload with their neighbours: fewer, larger copies.
+            const uint64_t gap = 4096;
+            for (size_t i = 0; i < uses.size();) {
+                D3D11BufferUse span = uses[i++];
+                while ((i < uses.size()) && (uses[i].buffer == span.buffer) && (uses[i].kind == span.kind)
+                    && (uses[i].stride == span.stride) && (uses[i].begin <= span.end + gap)) {
+                    span.end = std::max(span.end, uses[i++].end);
+                }
+
+                D3D11Buffer &buffer = *span.buffer;
+                switch (span.kind) {
+                case D3D11BufferUse::GEOMETRY:
+                    if (replay.geometryMirror(buffer) != nullptr) replay.syncMirror(buffer.geometry, buffer, span.begin, span.end);
+                    break;
+                case D3D11BufferUse::CONSTANT:
+                    if (replay.constantMirror(buffer) != nullptr) replay.syncMirror(buffer.constant, buffer, span.begin, span.end);
+                    break;
+                case D3D11BufferUse::STRUCTURED:
+                    if (replay.structuredMirror(buffer, span.stride) != nullptr) replay.syncMirror(buffer.structured[span.stride], buffer, span.begin, span.end);
+                    break;
+                }
+            }
+        }
+
         for (uint32_t i = 0; i < commandListCount; i++) {
             for (const auto &command : static_cast<const D3D11CommandList *>(commandLists[i])->commands) {
                 command(replay);
@@ -1868,6 +2066,8 @@ namespace plume {
             D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
             if (SUCCEEDED(d3d->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options)))) {
                 logicOps = options.OutputMergerLogicOp;
+                constantOffsets = options.ConstantBufferOffsetting && options.ConstantBufferPartialUpdate
+                    && SUCCEEDED(context.As(&context1));
             }
         }
 
