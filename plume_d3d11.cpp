@@ -35,6 +35,7 @@
 #include <atomic>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -1810,7 +1811,9 @@ namespace plume {
         replay.device = device;
         replay.context = device->context.Get();
         replay.epoch = ++device->epoch;
-        {
+        // XRECOMP_D3D11_PREUPLOAD=0: each draw uploads its own ranges, as before.
+        static const bool preupload = []() { const char *v = std::getenv("XRECOMP_D3D11_PREUPLOAD"); return !((v != nullptr) && (v[0] == '0')); }();
+        if (preupload) {
             // One upload per merged span of each buffer, before the first draw: a copy per
             // draw range was most of the DX11 render thread's buffer work (MC3, 2026-11-08).
             // A range a later replayed write changes uploads again at its draw (syncMirror).
@@ -2066,8 +2069,12 @@ namespace plume {
             D3D11_FEATURE_DATA_D3D11_OPTIONS options = {};
             if (SUCCEEDED(d3d->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof(options)))) {
                 logicOps = options.OutputMergerLogicOp;
+                // Off unless XRECOMP_D3D11_CONSTANT_OFFSETS=1: on an RTX card MC3's pixel
+                // constants read wrong this way (every texture missing, 2026-11-08), so draws
+                // keep a WRITE_DISCARD copy each until that is understood.
+                const char *offsets = std::getenv("XRECOMP_D3D11_CONSTANT_OFFSETS");
                 constantOffsets = options.ConstantBufferOffsetting && options.ConstantBufferPartialUpdate
-                    && SUCCEEDED(context.As(&context1));
+                    && (offsets != nullptr) && (offsets[0] == '1') && SUCCEEDED(context.As(&context1));
             }
         }
 
