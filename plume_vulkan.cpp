@@ -2576,6 +2576,11 @@ namespace plume {
         if (immediatePresentModeSupported && !vsyncEnabled) {
             requiredPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
         }
+        // Android offers no immediate mode: mailbox still leaves the frame rate
+        // unlocked (without tearing) instead of FIFO's 60/30/20 steps.
+        else if (mailboxPresentModeSupported && !vsyncEnabled) {
+            requiredPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
         // FIFO is guaranteed to be supported.
         else {
             requiredPresentMode = VK_PRESENT_MODE_FIFO_KHR;
