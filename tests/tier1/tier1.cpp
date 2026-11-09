@@ -66,10 +66,34 @@ static HRESULT inspectRootSignature(const D3D12_ROOT_SIGNATURE_DESC *desc, D3D_R
     }
     return hr;
 }
+struct HeapFailureInjection
+{
+    bool enabled = false;
+    size_t calls = 0, failCall = SIZE_MAX;
+    HRESULT result = E_FAIL;
+    uint32_t maxViews = UINT32_MAX, maxSamplers = UINT32_MAX;
+    bool alwaysFail = false;
+} heapFailure;
+static HRESULT createDescriptorHeapForTest(ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc, REFIID iid, void **heap)
+{
+    if (heapFailure.enabled)
+    {
+        const size_t call = heapFailure.calls++;
+        const uint32_t maximum = desc->Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER ? heapFailure.maxSamplers : heapFailure.maxViews;
+        if (call == heapFailure.failCall || heapFailure.alwaysFail || desc->NumDescriptors > maximum)
+        {
+            *heap = nullptr;
+            return heapFailure.result;
+        }
+    }
+    return device->CreateDescriptorHeap(desc, iid, heap);
+}
+#define PLUME_D3D12_CREATE_DESCRIPTOR_HEAP(device, ...) createDescriptorHeapForTest(device, __VA_ARGS__)
 // Compile the production implementation here so its exact serialized signatures can be inspected.
 #define D3D12SerializeRootSignature inspectRootSignature
 #include "../../plume_d3d12.cpp"
 #undef D3D12SerializeRootSignature
+#undef PLUME_D3D12_CREATE_DESCRIPTOR_HEAP
 
 int main()
 {
@@ -254,6 +278,80 @@ int main()
             assert(unique.count(concurrent.contentVersion.load(std::memory_order_relaxed)) == 1);
         }
     }
+    // CPU descriptor-store failures use the same narrow public exception as snapshot allocations.
+    for (unsigned kind : {0u, 3u})
+    {
+        heapFailure = {};
+        heapFailure.enabled = true;
+        heapFailure.failCall = 0;
+        bool typed = false;
+        try
+        {
+            auto failedStore = device->createDescriptorSet(sets[kind]);
+        }
+        catch (const D3D12DescriptorAllocationError &error)
+        {
+            typed = std::strstr(error.what(), "hr=0x80004005") != nullptr;
+        }
+        heapFailure.enabled = false;
+        assert(typed);
+    }
+    {
+        auto recoveryCommands = queue->createCommandList();
+        auto *recovery = static_cast<D3D12CommandList *>(recoveryCommands.get());
+        recovery->begin();
+        recovery->setGraphicsPipelineLayout(layout.get());
+        heapFailure = {};
+        heapFailure.enabled = true;
+        heapFailure.result = E_OUTOFMEMORY;
+        heapFailure.maxViews = 64;
+        heapFailure.maxSamplers = 32;
+        recovery->setGraphicsDescriptorSet(table.get(), 0);
+        heapFailure.enabled = false;
+        assert(recovery->snapshotPages.size() == 1);
+        assert(recovery->snapshotPages[0]->views->heapSize == 64 && recovery->snapshotPages[0]->samplers->heapSize == 32);
+        recovery->setGraphicsDescriptorSet(table.get(), 1);
+        recovery->setGraphicsDescriptorSet(table.get(), 2);
+        recovery->setGraphicsDescriptorSet(psTable.get(), 3);
+        recovery->setGraphicsDescriptorSet(vsTable.get(), 5);
+        RenderDescriptorRange largeRange(RenderDescriptorRangeType::TEXTURE, 0, 128);
+        D3D12DescriptorSet large(native, RenderDescriptorSetDesc(&largeRange, 1, false, 0, true));
+        for (unsigned slot = 0; slot < 128; ++slot)
+            large.copyDescriptors(slot, s, 0, 1);
+        recovery->setGraphicsDescriptorSet(&large, 0);
+        assert(recovery->snapshotPageIndex == 1 && recovery->snapshotPages[1]->views->heapSize >= 168);
+        recovery->end(); // Never submitted; resetting a closed, unsubmitted list is safe.
+        recovery->begin();
+        recovery->setGraphicsPipelineLayout(layout.get());
+        recovery->setGraphicsDescriptorSet(&large, 0);
+        assert(recovery->snapshotPageIndex == 1 && recovery->snapshotPages.size() == 2);
+        recovery->end();
+
+        auto terminalCommands = queue->createCommandList();
+        auto *terminal = static_cast<D3D12CommandList *>(terminalCommands.get());
+        terminal->begin();
+        terminal->setGraphicsPipelineLayout(layout.get());
+        heapFailure = {};
+        heapFailure.enabled = true;
+        heapFailure.result = E_OUTOFMEMORY;
+        heapFailure.alwaysFail = true;
+        bool typed = false;
+        try
+        {
+            terminal->setGraphicsDescriptorSet(table.get(), 0);
+        }
+        catch (const D3D12DescriptorAllocationError &)
+        {
+            typed = true;
+        }
+        assert(typed && heapFailure.calls <= 52);
+        assert(terminal->snapshotPages.empty() && terminal->snapshotPageIndex == 0 && terminal->graphicsSnapshots.empty());
+        assert(!terminal->snapshotHeapsActive && !terminal->descriptorHeapsSet);
+        heapFailure.enabled = false;
+        terminal->setGraphicsDescriptorSet(table.get(), 0); // Explicit retry after terminal allocation failure.
+        assert(terminal->snapshotPages.size() == 1 && terminal->graphicsSnapshots.count(0) == 1);
+        terminal->end();
+    }
     const char *vsrc =
         R"(Texture2D<float4> tex[20]:register(t0,space2); SamplerState smp[4]:register(s0,space5); struct O{float4 p:SV_Position; nointerpolation float c:COLOR;}; O main(uint i:SV_VertexID){O o;o.p=float4(i==1?3:-1,i==2?3:-1,0,1);o.c=tex[0].SampleLevel(smp[0],float2(.5,.5),0).r;return o;})";
     const char *psrc =
@@ -383,6 +481,65 @@ int main()
                 cmd->setGraphicsDescriptorSet(table.get(), 2);
                 for (unsigned i = 0; i < 20; ++i)
                     t->copyDescriptors(i, s, 1, 1);
+            }
+            if (frame == 0 && draw >= 40 && draw <= 160 && draw % 40 == 0)
+            {
+                auto &page = *cmd->snapshotPages[cmd->snapshotPageIndex];
+                page.viewsUsed = page.views->heapSize;
+                page.samplersUsed = page.samplers->heapSize;
+                const auto oldGraphics = cmd->graphicsSnapshots, oldCompute = cmd->computeSnapshots;
+                const size_t oldIndex = cmd->snapshotPageIndex, oldPages = cmd->snapshotPages.size();
+                const bool oldHeaps = cmd->descriptorHeapsSet, oldActive = cmd->snapshotHeapsActive;
+                t->setSRV(0, b.Get(), &srv);
+                heapFailure = {};
+                heapFailure.enabled = true;
+                heapFailure.failCall = draw / 40 - 1;
+                bool typed = false;
+                try
+                {
+                    cmd->setGraphicsDescriptorSet(table.get(), 0);
+                }
+                catch (const D3D12DescriptorAllocationError &error)
+                {
+                    typed = std::strstr(error.what(), "views=0x") && std::strstr(error.what(), "removed=0x");
+                }
+                heapFailure.enabled = false;
+                assert(typed && heapFailure.calls == 4);
+                assert(cmd->snapshotPageIndex == oldIndex && cmd->snapshotPages.size() == oldPages);
+                assert(cmd->descriptorHeapsSet == oldHeaps && cmd->snapshotHeapsActive == oldActive);
+                assert(page.viewsUsed == page.views->heapSize && page.samplersUsed == page.samplers->heapSize);
+                for (const auto *maps : {&oldGraphics, &oldCompute})
+                {
+                    const auto &current = maps == &oldGraphics ? cmd->graphicsSnapshots : cmd->computeSnapshots;
+                    assert(current.size() == maps->size());
+                    for (const auto &entry : *maps)
+                    {
+                        const auto &now = current.at(entry.first);
+                        assert(now.contentVersion == entry.second.contentVersion && now.cpuViews.ptr == entry.second.cpuViews.ptr &&
+                               now.cpuSamplers.ptr == entry.second.cpuSamplers.ptr && now.gpuViews.ptr == entry.second.gpuViews.ptr &&
+                               now.gpuSamplers.ptr == entry.second.gpuSamplers.ptr);
+                    }
+                }
+                cmd->drawInstanced(3, 1, 0, 0); // Old GPU tables remain valid after failure; redraw the preceding pixel.
+                cmd->setGraphicsDescriptorSet(table.get(), 0);
+            }
+            if (frame == 0 && draw == 240)
+            {
+                auto &oldPage = *cmd->snapshotPages[cmd->snapshotPageIndex];
+                oldPage.viewsUsed = oldPage.views->heapSize;
+                oldPage.samplersUsed = oldPage.samplers->heapSize;
+                t->setSRV(0, a.Get(), &srv);
+                heapFailure = {};
+                heapFailure.enabled = true;
+                heapFailure.result = E_OUTOFMEMORY;
+                heapFailure.maxViews = 64;
+                heapFailure.maxSamplers = 32;
+                cmd->setGraphicsDescriptorSet(table.get(), 0);
+                heapFailure.enabled = false;
+                const auto &smallPage = *cmd->snapshotPages[cmd->snapshotPageIndex];
+                assert(smallPage.views->heapSize == 64 && smallPage.samplers->heapSize == 32);
+                assert(smallPage.viewsUsed == 60 && smallPage.samplersUsed == 20);
+                assert(cmd->graphicsSnapshots.size() == 5);
             }
             // Replacing a resource at the same global slot must invalidate cached table contents.
             s->setSRV(0, draw % 2 ? b.Get() : a.Get(), &srv);

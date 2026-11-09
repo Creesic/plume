@@ -45,6 +45,10 @@ extern "C" {
 }
 #endif
 
+#ifndef PLUME_D3D12_CREATE_DESCRIPTOR_HEAP
+#define PLUME_D3D12_CREATE_DESCRIPTOR_HEAP(device, ...) (device)->CreateDescriptorHeap(__VA_ARGS__)
+#endif
+
 namespace plume {
     static const uint32_t ShaderDescriptorHeapSize = 65536;
     static const uint32_t SamplerDescriptorHeapSize = 1024;
@@ -858,7 +862,7 @@ namespace plume {
             heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         }
 
-        HRESULT res = device->d3d->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
+        HRESULT res = PLUME_D3D12_CREATE_DESCRIPTOR_HEAP(device->d3d, &heapDesc, IID_PPV_ARGS(&heap));
         allocationResult = res;
         if (FAILED(res)) {
             fprintf(stderr, "CreateDescriptorHeap failed with error code 0x%lX.\n", res);
@@ -956,6 +960,13 @@ namespace plume {
 
     // D3D12DescriptorSet
 
+    [[noreturn]] static void throwDescriptorStorageError(const D3D12DescriptorHeapAllocator *heap, const char *kind) {
+        char message[256];
+        std::snprintf(message, sizeof(message), "Unable to allocate CPU %s descriptor storage (count=%u hr=0x%lX removed=0x%lX).",
+            kind, heap->heapSize, heap->allocationResult, heap->device->d3d->GetDeviceRemovedReason());
+        throw D3D12DescriptorAllocationError(message);
+    }
+
     D3D12DescriptorSet::D3D12DescriptorSet(D3D12Device *device, const RenderDescriptorSetDesc &desc) {
         assert(device != nullptr);
 
@@ -1008,12 +1019,12 @@ namespace plume {
             descriptorContentVersions.resize(size_t(viewDescriptorCount) + samplerDescriptorCount);
             if (viewDescriptorCount > 0) {
                 cpuViewHeap = std::make_unique<D3D12DescriptorHeapAllocator>(device, viewDescriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
-                if (!cpuViewHeap->heap) throw std::runtime_error("Unable to allocate CPU descriptor storage.");
+                if (!cpuViewHeap->heap) throwDescriptorStorageError(cpuViewHeap.get(), "view");
                 viewHeap = cpuViewHeap.get();
             }
             if (samplerDescriptorCount > 0) {
                 cpuSamplerHeap = std::make_unique<D3D12DescriptorHeapAllocator>(device, samplerDescriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
-                if (!cpuSamplerHeap->heap) throw std::runtime_error("Unable to allocate CPU sampler storage.");
+                if (!cpuSamplerHeap->heap) throwDescriptorStorageError(cpuSamplerHeap.get(), "sampler");
                 samplerHeap = cpuSamplerHeap.get();
             }
         }
@@ -2786,8 +2797,7 @@ namespace plume {
         }
     }
 
-    void D3D12CommandList::copySnapshot(DescriptorSnapshot &snapshot) {
-        auto &page = *snapshotPages[snapshotPageIndex];
+    void D3D12CommandList::copySnapshot(DescriptorSnapshot &snapshot, DescriptorSnapshotPage &page) {
         auto copy = [&](uint32_t count, D3D12_CPU_DESCRIPTOR_HANDLE &cpu, D3D12_GPU_DESCRIPTOR_HANDLE &gpu,
                         D3D12DescriptorHeapAllocator *cpuHeap, D3D12DescriptorHeapAllocator *gpuHeap,
                         uint32_t &used, D3D12_DESCRIPTOR_HEAP_TYPE type) {
@@ -2803,38 +2813,79 @@ namespace plume {
         copy(snapshot.samplerCount, snapshot.cpuSamplers, snapshot.gpuSamplers, page.cpuSamplers.get(), page.samplers.get(), page.samplersUsed, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     }
 
-    void D3D12CommandList::rotateSnapshotPage(uint32_t viewCount, uint32_t samplerCount) {
-        for (const auto *snapshots : { &graphicsSnapshots, &computeSnapshots }) {
+    void D3D12CommandList::rotateSnapshotPage(const DescriptorSnapshot &snapshot, uint32_t setIndex, bool setCompute) {
+        // Prepare replacements separately so allocation failure leaves the active tables and heap index intact.
+        auto newGraphics = graphicsSnapshots;
+        auto newCompute = computeSnapshots;
+        (setCompute ? newCompute : newGraphics)[setIndex] = snapshot;
+        uint32_t requiredViews = 0, requiredSamplers = 0;
+        for (const auto *snapshots : { &newGraphics, &newCompute }) {
             for (const auto &entry : *snapshots) {
-                viewCount += entry.second.viewCount;
-                samplerCount += entry.second.samplerCount;
+                requiredViews += entry.second.viewCount;
+                requiredSamplers += entry.second.samplerCount;
             }
         }
-        if (viewCount > SnapshotViewHeapSize || samplerCount > SnapshotSamplerHeapSize) {
+        if (requiredViews > SnapshotViewHeapSize || requiredSamplers > SnapshotSamplerHeapSize) {
             throw std::length_error("CPU descriptor tables exceed the command-list snapshot page capacity.");
         }
-        if (snapshotPageIndex < snapshotPages.size() && (snapshotPages[snapshotPageIndex]->viewsUsed || snapshotPages[snapshotPageIndex]->samplersUsed)) ++snapshotPageIndex;
-        if (snapshotPageIndex == snapshotPages.size()) {
-            auto page = std::make_unique<DescriptorSnapshotPage>();
+        size_t candidateIndex = snapshotPageIndex;
+        if (candidateIndex < snapshotPages.size() && (snapshotPages[candidateIndex]->viewsUsed || snapshotPages[candidateIndex]->samplersUsed)) {
+            ++candidateIndex;
+        }
+        while (candidateIndex < snapshotPages.size()) {
+            const auto &page = *snapshotPages[candidateIndex];
+            if (!page.viewsUsed && !page.samplersUsed && page.views->heapSize >= requiredViews && page.samplers->heapSize >= requiredSamplers) break;
+            ++candidateIndex;
+        }
+
+        std::unique_ptr<DescriptorSnapshotPage> newPage;
+        if (candidateIndex == snapshotPages.size()) {
             auto *device = queue->device;
-            page->views = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotViewHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            page->samplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotSamplerHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-            page->cpuViews = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotViewHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
-            page->cpuSamplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotSamplerHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
-            if (!page->views->heap || !page->samplers->heap || !page->cpuViews->heap || !page->cpuSamplers->heap) {
+            uint32_t viewCapacity = SnapshotViewHeapSize, samplerCapacity = SnapshotSamplerHeapSize;
+            const uint32_t minViews = std::max(1u, requiredViews), minSamplers = std::max(1u, requiredSamplers);
+            for (;;) {
+                newPage = std::make_unique<DescriptorSnapshotPage>();
+                newPage->views = std::make_unique<D3D12DescriptorHeapAllocator>(device, viewCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                newPage->samplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, samplerCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                newPage->cpuViews = std::make_unique<D3D12DescriptorHeapAllocator>(device, viewCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
+                newPage->cpuSamplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, samplerCapacity, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
+                bool failed = false, onlyOutOfMemory = true;
+                for (const auto *heap : { newPage->views.get(), newPage->samplers.get(), newPage->cpuViews.get(), newPage->cpuSamplers.get() }) {
+                    if (FAILED(heap->allocationResult)) {
+                        failed = true;
+                        onlyOutOfMemory &= heap->allocationResult == E_OUTOFMEMORY;
+                    }
+                }
+                if (!failed) break;
+                const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+                const uint32_t smallerViews = std::max(minViews, viewCapacity / 2);
+                const uint32_t smallerSamplers = std::max(minSamplers, samplerCapacity / 2);
+                if (onlyOutOfMemory && removed == S_OK && (smallerViews < viewCapacity || smallerSamplers < samplerCapacity)) {
+                    newPage.reset(); // Release every partial heap before retrying a smaller candidate.
+                    viewCapacity = smallerViews;
+                    samplerCapacity = smallerSamplers;
+                    continue;
+                }
                 char message[512];
-                std::snprintf(message, sizeof(message), "Unable to allocate command-list descriptor snapshot page %zu/%zu (views=0x%lX samplers=0x%lX cpuViews=0x%lX cpuSamplers=0x%lX removed=0x%lX).", snapshotPageIndex, snapshotPages.size(), page->views->allocationResult, page->samplers->allocationResult, page->cpuViews->allocationResult, page->cpuSamplers->allocationResult, device->d3d->GetDeviceRemovedReason());
+                std::snprintf(message, sizeof(message),
+                    "Unable to allocate command-list descriptor snapshot page %zu/%zu (capacity=%u/%u views=0x%lX samplers=0x%lX cpuViews=0x%lX cpuSamplers=0x%lX removed=0x%lX).",
+                    candidateIndex, snapshotPages.size(), viewCapacity, samplerCapacity, newPage->views->allocationResult,
+                    newPage->samplers->allocationResult, newPage->cpuViews->allocationResult, newPage->cpuSamplers->allocationResult, removed);
                 std::fprintf(stderr, "%s\n", message);
                 OutputDebugStringA(message);
                 OutputDebugStringA("\n");
-                throw std::runtime_error(message);
+                throw D3D12DescriptorAllocationError(message);
             }
-            snapshotPages.emplace_back(std::move(page));
         }
+        auto &page = newPage ? *newPage : *snapshotPages[candidateIndex];
+        for (auto *snapshots : { &newGraphics, &newCompute }) {
+            for (auto &entry : *snapshots) copySnapshot(entry.second, page);
+        }
+        if (newPage) snapshotPages.emplace_back(std::move(newPage));
+        snapshotPageIndex = candidateIndex;
+        graphicsSnapshots.swap(newGraphics);
+        computeSnapshots.swap(newCompute);
         snapshotHeapsActive = true;
-        for (auto *snapshots : { &graphicsSnapshots, &computeSnapshots }) {
-            for (auto &entry : *snapshots) copySnapshot(entry.second);
-        }
         descriptorHeapsSet = false;
         checkDescriptorHeaps();
     }
@@ -2847,7 +2898,6 @@ namespace plume {
             checkDescriptorHeaps();
             return;
         }
-        snapshots.erase(setIndex);
         DescriptorSnapshot snapshot;
         snapshot.contentVersion = contentVersion;
         snapshot.viewCount = set->viewAllocation.count;
@@ -2856,11 +2906,12 @@ namespace plume {
         snapshot.samplerRootIndex = layout->setSamplerRootIndices[setIndex];
         if (snapshot.viewCount) snapshot.cpuViews = set->viewHeap->getCPUHandleAt(set->viewAllocation.offset);
         if (snapshot.samplerCount) snapshot.cpuSamplers = set->samplerHeap->getCPUHandleAt(set->samplerAllocation.offset);
-        if (!snapshotHeapsActive || snapshotPages[snapshotPageIndex]->viewsUsed + snapshot.viewCount > SnapshotViewHeapSize ||
-            snapshotPages[snapshotPageIndex]->samplersUsed + snapshot.samplerCount > SnapshotSamplerHeapSize) {
-            rotateSnapshotPage(snapshot.viewCount, snapshot.samplerCount);
+        if (!snapshotHeapsActive || snapshotPages[snapshotPageIndex]->viewsUsed + snapshot.viewCount > snapshotPages[snapshotPageIndex]->views->heapSize ||
+            snapshotPages[snapshotPageIndex]->samplersUsed + snapshot.samplerCount > snapshotPages[snapshotPageIndex]->samplers->heapSize) {
+            rotateSnapshotPage(snapshot, setIndex, setCompute);
+            return;
         }
-        copySnapshot(snapshot);
+        copySnapshot(snapshot, *snapshotPages[snapshotPageIndex]);
         checkDescriptorHeaps();
         snapshots[setIndex] = snapshot;
         bindSnapshot(snapshot, setCompute);

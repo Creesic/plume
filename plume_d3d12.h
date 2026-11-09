@@ -12,6 +12,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 
 #ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
@@ -25,6 +26,10 @@
 #include "D3D12MemAlloc.h"
 
 namespace plume {
+    struct D3D12DescriptorAllocationError : std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
+
     struct D3D12Buffer;
     struct D3D12CommandQueue;
     struct D3D12Device;
@@ -211,9 +216,9 @@ namespace plume {
         bool snapshotHeapsActive = false;
         std::map<uint32_t, DescriptorSnapshot> graphicsSnapshots, computeSnapshots;
         void snapshotDescriptorSet(const D3D12PipelineLayout *layout, D3D12DescriptorSet *set, uint32_t setIndex, bool setCompute);
-        void copySnapshot(DescriptorSnapshot &snapshot);
+        void copySnapshot(DescriptorSnapshot &snapshot, DescriptorSnapshotPage &page);
         void bindSnapshot(const DescriptorSnapshot &snapshot, bool setCompute);
-        void rotateSnapshotPage(uint32_t viewCount, uint32_t samplerCount);
+        void rotateSnapshotPage(const DescriptorSnapshot &snapshot, uint32_t setIndex, bool setCompute);
 
         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         uint32_t activeFrontStencilRef = 0;
