@@ -1,9 +1,12 @@
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <d3dcompiler.h>
+#include <new>
 #include <plume_d3d12.h>
+#include <thread>
 #include <wrl/client.h>
 using namespace plume;
 using Microsoft::WRL::ComPtr;
@@ -188,6 +191,69 @@ int main()
         ps->setSampler(i, sampler.get());
     for (unsigned i = 0; i < 4; ++i)
         vs->setSampler(i, sampler.get());
+    {
+        RenderDescriptorRange oneTexture(RenderDescriptorRangeType::TEXTURE, 0, 1);
+        RenderDescriptorSetDesc desc(&oneTexture, 1, false, 0, true);
+        alignas(D3D12DescriptorSet) unsigned char storage[sizeof(D3D12DescriptorSet)];
+        auto *first = new (storage) D3D12DescriptorSet(native, desc);
+        first->setSRV(0, a.Get(), &srv);
+        const uint64_t firstVersion = first->contentVersion.load(std::memory_order_relaxed);
+        t->copyDescriptors(0, first, 0, 1);
+        const uint64_t firstTableVersion = t->contentVersion.load(std::memory_order_relaxed);
+        first->~D3D12DescriptorSet();
+        auto *second = new (storage) D3D12DescriptorSet(native, desc);
+        second->setSRV(0, b.Get(), &srv);
+        assert(second->contentVersion.load(std::memory_order_relaxed) != firstVersion);
+        t->copyDescriptors(0, second, 0, 1);
+        assert(t->contentVersion.load(std::memory_order_relaxed) != firstTableVersion);
+        second->~D3D12DescriptorSet();
+
+        RenderDescriptorRange constantBuffer(RenderDescriptorRangeType::CONSTANT_BUFFER, 0, 1);
+        D3D12DescriptorSet cbv(native, RenderDescriptorSetDesc(&constantBuffer, 1, false, 0, true));
+        auto version = cbv.contentVersion.load(std::memory_order_relaxed);
+        cbv.setCBV(0, cb.Get(), 256);
+        assert(cbv.contentVersion.load(std::memory_order_relaxed) != version &&
+               cbv.descriptorContentVersions[0] == cbv.contentVersion.load(std::memory_order_relaxed));
+        RenderDescriptorRange readWrite(RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER, 0, 1);
+        D3D12DescriptorSet uav(native, RenderDescriptorSetDesc(&readWrite, 1, false, 0, true));
+        version = uav.contentVersion.load(std::memory_order_relaxed);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC nullUAV = {};
+        nullUAV.Format = DXGI_FORMAT_R32_FLOAT;
+        nullUAV.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        nullUAV.Buffer.NumElements = 1;
+        uav.setUAV(0, nullptr, &nullUAV);
+        assert(uav.contentVersion.load(std::memory_order_relaxed) != version &&
+               uav.descriptorContentVersions[0] == uav.contentVersion.load(std::memory_order_relaxed));
+    }
+    {
+        constexpr unsigned slots = 2048, workers = 8;
+        RenderDescriptorRange range(RenderDescriptorRangeType::TEXTURE, 0, slots);
+        D3D12DescriptorSet concurrent(native, RenderDescriptorSetDesc(&range, 1, false, 0, true));
+        for (unsigned round = 0; round < 4; ++round)
+        {
+            std::atomic<unsigned> ready{0};
+            std::atomic<bool> start{false};
+            std::thread writers[workers];
+            for (unsigned worker = 0; worker < workers; ++worker)
+            {
+                writers[worker] = std::thread([&, worker] {
+                    ready.fetch_add(1, std::memory_order_relaxed);
+                    while (!start.load(std::memory_order_acquire))
+                        std::this_thread::yield();
+                    for (unsigned slot = worker; slot < slots; slot += workers)
+                        concurrent.setSRV(slot, a.Get(), &srv);
+                });
+            }
+            while (ready.load(std::memory_order_relaxed) != workers)
+                std::this_thread::yield();
+            start.store(true, std::memory_order_release);
+            for (auto &writer : writers)
+                writer.join();
+            std::unordered_set<uint64_t> unique(concurrent.descriptorContentVersions.begin(), concurrent.descriptorContentVersions.end());
+            assert(unique.size() == slots && !unique.count(0));
+            assert(unique.count(concurrent.contentVersion.load(std::memory_order_relaxed)) == 1);
+        }
+    }
     const char *vsrc =
         R"(Texture2D<float4> tex[20]:register(t0,space2); SamplerState smp[4]:register(s0,space5); struct O{float4 p:SV_Position; nointerpolation float c:COLOR;}; O main(uint i:SV_VertexID){O o;o.p=float4(i==1?3:-1,i==2?3:-1,0,1);o.c=tex[0].SampleLevel(smp[0],float2(.5,.5),0).r;return o;})";
     const char *psrc =
@@ -270,6 +336,7 @@ int main()
         cmd->d3d->SetGraphicsRootConstantBufferView(nativeLayout->rootDescriptorRootIndicesAndTypes[0].first, cb->GetGPUVirtualAddress());
         auto rtv = rtvHeap.getCPUHandleAt(0);
         cmd->d3d->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        s->setSRV(0, a.Get(), &srv);
         for (unsigned i = 0; i < 20; ++i)
             t->copyDescriptors(i, s, 0, 1);
         cmd->setGraphicsDescriptorSet(table.get(), 1);
@@ -301,6 +368,7 @@ int main()
                 cmd->setGraphicsPushConstants(0, &bias);
                 cmd->d3d->SetGraphicsRootConstantBufferView(nativeLayout->rootDescriptorRootIndicesAndTypes[0].first,
                                                             cb->GetGPUVirtualAddress());
+                s->setSRV(0, a.Get(), &srv);
                 for (unsigned i = 0; i < 20; ++i)
                     t->copyDescriptors(i, s, 0, 1);
                 cmd->setGraphicsDescriptorSet(table.get(), 1);
@@ -308,7 +376,10 @@ int main()
                 for (unsigned i = 0; i < 20; ++i)
                     t->copyDescriptors(i, s, 1, 1);
             }
-            t->copyDescriptors(0, s, draw % 2, 1);
+            // Replacing a resource at the same global slot must invalidate cached table contents.
+            s->setSRV(0, draw % 2 ? b.Get() : a.Get(), &srv);
+            t->copyDescriptors(0, s, 0, 1);
+            ps->setSampler(0, sampler.get()); // Force sampler snapshot rollover despite otherwise stable sampler bindings.
             cmd->setGraphicsDescriptorSet(table.get(), 0);
             cmd->setGraphicsDescriptorSet(psTable.get(), 3);
             cmd->setGraphicsDescriptorSet(vsTable.get(), 5);
@@ -361,6 +432,48 @@ int main()
             }
             rb->Unmap(0, nullptr);
         }
+    }
+    for (unsigned repetition = 0; repetition < 3; ++repetition)
+    {
+        auto benchCommands = queue->createCommandList();
+        auto *bench = static_cast<D3D12CommandList *>(benchCommands.get());
+        std::unique_ptr<RenderDescriptorSet> destinations[5];
+        unsigned indices[] = {0, 1, 2, 3, 5};
+        for (unsigned i = 0; i < 5; ++i)
+            destinations[i] = device->createDescriptorSet(sets[indices[i]]);
+        bench->begin();
+        bench->setGraphicsPipelineLayout(layout.get());
+        auto start = std::chrono::steady_clock::now();
+        for (unsigned draw = 0; draw < 1000; ++draw)
+        {
+            for (unsigned dimension = 0; dimension < 3; ++dimension)
+            {
+                auto *dst = static_cast<D3D12DescriptorSet *>(destinations[dimension].get());
+                for (unsigned slot = 0; slot < 20; ++slot)
+                    dst->copyDescriptors(slot, s, 0, 1);
+            }
+            for (unsigned stage = 3; stage < 5; ++stage)
+            {
+                auto *dst = static_cast<D3D12DescriptorSet *>(destinations[stage].get());
+                auto *source = stage == 3 ? ps : vs;
+                for (unsigned slot = 0; slot < (stage == 3 ? 16u : 4u); ++slot)
+                    dst->copyDescriptors(slot, source, slot, 1);
+            }
+            for (unsigned i = 0; i < 5; ++i)
+                bench->setGraphicsDescriptorSet(destinations[i].get(), indices[i]);
+        }
+        assert(bench->snapshotPages.size() == 1);
+        assert(bench->snapshotPages[0]->viewsUsed == 60);
+        assert(bench->snapshotPages[0]->samplersUsed == 20);
+        const uint64_t unchangedVersion =
+            static_cast<D3D12DescriptorSet *>(destinations[0].get())->contentVersion.load(std::memory_order_relaxed);
+        static_cast<D3D12DescriptorSet *>(destinations[0].get())->copyDescriptors(0, s, 0, 1);
+        assert(static_cast<D3D12DescriptorSet *>(destinations[0].get())->contentVersion.load(std::memory_order_relaxed) ==
+               unchangedVersion);
+        auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        std::printf("Repeated 80-descriptor / 5-table bindings: %.3f ms / 1000 draws, %zu heap pages\n", elapsed,
+                    bench->snapshotPages.size());
+        bench->end();
     }
     assert(serializedLayouts >= 1);
     std::printf("Tier1 bounded root signatures, 1200 rendered snapshot mutations, two concurrently recorded lists, sampler paging, "

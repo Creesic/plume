@@ -9,6 +9,7 @@
 
 #include "plume_render_interface.h"
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <unordered_map>
@@ -83,6 +84,10 @@ namespace plume {
         };
 
         bool cpuOnly = false;
+        // Device-unique versions survive source-slot replacement and descriptor-set address reuse.
+        std::atomic<uint64_t> contentVersion{0};
+        std::vector<uint64_t> descriptorContentVersions;
+        void markDescriptorWritten(uint32_t descriptorIndex);
         std::unique_ptr<D3D12DescriptorHeapAllocator> cpuViewHeap;
         std::unique_ptr<D3D12DescriptorHeapAllocator> cpuSamplerHeap;
         D3D12DescriptorHeapAllocator *viewHeap = nullptr;
@@ -194,6 +199,7 @@ namespace plume {
             uint32_t viewsUsed = 0, samplersUsed = 0;
         };
         struct DescriptorSnapshot {
+            uint64_t contentVersion = 0;
             uint32_t viewCount = 0, samplerCount = 0;
             uint32_t viewRootIndex = 0, samplerRootIndex = 0;
             D3D12_CPU_DESCRIPTOR_HANDLE cpuViews = {}, cpuSamplers = {};
@@ -463,6 +469,7 @@ namespace plume {
     };
 
     struct D3D12Device : RenderDevice {
+        std::atomic<uint64_t> nextDescriptorContentVersion{1};
         ID3D12Device8 *d3d = nullptr;
         D3D12Interface *renderInterface = nullptr;
         IDXGIAdapter1 *adapter = nullptr;

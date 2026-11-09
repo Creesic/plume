@@ -1003,6 +1003,8 @@ namespace plume {
         }
 
         if (cpuOnly) {
+            contentVersion.store(device->nextDescriptorContentVersion.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
+            descriptorContentVersions.resize(size_t(viewDescriptorCount) + samplerDescriptorCount);
             if (viewDescriptorCount > 0) {
                 cpuViewHeap = std::make_unique<D3D12DescriptorHeapAllocator>(device, viewDescriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
                 if (!cpuViewHeap->heap) throw std::runtime_error("Unable to allocate CPU descriptor storage.");
@@ -1046,6 +1048,15 @@ namespace plume {
         }
     }
 
+    void D3D12DescriptorSet::markDescriptorWritten(uint32_t descriptorIndex) {
+        if (cpuOnly) {
+            assert(descriptorIndex < descriptorContentVersions.size());
+            const uint64_t version = device->nextDescriptorContentVersion.fetch_add(1, std::memory_order_relaxed);
+            descriptorContentVersions[descriptorIndex] = version;
+            contentVersion.store(version, std::memory_order_relaxed);
+        }
+    }
+
     void D3D12DescriptorSet::copyDescriptors(uint32_t destinationIndex, const D3D12DescriptorSet *source, uint32_t sourceIndex, uint32_t count) {
         if (source == nullptr || source->device != device || !source->cpuOnly) {
             throw std::invalid_argument("Descriptor copies require a CPU-only source on the same device.");
@@ -1075,10 +1086,16 @@ namespace plume {
             if (dstType != srcType) throw std::invalid_argument("Incompatible descriptor copy types.");
         }
         for (uint32_t i = 0; i < count; i++) {
+            const uint64_t sourceVersion = source->descriptorContentVersions[sourceIndex + i];
+            if (cpuOnly && descriptorContentVersions[destinationIndex + i] == sourceVersion) continue;
             RenderDescriptorRangeType dstType, srcType;
             const auto dst = descriptorLocation(this, destinationIndex + i, dstType);
             const auto src = descriptorLocation(source, sourceIndex + i, srcType);
             device->d3d->CopyDescriptorsSimple(1, dst, src, dstType == RenderDescriptorRangeType::SAMPLER ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            if (cpuOnly) {
+                descriptorContentVersions[destinationIndex + i] = sourceVersion;
+                contentVersion.store(device->nextDescriptorContentVersion.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
+            }
         }
     }
 
@@ -1375,6 +1392,7 @@ namespace plume {
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
             const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = samplerHeap->getCPUHandleAt(samplerAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateSampler(&interfaceSampler->samplerDesc, cpuHandle);
+            markDescriptorWritten(descriptorIndex);
         }
     }
 
@@ -1403,6 +1421,7 @@ namespace plume {
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
             const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateShaderResourceView(resource, viewDesc, cpuHandle);
+            markDescriptorWritten(descriptorIndex);
         }
     }
 
@@ -1413,6 +1432,7 @@ namespace plume {
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
             const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateUnorderedAccessView(resource, nullptr, viewDesc, cpuHandle);
+            markDescriptorWritten(descriptorIndex);
         }
     }
 
@@ -1427,6 +1447,7 @@ namespace plume {
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
             const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateConstantBufferView(&viewDesc, cpuHandle);
+            markDescriptorWritten(descriptorIndex);
         }
     }
 
@@ -2814,8 +2835,15 @@ namespace plume {
 
     void D3D12CommandList::snapshotDescriptorSet(const D3D12PipelineLayout *layout, D3D12DescriptorSet *set, uint32_t setIndex, bool setCompute) {
         auto &snapshots = setCompute ? computeSnapshots : graphicsSnapshots;
+        const uint64_t contentVersion = set->contentVersion.load(std::memory_order_relaxed);
+        const auto existing = snapshots.find(setIndex);
+        if (existing != snapshots.end() && existing->second.contentVersion == contentVersion) {
+            checkDescriptorHeaps();
+            return;
+        }
         snapshots.erase(setIndex);
         DescriptorSnapshot snapshot;
+        snapshot.contentVersion = contentVersion;
         snapshot.viewCount = set->viewAllocation.count;
         snapshot.samplerCount = set->samplerAllocation.count;
         snapshot.viewRootIndex = layout->setViewRootIndices[setIndex];
