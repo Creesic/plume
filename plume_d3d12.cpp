@@ -859,6 +859,7 @@ namespace plume {
         }
 
         HRESULT res = device->d3d->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&heap));
+        allocationResult = res;
         if (FAILED(res)) {
             fprintf(stderr, "CreateDescriptorHeap failed with error code 0x%lX.\n", res);
             return;
@@ -2821,7 +2822,12 @@ namespace plume {
             page->cpuViews = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotViewHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
             page->cpuSamplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotSamplerHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
             if (!page->views->heap || !page->samplers->heap || !page->cpuViews->heap || !page->cpuSamplers->heap) {
-                throw std::runtime_error("Unable to allocate command-list descriptor snapshot page.");
+                char message[512];
+                std::snprintf(message, sizeof(message), "Unable to allocate command-list descriptor snapshot page %zu/%zu (views=0x%lX samplers=0x%lX cpuViews=0x%lX cpuSamplers=0x%lX removed=0x%lX).", snapshotPageIndex, snapshotPages.size(), page->views->allocationResult, page->samplers->allocationResult, page->cpuViews->allocationResult, page->cpuSamplers->allocationResult, device->d3d->GetDeviceRemovedReason());
+                std::fprintf(stderr, "%s\n", message);
+                OutputDebugStringA(message);
+                OutputDebugStringA("\n");
+                throw std::runtime_error(message);
             }
             snapshotPages.emplace_back(std::move(page));
         }

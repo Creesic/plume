@@ -56,6 +56,7 @@ namespace plume {
         };
 
         ID3D12DescriptorHeap *heap = nullptr;
+        HRESULT allocationResult = S_OK;
         uint32_t heapSize = 0;
         uint32_t freeSize = 0;
         D3D12Device *device = nullptr;

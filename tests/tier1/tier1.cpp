@@ -296,6 +296,14 @@ int main()
     auto smallPipeline = device->createGraphicsPipeline(pd);
     assert(smallPipeline);
     auto fence = device->createCommandFence();
+    auto waitForGpu = [&] {
+        auto *nativeFence = static_cast<D3D12CommandFence *>(fence.get());
+        const uint64_t submitted = nativeFence->fenceValue - 1;
+        queue->waitForCommandFence(fence.get());
+        assert(native->d3d->GetDeviceRemovedReason() == S_OK);
+        const uint64_t completed = nativeFence->d3d->GetCompletedValue();
+        assert(completed != UINT64_MAX && completed >= submitted);
+    };
     auto transition = [&](ID3D12Resource *r, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
         D3D12_RESOURCE_BARRIER x = {};
         x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -414,7 +422,7 @@ int main()
             continue;
         const RenderCommandList *lists[] = {commands.get(), secondCommands.get()};
         queue->executeCommandLists(lists, frame == 1 ? 2 : 1, nullptr, 0, nullptr, 0, fence.get());
-        queue->waitForCommandFence(fence.get());
+        waitForGpu();
         for (unsigned result = 0; result < (frame == 1 ? 2u : 1u); ++result)
         {
             auto rb = result ? readback1 : readback0;
@@ -474,6 +482,100 @@ int main()
         std::printf("Repeated 80-descriptor / 5-table bindings: %.3f ms / 1000 draws, %zu heap pages\n", elapsed,
                     bench->snapshotPages.size());
         bench->end();
+    }
+    {
+        auto stressCommands = queue->createCommandList();
+        auto secondStressCommands = queue->createCommandList();
+        size_t retainedPages[2] = {};
+        for (unsigned frame = 0; frame < 64; ++frame)
+        {
+            auto *stress = static_cast<D3D12CommandList *>((frame % 2 ? secondStressCommands : stressCommands).get());
+            stress->begin();
+            stress->setGraphicsPipelineLayout(layout.get());
+            stress->setPipeline(pipeline.get());
+            const float bias = 0;
+            stress->setGraphicsPushConstants(0, &bias);
+            stress->d3d->SetGraphicsRootConstantBufferView(nativeLayout->rootDescriptorRootIndicesAndTypes[0].first,
+                                                           cb->GetGPUVirtualAddress());
+            auto rtv = rtvHeap.getCPUHandleAt(0);
+            stress->d3d->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            D3D12_VIEWPORT viewport = {0, 0, 1, 1, 0, 1};
+            D3D12_RECT scissor = {0, 0, 1, 1};
+            stress->d3d->RSSetViewports(1, &viewport);
+            stress->d3d->RSSetScissorRects(1, &scissor);
+            if (frame == 0)
+            {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition = {output.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                      D3D12_RESOURCE_STATE_RENDER_TARGET};
+                stress->d3d->ResourceBarrier(1, &barrier);
+            }
+            for (unsigned draw = 0; draw < 4500; ++draw)
+            {
+                for (unsigned space = 0; space < 3; ++space)
+                {
+                    t->setSRV(0, draw % 2 ? b.Get() : a.Get(), &srv);
+                    stress->setGraphicsDescriptorSet(table.get(), space);
+                }
+                ps->setSampler(0, sampler.get());
+                vs->setSampler(0, sampler.get());
+                stress->setGraphicsDescriptorSet(psTable.get(), 3);
+                stress->setGraphicsDescriptorSet(vsTable.get(), 5);
+                stress->drawInstanced(3, 1, 0, 0);
+                if (draw % 97 == 0)
+                {
+                    stress->setGraphicsPipelineLayout(smallLayout.get());
+                    stress->setPipeline(smallPipeline.get());
+                    stress->setGraphicsDescriptorSet(smallTextureSet.get(), 0);
+                    stress->setGraphicsDescriptorSet(smallSamplerSet.get(), 1);
+                    stress->drawInstanced(3, 1, 0, 0);
+                    stress->setGraphicsPipelineLayout(layout.get());
+                    stress->setPipeline(pipeline.get());
+                    stress->setGraphicsPushConstants(0, &bias);
+                    stress->d3d->SetGraphicsRootConstantBufferView(nativeLayout->rootDescriptorRootIndicesAndTypes[0].first,
+                                                                   cb->GetGPUVirtualAddress());
+                }
+            }
+            if (frame < 2)
+                retainedPages[frame % 2] = stress->snapshotPages.size();
+            assert(stress->snapshotPages.size() == retainedPages[frame % 2]);
+            assert(stress->snapshotPageIndex + 1 == retainedPages[frame % 2]);
+            if (frame < 2 || frame % 8 == 7)
+            {
+                std::printf("4500-draw stress frame %u: %zu retained pages, index=%zu\n", frame, stress->snapshotPages.size(),
+                            stress->snapshotPageIndex);
+                std::fflush(stdout);
+            }
+            if (frame == 63)
+            {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition = {output.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                      D3D12_RESOURCE_STATE_COPY_SOURCE};
+                stress->d3d->ResourceBarrier(1, &barrier);
+                D3D12_TEXTURE_COPY_LOCATION destination = {}, source = {};
+                destination.pResource = readback0.Get();
+                destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                destination.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 256};
+                source.pResource = output.Get();
+                source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                D3D12_BOX box = {0, 0, 0, 1, 1, 1};
+                stress->d3d->CopyTextureRegion(&destination, 0, 0, 0, &source, &box);
+            }
+            stress->end();
+            const RenderCommandList *list = stress;
+            queue->executeCommandLists(&list, 1, nullptr, 0, nullptr, 0, fence.get());
+            waitForGpu();
+            if (frame == 63)
+            {
+                check(readback0->Map(0, nullptr, &mapped));
+                const auto *pixel = static_cast<const unsigned char *>(mapped);
+                assert(std::abs(int(pixel[0]) - 96) <= 1 && pixel[1] == 192 && pixel[2] == 192 && pixel[3] == 255);
+                readback0->Unmap(0, nullptr);
+                std::printf("Stress final pixel verified: 96,192,192,255; all 64 GPU fences completed with S_OK device.\n");
+            }
+        }
     }
     assert(serializedLayouts >= 1);
     std::printf("Tier1 bounded root signatures, 1200 rendered snapshot mutations, two concurrently recorded lists, sampler paging, "
