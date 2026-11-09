@@ -9,6 +9,7 @@
 
 #include <unordered_set>
 #include <vector>
+#include <stdexcept>
 
 #include <dxgi1_5.h>
 
@@ -48,6 +49,8 @@ namespace plume {
     static const uint32_t ShaderDescriptorHeapSize = 65536;
     static const uint32_t SamplerDescriptorHeapSize = 1024;
     static const uint32_t TargetDescriptorHeapSize = 16384;
+    static const uint32_t SnapshotViewHeapSize = 4096;
+    static const uint32_t SnapshotSamplerHeapSize = 2048;
 
     template <typename T, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type>
     struct alignas(void *) PipelineStateStreamSubobject {
@@ -837,7 +840,7 @@ namespace plume {
 
     // D3D12DescriptorHeapAllocator
 
-    D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType) {
+    D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible) {
         assert(device != nullptr);
         assert(heapSize > 0);
 
@@ -850,7 +853,7 @@ namespace plume {
         heapDesc.Type = heapType;
         descriptorHandleIncrement = device->d3d->GetDescriptorHandleIncrementSize(heapDesc.Type);
 
-        const bool shaderVisible = (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        shaderVisible = shaderVisible && ((heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER));
         if (shaderVisible) {
             heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         }
@@ -956,6 +959,9 @@ namespace plume {
         assert(device != nullptr);
 
         this->device = device;
+        cpuOnly = desc.cpuOnly;
+        viewHeap = device->viewHeapAllocator.get();
+        samplerHeap = device->samplerHeapAllocator.get();
 
         // Figure out the total amount of entries that will be required.
         uint32_t rangeCount = desc.descriptorRangesCount;
@@ -996,8 +1002,21 @@ namespace plume {
             descriptorTypeMaxIndex = uint32_t(descriptorTypes.size()) - 1;
         }
 
+        if (cpuOnly) {
+            if (viewDescriptorCount > 0) {
+                cpuViewHeap = std::make_unique<D3D12DescriptorHeapAllocator>(device, viewDescriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
+                if (!cpuViewHeap->heap) throw std::runtime_error("Unable to allocate CPU descriptor storage.");
+                viewHeap = cpuViewHeap.get();
+            }
+            if (samplerDescriptorCount > 0) {
+                cpuSamplerHeap = std::make_unique<D3D12DescriptorHeapAllocator>(device, samplerDescriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
+                if (!cpuSamplerHeap->heap) throw std::runtime_error("Unable to allocate CPU sampler storage.");
+                samplerHeap = cpuSamplerHeap.get();
+            }
+        }
+
         if (viewDescriptorCount > 0) {
-            viewAllocation.offset = device->viewHeapAllocator->allocate(viewDescriptorCount);
+            viewAllocation.offset = viewHeap->allocate(viewDescriptorCount);
             if (viewAllocation.offset == D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
                 fprintf(stderr, "Allocator was unable to find free space for the set.");
                 return;
@@ -1007,7 +1026,7 @@ namespace plume {
         }
 
         if (samplerDescriptorCount > 0) {
-            samplerAllocation.offset = device->samplerHeapAllocator->allocate(samplerDescriptorCount);
+            samplerAllocation.offset = samplerHeap->allocate(samplerDescriptorCount);
             if (samplerAllocation.offset == D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
                 fprintf(stderr, "Allocator was unable to find free space for the set.");
                 return;
@@ -1019,11 +1038,47 @@ namespace plume {
 
     D3D12DescriptorSet::~D3D12DescriptorSet() {
         if (viewAllocation.count > 0) {
-            device->viewHeapAllocator->free(viewAllocation.offset, viewAllocation.count);
+            viewHeap->free(viewAllocation.offset, viewAllocation.count);
         }
 
         if (samplerAllocation.count > 0) {
-            device->samplerHeapAllocator->free(samplerAllocation.offset, samplerAllocation.count);
+            samplerHeap->free(samplerAllocation.offset, samplerAllocation.count);
+        }
+    }
+
+    void D3D12DescriptorSet::copyDescriptors(uint32_t destinationIndex, const D3D12DescriptorSet *source, uint32_t sourceIndex, uint32_t count) {
+        if (source == nullptr || source->device != device || !source->cpuOnly) {
+            throw std::invalid_argument("Descriptor copies require a CPU-only source on the same device.");
+        }
+        auto descriptorLocation = [](const D3D12DescriptorSet *set, uint32_t index, RenderDescriptorRangeType &type) {
+            if (set->descriptorTypes.empty()) throw std::out_of_range("Empty descriptor set.");
+            const uint32_t clamped = std::min(index, set->descriptorTypeMaxIndex);
+            type = set->descriptorTypes[clamped];
+            const bool sampler = type == RenderDescriptorRangeType::SAMPLER;
+            const auto &allocation = sampler ? set->samplerAllocation : set->viewAllocation;
+            const uint64_t heapIndex = uint64_t(set->descriptorHeapIndices[clamped]) + index - clamped;
+            if (heapIndex >= allocation.count) throw std::out_of_range("Descriptor copy exceeds set.");
+            return (sampler ? set->samplerHeap : set->viewHeap)->getCPUHandleAt(allocation.offset + uint32_t(heapIndex));
+        };
+        if (count > UINT32_MAX - destinationIndex || count > UINT32_MAX - sourceIndex) {
+            throw std::out_of_range("Descriptor copy index overflow.");
+        }
+        if (source == this && count && destinationIndex < sourceIndex + count && sourceIndex < destinationIndex + count) {
+            if (destinationIndex == sourceIndex) return;
+            throw std::invalid_argument("Overlapping descriptor copy ranges.");
+        }
+        // Validate the full range before modifying any destination descriptors.
+        for (uint32_t i = 0; i < count; i++) {
+            RenderDescriptorRangeType dstType, srcType;
+            descriptorLocation(this, destinationIndex + i, dstType);
+            descriptorLocation(source, sourceIndex + i, srcType);
+            if (dstType != srcType) throw std::invalid_argument("Incompatible descriptor copy types.");
+        }
+        for (uint32_t i = 0; i < count; i++) {
+            RenderDescriptorRangeType dstType, srcType;
+            const auto dst = descriptorLocation(this, destinationIndex + i, dstType);
+            const auto src = descriptorLocation(source, sourceIndex + i, srcType);
+            device->d3d->CopyDescriptorsSimple(1, dst, src, dstType == RenderDescriptorRangeType::SAMPLER ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         }
     }
 
@@ -1318,7 +1373,7 @@ namespace plume {
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
             uint32_t descriptorIndexRelative = (descriptorIndex - descriptorIndexClamped);
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
-            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = device->samplerHeapAllocator->getCPUHandleAt(samplerAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = samplerHeap->getCPUHandleAt(samplerAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateSampler(&interfaceSampler->samplerDesc, cpuHandle);
         }
     }
@@ -1346,7 +1401,7 @@ namespace plume {
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
             uint32_t descriptorIndexRelative = (descriptorIndex - descriptorIndexClamped);
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
-            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = device->viewHeapAllocator->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateShaderResourceView(resource, viewDesc, cpuHandle);
         }
     }
@@ -1356,7 +1411,7 @@ namespace plume {
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
             uint32_t descriptorIndexRelative = (descriptorIndex - descriptorIndexClamped);
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
-            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = device->viewHeapAllocator->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateUnorderedAccessView(resource, nullptr, viewDesc, cpuHandle);
         }
     }
@@ -1370,7 +1425,7 @@ namespace plume {
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
             uint32_t descriptorIndexRelative = (descriptorIndex - descriptorIndexClamped);
             uint32_t descriptorHeapIndex = descriptorHeapIndices[descriptorIndexClamped];
-            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = device->viewHeapAllocator->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = viewHeap->getCPUHandleAt(viewAllocation.offset + descriptorHeapIndex + descriptorIndexRelative);
             device->d3d->CreateConstantBufferView(&viewDesc, cpuHandle);
         }
     }
@@ -1973,6 +2028,14 @@ namespace plume {
         activeIndependentStencilRefs = false;
         descriptorHeapsSet = false;
         activeSamplePositions = false;
+        graphicsSnapshots.clear();
+        computeSnapshots.clear();
+        snapshotHeapsActive = false;
+        snapshotPageIndex = 0;
+        // Same fence contract as commandAllocator->Reset(): prior execution has finished.
+        for (auto &page : snapshotPages) {
+            page->viewsUsed = page->samplersUsed = 0;
+        }
     }
 
     void D3D12CommandList::end() {
@@ -2188,6 +2251,9 @@ namespace plume {
         assert(pipelineLayout != nullptr);
 
         const D3D12PipelineLayout *interfacePipelineLayout = static_cast<const D3D12PipelineLayout *>(pipelineLayout);
+        if (activeComputePipelineLayout != interfacePipelineLayout) {
+            computeSnapshots.clear();
+        }
         d3d->SetComputeRootSignature(interfacePipelineLayout->rootSignature);
         activeComputePipelineLayout = interfacePipelineLayout;
     }
@@ -2214,6 +2280,9 @@ namespace plume {
         assert(pipelineLayout != nullptr);
 
         const D3D12PipelineLayout *interfacePipelineLayout = static_cast<const D3D12PipelineLayout *>(pipelineLayout);
+        if (activeGraphicsPipelineLayout != interfacePipelineLayout) {
+            graphicsSnapshots.clear();
+        }
         d3d->SetGraphicsRootSignature(interfacePipelineLayout->rootSignature);
         activeGraphicsPipelineLayout = interfacePipelineLayout;
     }
@@ -2568,8 +2637,16 @@ namespace plume {
     void D3D12CommandList::checkDescriptorHeaps() {
         if (!descriptorHeapsSet) {
             ID3D12DescriptorHeap *descriptorHeaps[] = { queue->device->viewHeapAllocator->heap, queue->device->samplerHeapAllocator->heap };
+            if (snapshotHeapsActive) {
+                descriptorHeaps[0] = snapshotPages[snapshotPageIndex]->views->heap;
+                descriptorHeaps[1] = snapshotPages[snapshotPageIndex]->samplers->heap;
+            }
             d3d->SetDescriptorHeaps(std::size(descriptorHeaps), descriptorHeaps);
             descriptorHeapsSet = true;
+            if (snapshotHeapsActive) {
+                for (const auto &entry : graphicsSnapshots) bindSnapshot(entry.second, false);
+                for (const auto &entry : computeSnapshots) bindSnapshot(entry.second, true);
+            }
         }
     }
 
@@ -2660,11 +2737,99 @@ namespace plume {
             return;
         }
 
-        checkDescriptorHeaps();
-
         D3D12DescriptorSet *interfaceDescriptorSet = static_cast<D3D12DescriptorSet *>(descriptorSet);
+        if (interfaceDescriptorSet->cpuOnly) {
+            snapshotDescriptorSet(activePipelineLayout, interfaceDescriptorSet, setIndex, setCompute);
+            return;
+        }
+        if (snapshotHeapsActive) {
+            snapshotHeapsActive = false;
+            descriptorHeapsSet = false;
+            graphicsSnapshots.clear();
+            computeSnapshots.clear();
+        }
+        checkDescriptorHeaps();
         setRootDescriptorTable(queue->device->viewHeapAllocator.get(), interfaceDescriptorSet->viewAllocation, activePipelineLayout->setViewRootIndices[setIndex], setCompute);
         setRootDescriptorTable(queue->device->samplerHeapAllocator.get(), interfaceDescriptorSet->samplerAllocation, activePipelineLayout->setSamplerRootIndices[setIndex], setCompute);
+    }
+
+    void D3D12CommandList::bindSnapshot(const DescriptorSnapshot &snapshot, bool setCompute) {
+        if (snapshot.viewCount > 0) {
+            if (setCompute) d3d->SetComputeRootDescriptorTable(snapshot.viewRootIndex, snapshot.gpuViews);
+            else d3d->SetGraphicsRootDescriptorTable(snapshot.viewRootIndex, snapshot.gpuViews);
+        }
+        if (snapshot.samplerCount > 0) {
+            if (setCompute) d3d->SetComputeRootDescriptorTable(snapshot.samplerRootIndex, snapshot.gpuSamplers);
+            else d3d->SetGraphicsRootDescriptorTable(snapshot.samplerRootIndex, snapshot.gpuSamplers);
+        }
+    }
+
+    void D3D12CommandList::copySnapshot(DescriptorSnapshot &snapshot) {
+        auto &page = *snapshotPages[snapshotPageIndex];
+        auto copy = [&](uint32_t count, D3D12_CPU_DESCRIPTOR_HANDLE &cpu, D3D12_GPU_DESCRIPTOR_HANDLE &gpu,
+                        D3D12DescriptorHeapAllocator *cpuHeap, D3D12DescriptorHeapAllocator *gpuHeap,
+                        uint32_t &used, D3D12_DESCRIPTOR_HEAP_TYPE type) {
+            if (count == 0) return;
+            const auto destination = cpuHeap->getCPUHandleAt(used);
+            queue->device->d3d->CopyDescriptorsSimple(count, destination, cpu, type);
+            queue->device->d3d->CopyDescriptorsSimple(count, gpuHeap->getCPUHandleAt(used), destination, type);
+            cpu = destination;
+            gpu = gpuHeap->getGPUHandleAt(used);
+            used += count;
+        };
+        copy(snapshot.viewCount, snapshot.cpuViews, snapshot.gpuViews, page.cpuViews.get(), page.views.get(), page.viewsUsed, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        copy(snapshot.samplerCount, snapshot.cpuSamplers, snapshot.gpuSamplers, page.cpuSamplers.get(), page.samplers.get(), page.samplersUsed, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    }
+
+    void D3D12CommandList::rotateSnapshotPage(uint32_t viewCount, uint32_t samplerCount) {
+        for (const auto *snapshots : { &graphicsSnapshots, &computeSnapshots }) {
+            for (const auto &entry : *snapshots) {
+                viewCount += entry.second.viewCount;
+                samplerCount += entry.second.samplerCount;
+            }
+        }
+        if (viewCount > SnapshotViewHeapSize || samplerCount > SnapshotSamplerHeapSize) {
+            throw std::length_error("CPU descriptor tables exceed the command-list snapshot page capacity.");
+        }
+        if (snapshotPageIndex < snapshotPages.size() && (snapshotPages[snapshotPageIndex]->viewsUsed || snapshotPages[snapshotPageIndex]->samplersUsed)) ++snapshotPageIndex;
+        if (snapshotPageIndex == snapshotPages.size()) {
+            auto page = std::make_unique<DescriptorSnapshotPage>();
+            auto *device = queue->device;
+            page->views = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotViewHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            page->samplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotSamplerHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+            page->cpuViews = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotViewHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
+            page->cpuSamplers = std::make_unique<D3D12DescriptorHeapAllocator>(device, SnapshotSamplerHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, false);
+            if (!page->views->heap || !page->samplers->heap || !page->cpuViews->heap || !page->cpuSamplers->heap) {
+                throw std::runtime_error("Unable to allocate command-list descriptor snapshot page.");
+            }
+            snapshotPages.emplace_back(std::move(page));
+        }
+        snapshotHeapsActive = true;
+        for (auto *snapshots : { &graphicsSnapshots, &computeSnapshots }) {
+            for (auto &entry : *snapshots) copySnapshot(entry.second);
+        }
+        descriptorHeapsSet = false;
+        checkDescriptorHeaps();
+    }
+
+    void D3D12CommandList::snapshotDescriptorSet(const D3D12PipelineLayout *layout, D3D12DescriptorSet *set, uint32_t setIndex, bool setCompute) {
+        auto &snapshots = setCompute ? computeSnapshots : graphicsSnapshots;
+        snapshots.erase(setIndex);
+        DescriptorSnapshot snapshot;
+        snapshot.viewCount = set->viewAllocation.count;
+        snapshot.samplerCount = set->samplerAllocation.count;
+        snapshot.viewRootIndex = layout->setViewRootIndices[setIndex];
+        snapshot.samplerRootIndex = layout->setSamplerRootIndices[setIndex];
+        if (snapshot.viewCount) snapshot.cpuViews = set->viewHeap->getCPUHandleAt(set->viewAllocation.offset);
+        if (snapshot.samplerCount) snapshot.cpuSamplers = set->samplerHeap->getCPUHandleAt(set->samplerAllocation.offset);
+        if (!snapshotHeapsActive || snapshotPages[snapshotPageIndex]->viewsUsed + snapshot.viewCount > SnapshotViewHeapSize ||
+            snapshotPages[snapshotPageIndex]->samplersUsed + snapshot.samplerCount > SnapshotSamplerHeapSize) {
+            rotateSnapshotPage(snapshot.viewCount, snapshot.samplerCount);
+        }
+        copySnapshot(snapshot);
+        checkDescriptorHeaps();
+        snapshots[setIndex] = snapshot;
+        bindSnapshot(snapshot, setCompute);
     }
 
     void D3D12CommandList::setRootDescriptorTable(D3D12DescriptorHeapAllocator *heapAllocator, D3D12DescriptorSet::HeapAllocation &heapAllocation, uint32_t rootIndex, bool setCompute) {
@@ -3155,7 +3320,7 @@ namespace plume {
         assert(data != nullptr);
         assert(size > 0);
         assert(format != RenderShaderFormat::UNKNOWN);
-        assert(format == RenderShaderFormat::DXIL);
+        assert(format == RenderShaderFormat::DXIL || format == RenderShaderFormat::DXBC);
 
         this->device = device;
         this->format = format;
@@ -3803,7 +3968,7 @@ namespace plume {
 
             if (viewTableSize > 0) {
                 D3D12_ROOT_PARAMETER rootParameter = {};
-                rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                rootParameter.ShaderVisibility = toD3D12(descriptorSetDesc.shaderVisibility);
                 rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
                 rootParameter.DescriptorTable.pDescriptorRanges = &viewRanges[viewRangeIndex];
                 rootParameter.DescriptorTable.NumDescriptorRanges = viewTableSize;
@@ -3815,7 +3980,7 @@ namespace plume {
 
             if (samplerTableSize > 0) {
                 D3D12_ROOT_PARAMETER rootParameter = {};
-                rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                rootParameter.ShaderVisibility = toD3D12(descriptorSetDesc.shaderVisibility);
                 rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
                 rootParameter.DescriptorTable.pDescriptorRanges = &samplerRanges[samplerRangeIndex];
                 rootParameter.DescriptorTable.NumDescriptorRanges = samplerTableSize;
@@ -3915,24 +4080,25 @@ namespace plume {
             }
 
             // Determine the shader model supported by the device.
-#       if SM_5_1_SUPPORTED
             const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0, D3D_SHADER_MODEL_5_1 };
-#       else
-            const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0 };
-#       endif
             D3D12_FEATURE_DATA_SHADER_MODEL dataShaderModel = {};
-            for (uint32_t i = 0; i < _countof(supportedShaderModels); i++) {
-                dataShaderModel.HighestShaderModel = supportedShaderModels[i];
+            for (D3D_SHADER_MODEL model : supportedShaderModels) {
+                dataShaderModel.HighestShaderModel = model;
                 res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &dataShaderModel, sizeof(dataShaderModel));
                 if (res != E_INVALIDARG) {
-                    if (FAILED(res)) {
-                        deviceOption->Release();
-                        adapterOption->Release();
-                        continue;
-                    }
-
                     break;
                 }
+            }
+            // Older D3D12 runtimes do not expose the shader-model query. SM5.1
+            // is the D3D12 baseline, including when that query is unavailable.
+            if (res == E_INVALIDARG) {
+                dataShaderModel.HighestShaderModel = D3D_SHADER_MODEL_5_1;
+                res = S_OK;
+            }
+            if (FAILED(res) || dataShaderModel.HighestShaderModel < D3D_SHADER_MODEL_5_1) {
+                deviceOption->Release();
+                adapterOption->Release();
+                continue;
             }
 
             // Determine if the device supports sample locations.
@@ -4009,6 +4175,7 @@ namespace plume {
                 adapter = adapterOption;
                 d3d = deviceOption;
                 shaderModel = dataShaderModel.HighestShaderModel;
+                capabilities.shaderFormat = shaderModel >= D3D_SHADER_MODEL_6_0 ? RenderShaderFormat::DXIL : RenderShaderFormat::DXBC;
                 capabilities.geometryShader = true;
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
@@ -4154,6 +4321,10 @@ namespace plume {
     }
 
     std::unique_ptr<RenderShader> D3D12Device::createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) {
+        if ((format != RenderShaderFormat::DXIL && format != RenderShaderFormat::DXBC) ||
+            (format == RenderShaderFormat::DXIL && shaderModel < D3D_SHADER_MODEL_6_0)) {
+            return nullptr;
+        }
         return std::make_unique<D3D12Shader>(this, data, size, entryPointName, format);
     }
 

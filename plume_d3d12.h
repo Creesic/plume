@@ -65,7 +65,7 @@ namespace plume {
         SizeFreeBlockMap sizeFreeBlockMap;
         std::mutex allocationMutex;
 
-        D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType);
+        D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible = true);
         ~D3D12DescriptorHeapAllocator();
         void addFreeBlock(uint32_t offset, uint32_t size);
         uint32_t allocate(uint32_t size);
@@ -82,6 +82,11 @@ namespace plume {
             uint32_t count = 0;
         };
 
+        bool cpuOnly = false;
+        std::unique_ptr<D3D12DescriptorHeapAllocator> cpuViewHeap;
+        std::unique_ptr<D3D12DescriptorHeapAllocator> cpuSamplerHeap;
+        D3D12DescriptorHeapAllocator *viewHeap = nullptr;
+        D3D12DescriptorHeapAllocator *samplerHeap = nullptr;
         HeapAllocation viewAllocation;
         HeapAllocation samplerAllocation;
         std::vector<RenderDescriptorRangeType> descriptorTypes;
@@ -94,6 +99,8 @@ namespace plume {
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
+        // D3D12 descriptor-copy sources must be CPU-only; overlapping ranges are rejected.
+        void copyDescriptors(uint32_t destinationIndex, const D3D12DescriptorSet *source, uint32_t sourceIndex, uint32_t count);
         void setSRV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_SHADER_RESOURCE_VIEW_DESC *viewDesc);
         void setUAV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC *viewDesc);
         void setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize);
@@ -182,6 +189,25 @@ namespace plume {
         const D3D12PipelineLayout *activeGraphicsPipelineLayout = nullptr;
         const D3D12GraphicsPipeline *activeGraphicsPipeline = nullptr;
         bool descriptorHeapsSet = false;
+        struct DescriptorSnapshotPage {
+            std::unique_ptr<D3D12DescriptorHeapAllocator> views, samplers, cpuViews, cpuSamplers;
+            uint32_t viewsUsed = 0, samplersUsed = 0;
+        };
+        struct DescriptorSnapshot {
+            uint32_t viewCount = 0, samplerCount = 0;
+            uint32_t viewRootIndex = 0, samplerRootIndex = 0;
+            D3D12_CPU_DESCRIPTOR_HANDLE cpuViews = {}, cpuSamplers = {};
+            D3D12_GPU_DESCRIPTOR_HANDLE gpuViews = {}, gpuSamplers = {};
+        };
+        std::vector<std::unique_ptr<DescriptorSnapshotPage>> snapshotPages;
+        size_t snapshotPageIndex = 0;
+        bool snapshotHeapsActive = false;
+        std::map<uint32_t, DescriptorSnapshot> graphicsSnapshots, computeSnapshots;
+        void snapshotDescriptorSet(const D3D12PipelineLayout *layout, D3D12DescriptorSet *set, uint32_t setIndex, bool setCompute);
+        void copySnapshot(DescriptorSnapshot &snapshot);
+        void bindSnapshot(const DescriptorSnapshot &snapshot, bool setCompute);
+        void rotateSnapshotPage(uint32_t viewCount, uint32_t samplerCount);
+
         D3D12_PRIMITIVE_TOPOLOGY activeTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
         uint32_t activeFrontStencilRef = 0;
         uint32_t activeBackStencilRef = 0;

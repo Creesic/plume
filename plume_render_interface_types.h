@@ -372,7 +372,8 @@ namespace plume {
         UNKNOWN,
         DXIL,
         SPIRV,
-        METAL
+        METAL,
+        DXBC
     };
 
     enum class RenderRaytracingPipelineLibrarySymbolType {
@@ -1434,14 +1435,18 @@ namespace plume {
         uint32_t descriptorRangesCount = 0;
         bool lastRangeIsBoundless = false;
         uint32_t boundlessRangeSize = 0;
+        bool cpuOnly = false;
+        RenderShaderVisibility shaderVisibility = RenderShaderVisibility::ALL;
 
         RenderDescriptorSetDesc() = default;
         
-        RenderDescriptorSetDesc(const RenderDescriptorRange *descriptorRanges, uint32_t descriptorRangesCount, bool lastRangeIsBoundless = false, uint32_t boundlessRangeSize = 0) {
+        RenderDescriptorSetDesc(const RenderDescriptorRange *descriptorRanges, uint32_t descriptorRangesCount, bool lastRangeIsBoundless = false, uint32_t boundlessRangeSize = 0, bool cpuOnly = false, RenderShaderVisibility shaderVisibility = RenderShaderVisibility::ALL) {
             this->descriptorRanges = descriptorRanges;
             this->descriptorRangesCount = descriptorRangesCount;
             this->lastRangeIsBoundless = lastRangeIsBoundless;
             this->boundlessRangeSize = boundlessRangeSize;
+            this->cpuOnly = cpuOnly;
+            this->shaderVisibility = shaderVisibility;
         }
     };
 
@@ -1812,6 +1817,9 @@ namespace plume {
 
         // Query Pools.
         bool queryPools = false;
+
+        // Preferred format for this device; D3D12 drivers without SM6 use DXBC.
+        RenderShaderFormat shaderFormat = RenderShaderFormat::UNKNOWN;
     };
 
     struct RenderInterfaceCapabilities {

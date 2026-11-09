@@ -3819,6 +3819,7 @@ namespace plume {
         // Fill capabilities.
         // https://developer.apple.com/documentation/metal/device-inspection
         // TODO: Support Raytracing.
+        capabilities.shaderFormat = RenderShaderFormat::METAL;
         // capabilities.raytracing = mtl->supportsRaytracing();
         capabilities.maxTextureSize = mtl->supportsFamily(MTL::GPUFamilyApple3) ? 16384 : 8192;
         capabilities.sampleLocations = mtl->programmableSamplePositionsSupported();
