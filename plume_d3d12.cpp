@@ -7,6 +7,8 @@
 
 #include "plume_d3d12.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <unordered_set>
 #include <vector>
 #include <stdexcept>
@@ -264,7 +266,7 @@ namespace plume {
         }
     }
 
-    static DXGI_FORMAT toDXGITextureView(RenderFormat format) {
+    static DXGI_FORMAT toDXGITextureView(RenderFormat format, uint32_t planeSlice) {
         const DXGI_FORMAT dxgiFormat = toDXGI(format);
         if (dxgiFormat == DXGI_FORMAT_D32_FLOAT) {
             // D3D12 and Vulkan disagree on whether D32 is usable as a texture view format.
@@ -272,8 +274,8 @@ namespace plume {
             return DXGI_FORMAT_R32_FLOAT;
         }
         if (dxgiFormat == DXGI_FORMAT_R32G8X24_TYPELESS) {
-            // Specialize into depth view of depth-stencil texture.
-            return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+            return planeSlice == 1 ? DXGI_FORMAT_X32_TYPELESS_G8X24_UINT
+                                   : DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
         }
         return dxgiFormat;
     }
@@ -506,7 +508,9 @@ namespace plume {
         case RenderHeapType::READBACK:
             return D3D12_HEAP_TYPE_READBACK;
         case RenderHeapType::GPU_UPLOAD:
-            return D3D12_HEAP_TYPE_GPU_UPLOAD;
+            // D3D12MA uses the same numeric fallback when building against an
+            // SDK that predates the public GPU_UPLOAD enum declaration.
+            return static_cast<D3D12_HEAP_TYPE>(5);
         default:
             assert(false && "Unknown heap type.");
             return D3D12_HEAP_TYPE_DEFAULT;
@@ -749,7 +753,9 @@ namespace plume {
             }
             const uint32_t mipLevels = interfaceTexture->desc.mipLevels;
             loc.pResource = interfaceTexture->d3d;
-            loc.SubresourceIndex = location.subresource.mipLevel + location.subresource.arrayIndex * mipLevels;
+            loc.SubresourceIndex = location.subresource.mipLevel +
+                location.subresource.arrayIndex * mipLevels +
+                location.subresource.planeIndex * mipLevels * interfaceTexture->desc.arraySize;
             break;
         }
         case RenderTextureCopyType::PLACED_FOOTPRINT: {
@@ -842,6 +848,29 @@ namespace plume {
         object->SetName(wideCharName.c_str());
     }
 
+    bool D3D12Device::checkDeviceLoss(const char *operation) const {
+        if (!d3d) return false;
+        const HRESULT result = d3d->GetDeviceRemovedReason();
+        if (SUCCEEDED(result)) return false;
+        if (auto callback = deviceLostCallback.load(std::memory_order_acquire))
+            callback(operation, static_cast<int32_t>(result));
+        return true;
+    }
+
+    // Constructors can fail after allocating the C++ wrapper. Never publish
+    // that wrapper as a usable native resource.
+    template<class T, class Native>
+    static std::unique_ptr<T> checkedResource(std::unique_ptr<T> object,
+            Native T::*member, D3D12Device *device) {
+        const bool lost = device->checkDeviceLoss("resource creation");
+        if (!((*object).*member) || lost) {
+            const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+            fprintf(stderr, "D3D12 startup resource unavailable: device_removed=0x%08lX.\n", removed);
+            return nullptr;
+        }
+        return object;
+    }
+
     // D3D12DescriptorHeapAllocator
 
     D3D12DescriptorHeapAllocator::D3D12DescriptorHeapAllocator(D3D12Device *device, uint32_t heapSize, D3D12_DESCRIPTOR_HEAP_TYPE heapType, bool shaderVisible) {
@@ -857,7 +886,7 @@ namespace plume {
         heapDesc.Type = heapType;
         descriptorHandleIncrement = device->d3d->GetDescriptorHandleIncrementSize(heapDesc.Type);
 
-        shaderVisible = shaderVisible && ((heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER));
+        shaderVisible &= (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) || (heapType == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
         if (shaderVisible) {
             heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         }
@@ -866,6 +895,8 @@ namespace plume {
         allocationResult = res;
         if (FAILED(res)) {
             fprintf(stderr, "CreateDescriptorHeap failed with error code 0x%lX.\n", res);
+            device->checkDeviceLoss("descriptor heap creation");
+            freeSize = 0;
             return;
         }
         
@@ -1111,19 +1142,24 @@ namespace plume {
         }
     }
 
-    void D3D12DescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void D3D12DescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         const D3D12Buffer *interfaceBuffer = static_cast<const D3D12Buffer *>(buffer);
         ID3D12Resource *nativeResource = (interfaceBuffer != nullptr) ? interfaceBuffer->d3d : nullptr;
+        if (interfaceBuffer != nullptr) {
+            assert(bufferOffset <= interfaceBuffer->desc.size);
+            assert((bufferSize == 0) ||
+                   (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
+        }
         uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
         RenderDescriptorRangeType descriptorType = descriptorTypes[descriptorIndexClamped];
         switch (descriptorType) {
         case RenderDescriptorRangeType::CONSTANT_BUFFER: {
             uint64_t bufferViewSize = bufferSize;
             if ((bufferSize == 0) && (interfaceBuffer != nullptr)) {
-                bufferViewSize = interfaceBuffer->desc.size;
+                bufferViewSize = interfaceBuffer->desc.size - bufferOffset;
             }
 
-            setCBV(descriptorIndex, nativeResource, bufferViewSize);
+            setCBV(descriptorIndex, nativeResource, bufferViewSize, bufferOffset);
             break;
         }
         case RenderDescriptorRangeType::FORMATTED_BUFFER: {
@@ -1251,74 +1287,20 @@ namespace plume {
         case RenderDescriptorRangeType::TEXTURE: {
             if ((nativeResource != nullptr) && (textureView != nullptr)) {
                 const D3D12TextureView *interfaceTextureView = static_cast<const D3D12TextureView *>(textureView);
-                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-                srvDesc.Shader4ComponentMapping = interfaceTextureView->shader4ComponentMapping;
-                srvDesc.Format = interfaceTextureView->format;
-
-                const bool isMSAA = (interfaceTextureView->texture->desc.multisampling.sampleCount > RenderSampleCount::COUNT_1);
-                switch (interfaceTextureView->dimension) {
-                case RenderTextureViewDimension::TEXTURE_1D:
-                    if (interfaceTextureView->arraySize > 1) {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
-                        srvDesc.Texture1DArray.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.Texture1DArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                        srvDesc.Texture1DArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                        srvDesc.Texture1DArray.ArraySize = interfaceTextureView->arraySize;
-                    } else {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
-                        srvDesc.Texture1D.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.Texture1D.MostDetailedMip = interfaceTextureView->mipSlice;
-                    }
-                    break;
-                case RenderTextureViewDimension::TEXTURE_2D:
-                    if (isMSAA) {
-                        if (interfaceTextureView->arraySize > 1) {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
-                            srvDesc.Texture2DMSArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                            srvDesc.Texture2DMSArray.ArraySize = interfaceTextureView->arraySize;
-                        } else {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
-                        }
-                    }
-                    else {
-                        if (interfaceTextureView->arraySize > 1) {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-                            srvDesc.Texture2DArray.MipLevels = interfaceTextureView->mipLevels;
-                            srvDesc.Texture2DArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                            srvDesc.Texture2DArray.FirstArraySlice = interfaceTextureView->arrayIndex;
-                            srvDesc.Texture2DArray.ArraySize = interfaceTextureView->arraySize;
-                        } else {
-                            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                            srvDesc.Texture2D.MipLevels = interfaceTextureView->mipLevels;
-                            srvDesc.Texture2D.MostDetailedMip = interfaceTextureView->mipSlice;
-                        }
-                    }
-
-                    break;
-                case RenderTextureViewDimension::TEXTURE_3D:
-                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
-                    srvDesc.Texture3D.MipLevels = interfaceTextureView->mipLevels;
-                    srvDesc.Texture3D.MostDetailedMip = interfaceTextureView->mipSlice;
-                    break;
-                case RenderTextureViewDimension::TEXTURE_CUBE:
-                    if (interfaceTextureView->arraySize > 6) {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
-                        srvDesc.TextureCubeArray.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.TextureCubeArray.MostDetailedMip = interfaceTextureView->mipSlice;
-                        srvDesc.TextureCubeArray.First2DArrayFace = interfaceTextureView->arrayIndex;
-                        srvDesc.TextureCubeArray.NumCubes = interfaceTextureView->arraySize / 6;
-                    } else {
-                        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-                        srvDesc.TextureCube.MipLevels = interfaceTextureView->mipLevels;
-                        srvDesc.TextureCube.MostDetailedMip = interfaceTextureView->mipSlice;
-                    }
-                    break;
-                default:
-                    assert(false && "Unknown texture dimension.");
-                    break;
+                // A view may also supply a description for a different texture.
+                // Only the owning resource can use its immutable cached descriptor.
+                const auto source = (interfaceTextureView->texture == interfaceTexture)
+                    ? interfaceTextureView->getSRV() : D3D12_CPU_DESCRIPTOR_HANDLE{};
+                if (source.ptr != 0) {
+                    const uint32_t relative = descriptorIndex - descriptorIndexClamped;
+                    const auto destination = device->viewHeapAllocator->getCPUHandleAt(
+                        viewAllocation.offset + descriptorHeapIndices[descriptorIndexClamped] + relative);
+                    device->d3d->CopyDescriptorsSimple(1, destination, source, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
                 }
-
-                setSRV(descriptorIndex, nativeResource, &srvDesc);
+                else {
+                    const auto srvDesc = interfaceTextureView->getSRVDesc();
+                    setSRV(descriptorIndex, nativeResource, &srvDesc);
+                }
             }
             else if (nativeResource != nullptr) {
                 setSRV(descriptorIndex, nativeResource, nullptr);
@@ -1448,10 +1430,11 @@ namespace plume {
         }
     }
 
-    void D3D12DescriptorSet::setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize) {
+    void D3D12DescriptorSet::setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize, uint64_t bufferOffset) {
         if (resource != nullptr) {
+            assert((bufferOffset % D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT) == 0);
             D3D12_CONSTANT_BUFFER_VIEW_DESC viewDesc = {};
-            viewDesc.BufferLocation = resource->GetGPUVirtualAddress();
+            viewDesc.BufferLocation = resource->GetGPUVirtualAddress() + bufferOffset;
             viewDesc.SizeInBytes = UINT(roundUp(bufferSize, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT));
 
             uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
@@ -1539,11 +1522,13 @@ namespace plume {
     }
 
     bool D3D12SwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) {
+        if (commandQueue->device->checkDeviceLoss("present")) return false;
         // If using present wait, we prefer using a SyncInterval of 0 even when Vsync is enabled. Tearing won't happen if DXGI_PRESENT_ALLOW_TEARING is not specified.
         const bool tearingAllowed = (swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0U;
         UINT syncInterval = (vsyncEnabled && !desc.enablePresentWait) ? 1 : 0;
         UINT flags = (!vsyncEnabled && tearingAllowed) ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT res = d3d->Present(syncInterval, flags);
+        if (FAILED(res)) commandQueue->device->checkDeviceLoss("present");
         return SUCCEEDED(res);
     }
 
@@ -1551,11 +1536,15 @@ namespace plume {
         assert(desc.enablePresentWait && "Present wait should've been explicitly enabled during swap chain creation before using the wait function.");
 
         if (waitableObject != NULL) {
-            WaitForSingleObject(waitableObject, INFINITE);
+            while (WaitForSingleObject(waitableObject, 100) == WAIT_TIMEOUT) {
+                if (commandQueue->device->checkDeviceLoss("present wait")) return;
+            }
+            commandQueue->device->checkDeviceLoss("present wait");
         }
     }
 
     bool D3D12SwapChain::resize() {
+        if (commandQueue->device->checkDeviceLoss("swapchain resize")) return false;
         getWindowSize(width, height);
 
         // Don't resize the swap chain at all if the window doesn't have a valid size.
@@ -1563,8 +1552,8 @@ namespace plume {
             return false;
         }
 
-        // Match the destructor: buffers may already be null if a prior
-        // ResizeBuffers/setTextures failed after Release, or create aborted early.
+        // A failed ResizeBuffers leaves these released; the retry must not
+        // release them again.
         for (uint32_t i = 0; i < desc.textureCount; i++) {
             if (textures[i].d3d != nullptr) {
                 textures[i].d3d->Release();
@@ -1575,6 +1564,7 @@ namespace plume {
         HRESULT res = d3d->ResizeBuffers(0, 0, 0, DXGI_FORMAT_UNKNOWN, swapChainFlags);
         if (FAILED(res)) {
             fprintf(stderr, "ResizeBuffers failed with error code 0x%lX.\n", res);
+            commandQueue->device->checkDeviceLoss("swapchain resize");
             return false;
         }
 
@@ -1640,6 +1630,7 @@ namespace plume {
     }
 
     bool D3D12SwapChain::acquireTexture(RenderCommandSemaphore *signalSemaphore, uint32_t *textureIndex) {
+        if (commandQueue->device->checkDeviceLoss("swapchain acquire")) return false;
         assert(textureIndex != nullptr);
         *textureIndex = d3d->GetCurrentBackBufferIndex();
         return true;
@@ -1936,14 +1927,18 @@ namespace plume {
 
     // D3D12QueryPool
 
-    D3D12QueryPool::D3D12QueryPool(D3D12Device *device, uint32_t queryCount) {
+    D3D12QueryPool::D3D12QueryPool(D3D12Device *device, uint32_t queryCount,
+                                   RenderQueryType type) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
         this->device = device;
+        this->type = type;
 
         D3D12_QUERY_HEAP_DESC queryHeapDesc = {};
-        queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        queryHeapDesc.Type = type == RenderQueryType::OCCLUSION
+            ? D3D12_QUERY_HEAP_TYPE_OCCLUSION
+            : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
         queryHeapDesc.Count = queryCount;
 
         HRESULT res = device->d3d->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&d3d));
@@ -1962,14 +1957,36 @@ namespace plume {
         }
     }
 
-    void D3D12QueryPool::queryResults() {
+    void D3D12QueryPool::queryResults(uint32_t queryCount) {
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool D3D12QueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
+        if (!readbackBuffer) {
+            fprintf(stderr,
+                    "D3D12QueryPool::queryResults failed: no readback "
+                    "buffer.\n");
+            return false;
+        }
         void *readbackData = readbackBuffer->map();
-        memcpy(results.data(), readbackData, sizeof(uint64_t) * results.size());
+        if (readbackData == nullptr)
+            return false;
+        memcpy(results.data() + firstQuery, static_cast<const uint64_t *>(readbackData) + firstQuery, sizeof(uint64_t) * queryCount);
         readbackBuffer->unmap();
 
-        for (uint64_t &result : results) {
-            result = uint64_t(double(result) / double(device->timestampFrequency) * 1000000000.0);
+        if (type == RenderQueryType::TIMESTAMP) {
+            for (uint32_t i = firstQuery; i < firstQuery + queryCount; ++i) {
+                results[i] = uint64_t(double(results[i]) /
+                    double(device->timestampFrequency) * 1000000000.0);
+            }
         }
+        return true;
     }
 
     const uint64_t *D3D12QueryPool::getResults() const {
@@ -2042,10 +2059,21 @@ namespace plume {
     }
 
     void D3D12CommandList::begin() {
+        if (queue->device->checkDeviceLoss("command list begin")) return;
         assert(!open);
 
-        commandAllocator->Reset();
-        d3d->Reset(commandAllocator, nullptr);
+        const HRESULT allocatorResult = commandAllocator->Reset();
+        if (FAILED(allocatorResult)) {
+            queue->device->checkDeviceLoss("command allocator reset");
+            fprintf(stderr, "Command allocator reset failed: 0x%08lX.\n", allocatorResult);
+            return;
+        }
+        const HRESULT listResult = d3d->Reset(commandAllocator, nullptr);
+        if (FAILED(listResult)) {
+            queue->device->checkDeviceLoss("command list reset");
+            fprintf(stderr, "Command list reset failed: 0x%08lX.\n", listResult);
+            return;
+        }
         open = true;
         // Reset() discards prior CPU-side tracking that end() would normally
         // clear; keep host-side state in sync whenever a list is reopened
@@ -2072,12 +2100,14 @@ namespace plume {
     }
 
     void D3D12CommandList::end() {
+        if (queue->device->checkDeviceLoss("command list end")) return;
         assert(open);
 
         // It's required to reset the sample positions before the command list ends.
         resetSamplePositions();
 
-        d3d->Close();
+        const HRESULT result = d3d->Close();
+        if (FAILED(result)) queue->device->checkDeviceLoss("command list close");
         open = false;
         targetFramebuffer = nullptr;
         targetFramebufferSamplePositionsSet = false;
@@ -2249,6 +2279,9 @@ namespace plume {
         case D3D12Pipeline::Type::Compute: {
             const D3D12ComputePipeline *computePipeline = static_cast<const D3D12ComputePipeline *>(interfacePipeline);
             if (computePipeline->d3d == nullptr) {
+                fprintf(stderr,
+                        "D3D12CommandList::setPipeline rejected invalid "
+                        "compute pipeline.\n");
                 return;
             }
             d3d->SetPipelineState(computePipeline->d3d);
@@ -2257,6 +2290,10 @@ namespace plume {
         case D3D12Pipeline::Type::Graphics: {
             const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(interfacePipeline);
             if (graphicsPipeline->d3d == nullptr) {
+                fprintf(stderr,
+                        "D3D12CommandList::setPipeline rejected invalid "
+                        "graphics pipeline.\n");
+                activeGraphicsPipeline = nullptr;
                 return;
             }
             d3d->SetPipelineState(graphicsPipeline->d3d);
@@ -2472,6 +2509,10 @@ namespace plume {
 #   endif
     }
 
+    void D3D12CommandList::setBlendFactor(const float *rgba) {
+        d3d->OMSetBlendFactor(rgba);
+    }
+
     void D3D12CommandList::clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) {
         if (targetFramebuffer == nullptr) {
             return;
@@ -2543,7 +2584,7 @@ namespace plume {
 
         const D3D12_TEXTURE_COPY_LOCATION copyDstLocation = toD3D12(dstLocation);
         const D3D12_TEXTURE_COPY_LOCATION copySrcLocation = toD3D12(srcLocation);
-        setSamplePositions(dstLocation.texture);
+        setSamplePositions((dstLocation.texture != nullptr) ? dstLocation.texture : srcLocation.texture);
         d3d->CopyTextureRegion(&copyDstLocation, dstX, dstY, dstZ, &copySrcLocation, (srcBox != nullptr) ? &copyBox : nullptr);
         resetSamplePositions();
     }
@@ -2662,9 +2703,37 @@ namespace plume {
         assert(queryPool != nullptr);
 
         const D3D12QueryPool *interfaceQueryPool = static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::TIMESTAMP);
         const D3D12Buffer *readbackBuffer = static_cast<const D3D12Buffer *>(interfaceQueryPool->readbackBuffer.get());
         d3d->EndQuery(interfaceQueryPool->d3d, D3D12_QUERY_TYPE_TIMESTAMP, queryIndex);
         d3d->ResolveQueryData(interfaceQueryPool->d3d, D3D12_QUERY_TYPE_TIMESTAMP, queryIndex, 1, readbackBuffer->d3d, queryIndex * sizeof(uint64_t));
+    }
+
+    void D3D12CommandList::beginQuery(const RenderQueryPool *queryPool,
+                                      uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const D3D12QueryPool *interfaceQueryPool =
+            static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        d3d->BeginQuery(interfaceQueryPool->d3d,
+                        D3D12_QUERY_TYPE_OCCLUSION, queryIndex);
+    }
+
+    void D3D12CommandList::endQuery(const RenderQueryPool *queryPool,
+                                    uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const D3D12QueryPool *interfaceQueryPool =
+            static_cast<const D3D12QueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        const D3D12Buffer *readbackBuffer =
+            static_cast<const D3D12Buffer *>(
+                interfaceQueryPool->readbackBuffer.get());
+        d3d->EndQuery(interfaceQueryPool->d3d,
+                      D3D12_QUERY_TYPE_OCCLUSION, queryIndex);
+        d3d->ResolveQueryData(interfaceQueryPool->d3d,
+                              D3D12_QUERY_TYPE_OCCLUSION,
+                              queryIndex, 1, readbackBuffer->d3d,
+                              queryIndex * sizeof(uint64_t));
     }
 
     void D3D12CommandList::checkDescriptorHeaps() {
@@ -3068,20 +3137,28 @@ namespace plume {
     }
 
     std::unique_ptr<RenderCommandList> D3D12CommandQueue::createCommandList() {
-        return std::make_unique<D3D12CommandList>(this);
+        return checkedResource(std::make_unique<D3D12CommandList>(this), &D3D12CommandList::d3d, device);
     }
 
     std::unique_ptr<RenderSwapChain> D3D12CommandQueue::createSwapChain(const RenderSwapChainDesc &desc) {
-        return std::make_unique<D3D12SwapChain>(this, desc);
+        return checkedResource(std::make_unique<D3D12SwapChain>(this, desc), &D3D12SwapChain::d3d, device);
     }
 
     void D3D12CommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
+        if (device->checkDeviceLoss("queue submit")) return;
         assert(commandLists != nullptr);
         assert(commandListCount > 0);
 
         for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
             D3D12CommandSemaphore *interfaceSemaphore = static_cast<D3D12CommandSemaphore *>(waitSemaphores[i]);
-            d3d->Wait(interfaceSemaphore->d3d, interfaceSemaphore->semaphoreValue);
+            const HRESULT waitResult = d3d->Wait(
+                interfaceSemaphore->d3d,
+                interfaceSemaphore->semaphoreValue);
+            if (FAILED(waitResult)) {
+                fprintf(stderr, "ID3D12CommandQueue::Wait failed with error code 0x%lX.\n", waitResult);
+                if (device->checkDeviceLoss("queue semaphore wait")) return;
+                std::abort();
+            }
         }
 
         thread_local std::vector<ID3D12CommandList *> executionVector;
@@ -3093,35 +3170,92 @@ namespace plume {
 
         if (!executionVector.empty()) {
             d3d->ExecuteCommandLists(UINT(executionVector.size()), executionVector.data());
+            if (device->checkDeviceLoss("queue submit")) return;
         }
 
         for (uint32_t i = 0; i < signalSemaphoreCount; i++) {
             D3D12CommandSemaphore *interfaceSemaphore = static_cast<D3D12CommandSemaphore *>(signalSemaphores[i]);
             interfaceSemaphore->semaphoreValue++;
-            d3d->Signal(interfaceSemaphore->d3d, interfaceSemaphore->semaphoreValue);
+            const HRESULT signalResult = d3d->Signal(
+                interfaceSemaphore->d3d,
+                interfaceSemaphore->semaphoreValue);
+            if (FAILED(signalResult)) {
+                fprintf(stderr, "ID3D12CommandQueue::Signal(semaphore) failed with error code 0x%lX.\n", signalResult);
+                if (device->checkDeviceLoss("queue semaphore signal")) return;
+                std::abort();
+            }
         }
         
         if (signalFence != nullptr) {
             D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(signalFence);
-            d3d->Signal(interfaceFence->d3d, interfaceFence->fenceValue);
-            interfaceFence->d3d->SetEventOnCompletion(interfaceFence->fenceValue, interfaceFence->fenceEvent);
+            const HRESULT signalResult = d3d->Signal(
+                interfaceFence->d3d, interfaceFence->fenceValue);
+            const HRESULT eventResult = SUCCEEDED(signalResult)
+                ? interfaceFence->d3d->SetEventOnCompletion(
+                      interfaceFence->fenceValue,
+                      interfaceFence->fenceEvent)
+                : signalResult;
+            if (FAILED(signalResult) || FAILED(eventResult)) {
+                fprintf(stderr, "D3D12 fence submission failed with error code 0x%lX.\n", FAILED(signalResult) ? signalResult : eventResult);
+                if (device->checkDeviceLoss("queue fence signal")) return;
+                std::abort();
+            }
             interfaceFence->fenceValue++;
         }
     }
 
+    void D3D12CommandQueue::waitForIdle() {
+        // A failed native queue constructor cannot have submitted any work.
+        if (d3d == nullptr || device->checkDeviceLoss("queue idle")) { return; }
+        // A separate fence leaves the caller's submission fences untouched.
+        D3D12CommandFence fence(device);
+        if ((fence.d3d == nullptr) || (fence.fenceEvent == NULL)) {
+            fprintf(stderr, "D3D12 idle fence creation failed.\n");
+            if (device->checkDeviceLoss("idle fence creation")) return;
+            std::abort();
+        }
+        HRESULT res = d3d->Signal(fence.d3d, fence.fenceValue);
+        if (SUCCEEDED(res)) {
+            res = fence.d3d->SetEventOnCompletion(fence.fenceValue, fence.fenceEvent);
+        }
+        if (FAILED(res)) {
+            fprintf(stderr, "D3D12 idle fence submission failed with error code 0x%lX.\n", res);
+            if (device->checkDeviceLoss("idle fence signal")) return;
+            std::abort();
+        }
+        waitForCommandFence(&fence);
+    }
+
     void D3D12CommandQueue::waitForCommandFence(RenderCommandFence *fence) {
+        if (device->checkDeviceLoss("fence wait")) return;
         assert(fence != nullptr);
 
         D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
-        // Cap wait so a DEVICE_REMOVED / hung GPU cannot freeze the process
-        // forever (FM2 Present + EnsureFrameStarted resize both wait here).
-        const DWORD result = WaitForSingleObjectEx(interfaceFence->fenceEvent, 5000, FALSE);
-        if (result == WAIT_TIMEOUT) {
-            fprintf(stderr, "waitForCommandFence timed out after 5s (device may be removed).\n");
-            if (device != nullptr && device->d3d != nullptr) {
-                fprintf(stderr, "  GetDeviceRemovedReason: 0x%lX\n", device->d3d->GetDeviceRemovedReason());
-            }
+        for (;;) {
+            const DWORD result = WaitForSingleObjectEx(interfaceFence->fenceEvent, 100, FALSE);
+            // Removal can signal the event while we are already waiting.
+            if (device->checkDeviceLoss("fence wait")) return;
+            if (result == WAIT_OBJECT_0) return;
+            if (result == WAIT_TIMEOUT) continue;
+            fprintf(stderr, "D3D12 fence wait failed.\n");
+            std::abort();
         }
+    }
+
+    bool D3D12CommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        if (device->checkDeviceLoss("fence poll")) return false;
+        assert(fence != nullptr);
+
+        D3D12CommandFence *interfaceFence = static_cast<D3D12CommandFence *>(fence);
+        const DWORD result = WaitForSingleObjectEx(
+            interfaceFence->fenceEvent, 0, FALSE);
+        if (device->checkDeviceLoss("fence poll")) return false;
+        if (result == WAIT_OBJECT_0)
+            return true;
+        if (result == WAIT_TIMEOUT)
+            return false;
+        fprintf(stderr, "D3D12 fence poll failed.\n");
+        std::abort();
     }
 
     // D3D12Buffer
@@ -3188,9 +3322,17 @@ namespace plume {
     }
 
     void *D3D12Buffer::map(uint32_t subresource, const RenderRange *readRange) {
+        if (device && device->checkDeviceLoss("buffer map")) return nullptr;
         if (d3d == nullptr) {
+            fprintf(stderr,
+                    "D3D12Buffer::map failed: resource unavailable "
+                    "(size=%llu heap=%u flags=0x%X).\n",
+                    static_cast<unsigned long long>(desc.size),
+                    static_cast<unsigned>(desc.heapType),
+                    static_cast<unsigned>(desc.flags));
             return nullptr;
         }
+
         D3D12_RANGE range;
         if (readRange != nullptr) {
             range.Begin = readRange->begin;
@@ -3198,7 +3340,27 @@ namespace plume {
         }
 
         void *outputData = nullptr;
-        d3d->Map(subresource, (readRange != nullptr) ? &range : nullptr, &outputData);
+        const HRESULT res = d3d->Map(
+            subresource, (readRange != nullptr) ? &range : nullptr,
+            &outputData);
+        if (FAILED(res) || outputData == nullptr) {
+            if (device) device->checkDeviceLoss("buffer map");
+            const HRESULT removed =
+                (device != nullptr && device->d3d != nullptr)
+                    ? device->d3d->GetDeviceRemovedReason()
+                    : E_POINTER;
+            fprintf(stderr,
+                    "D3D12Buffer::map failed: hr=0x%08lX "
+                    "device_removed=0x%08lX subresource=%u "
+                    "size=%llu heap=%u flags=0x%X.\n",
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(removed),
+                    subresource,
+                    static_cast<unsigned long long>(desc.size),
+                    static_cast<unsigned>(desc.heapType),
+                    static_cast<unsigned>(desc.flags));
+            return nullptr;
+        }
         return outputData;
     }
 
@@ -3248,17 +3410,125 @@ namespace plume {
         assert(desc.arrayIndex < texture->desc.arraySize);
 
         this->texture = texture;
+        this->device = texture->device;
         this->desc = desc;
-        this->format = toDXGITextureView(desc.format);
+        this->format = toDXGITextureView(desc.format, desc.planeSlice);
         this->dimension = desc.dimension;
         this->mipLevels = std::min(desc.mipLevels, texture->desc.mipLevels - desc.mipSlice);
         this->mipSlice = desc.mipSlice;
         this->arraySize = std::min(desc.arraySize, texture->desc.arraySize - desc.arrayIndex);
         this->arrayIndex = desc.arrayIndex;
         this->shader4ComponentMapping = toD3D12(desc.componentMapping);
+        if (this->format == DXGI_FORMAT_X32_TYPELESS_G8X24_UINT) {
+            // The stencil SRV stores its byte in G. Expose a logical R8_UINT
+            // plane, composing the caller's swizzles with that native layout.
+            const UINT channels[] = {D3D12_SHADER_COMPONENT_MAPPING_FROM_MEMORY_COMPONENT_1,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0,
+                D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1};
+            const auto channel = [&](UINT output) {
+                const UINT source = D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(output, this->shader4ComponentMapping);
+                return source < 4 ? channels[source] : source;
+            };
+            this->shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+                channel(0), channel(1), channel(2), channel(3));
+        }
     }
 
-    D3D12TextureView::~D3D12TextureView() { }
+    D3D12TextureView::~D3D12TextureView() {
+        if (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
+            device->cpuViewHeapAllocator->free(srvOffset, 1);
+        }
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC D3D12TextureView::getSRVDesc() const {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = shader4ComponentMapping;
+        srvDesc.Format = format;
+
+        const bool isMSAA = (texture->desc.multisampling.sampleCount > RenderSampleCount::COUNT_1);
+        switch (dimension) {
+        case RenderTextureViewDimension::TEXTURE_1D:
+            if (arraySize > 1) {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1DARRAY;
+                srvDesc.Texture1DArray.MipLevels = mipLevels;
+                srvDesc.Texture1DArray.MostDetailedMip = mipSlice;
+                srvDesc.Texture1DArray.FirstArraySlice = arrayIndex;
+                srvDesc.Texture1DArray.ArraySize = arraySize;
+            } else {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                srvDesc.Texture1D.MipLevels = mipLevels;
+                srvDesc.Texture1D.MostDetailedMip = mipSlice;
+            }
+            break;
+        case RenderTextureViewDimension::TEXTURE_2D:
+            if (isMSAA) {
+                if (arraySize > 1) {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMSARRAY;
+                    srvDesc.Texture2DMSArray.FirstArraySlice = arrayIndex;
+                    srvDesc.Texture2DMSArray.ArraySize = arraySize;
+                } else {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                }
+            }
+            else {
+                if (arraySize > 1) {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                    srvDesc.Texture2DArray.MipLevels = mipLevels;
+                    srvDesc.Texture2DArray.MostDetailedMip = mipSlice;
+                    srvDesc.Texture2DArray.FirstArraySlice = arrayIndex;
+                    srvDesc.Texture2DArray.ArraySize = arraySize;
+                    srvDesc.Texture2DArray.PlaneSlice = desc.planeSlice;
+                } else {
+                    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MipLevels = mipLevels;
+                    srvDesc.Texture2D.MostDetailedMip = mipSlice;
+                    srvDesc.Texture2D.PlaneSlice = desc.planeSlice;
+                }
+            }
+
+            break;
+        case RenderTextureViewDimension::TEXTURE_3D:
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+            srvDesc.Texture3D.MipLevels = mipLevels;
+            srvDesc.Texture3D.MostDetailedMip = mipSlice;
+            break;
+        case RenderTextureViewDimension::TEXTURE_CUBE:
+            if (arraySize > 6) {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                srvDesc.TextureCubeArray.MipLevels = mipLevels;
+                srvDesc.TextureCubeArray.MostDetailedMip = mipSlice;
+                srvDesc.TextureCubeArray.First2DArrayFace = arrayIndex;
+                srvDesc.TextureCubeArray.NumCubes = arraySize / 6;
+            } else {
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                srvDesc.TextureCube.MipLevels = mipLevels;
+                srvDesc.TextureCube.MostDetailedMip = mipSlice;
+            }
+            break;
+        default:
+            assert(false && "Unknown texture dimension.");
+            break;
+        }
+
+        return srvDesc;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE D3D12TextureView::getSRV() const {
+        // Views can be used for UAVs/attachments only. Initialize on the first
+        // sampled binding, safely shared by descriptor-writing host threads.
+        std::call_once(srvOnce, [this]() {
+            auto allocator = texture->device->cpuViewHeapAllocator.get();
+            srvOffset = allocator->allocate(1);
+            if (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET) {
+                const auto srvDesc = getSRVDesc();
+                texture->device->d3d->CreateShaderResourceView(texture->d3d, &srvDesc, allocator->getCPUHandleAt(srvOffset));
+            }
+        });
+        // Heap exhaustion keeps the ordinary creation path available.
+        return (srvOffset != D3D12DescriptorHeapAllocator::INVALID_OFFSET)
+            ? texture->device->cpuViewHeapAllocator->getCPUHandleAt(srvOffset) : D3D12_CPU_DESCRIPTOR_HANDLE{};
+    }
 
     // D3D12Texture
 
@@ -3289,10 +3559,18 @@ namespace plume {
         allocationDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
         allocationDesc.CustomPool = (pool != nullptr) ? pool->d3d : nullptr;
 
-        D3D12_CLEAR_VALUE optimizedClearValue;
+        D3D12_CLEAR_VALUE optimizedClearValue = {};
         if (desc.optimizedClearValue != nullptr) {
-            optimizedClearValue.Format = toDXGI(desc.optimizedClearValue->format);
-            memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
+            if (depthTarget) {
+                // An optimized depth clear requires the typed DSV format even
+                // when the underlying depth/stencil resource is typeless.
+                optimizedClearValue.Format = toDXGIDepthStencilView(desc.optimizedClearValue->format);
+                optimizedClearValue.DepthStencil.Depth = desc.optimizedClearValue->depth.depth;
+            }
+            else {
+                optimizedClearValue.Format = toDXGI(desc.optimizedClearValue->format);
+                memcpy(optimizedClearValue.Color, desc.optimizedClearValue->color.rgba, sizeof(optimizedClearValue.Color));
+            }
         }
 
         HRESULT res = device->allocator->CreateResource(&allocationDesc, &resourceDesc, resourceStates, (desc.optimizedClearValue != nullptr) ? &optimizedClearValue : nullptr, &allocation, IID_PPV_ARGS(&d3d));
@@ -3405,7 +3683,7 @@ namespace plume {
         assert(data != nullptr);
         assert(size > 0);
         assert(format != RenderShaderFormat::UNKNOWN);
-        assert(format == RenderShaderFormat::DXIL || format == RenderShaderFormat::DXBC);
+        assert((format == RenderShaderFormat::DXIL) || (format == RenderShaderFormat::DXBC));
 
         this->device = device;
         this->format = format;
@@ -3467,6 +3745,50 @@ namespace plume {
     }
 
     D3D12Sampler::~D3D12Sampler() { }
+
+    // Names of pipelines in the persisted library: a hash of everything that
+    // defines the pipeline. The library itself rejects a name whose stored
+    // description differs, so a collision costs a rebuild, never a wrong pipeline.
+    static constexpr uint64_t kPipelineHashSeed = 1469598103934665603ull;
+
+    static uint64_t pipelineHash(uint64_t hash, const void *data, size_t size) {
+        const uint8_t *bytes = static_cast<const uint8_t *>(data);
+        for (size_t i = 0; i < size; i++) {
+            hash = (hash ^ bytes[i]) * 1099511628211ull;
+        }
+
+        return hash;
+    }
+
+    static std::wstring graphicsPipelineName(const D3D12_GRAPHICS_PIPELINE_STATE_DESC &psoDesc, const D3D12PipelineLayout *layout, const std::vector<D3D12_INPUT_ELEMENT_DESC> &inputElements) {
+        // Pointers differ between runs; their contents are hashed below.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC state;
+        memcpy(&state, &psoDesc, sizeof(state)); // Keeps the zeroed padding.
+        state.pRootSignature = nullptr;
+        state.VS.pShaderBytecode = nullptr;
+        state.GS.pShaderBytecode = nullptr;
+        state.PS.pShaderBytecode = nullptr;
+        state.InputLayout.pInputElementDescs = nullptr;
+        uint64_t hash = pipelineHash(kPipelineHashSeed, &state, sizeof(state));
+        hash = pipelineHash(hash, &layout->signatureHash, sizeof(layout->signatureHash));
+        for (const D3D12_SHADER_BYTECODE *shader : { &psoDesc.VS, &psoDesc.GS, &psoDesc.PS }) {
+            hash = pipelineHash(hash, shader->pShaderBytecode, shader->BytecodeLength);
+        }
+
+        for (const D3D12_INPUT_ELEMENT_DESC &element : inputElements) {
+            hash = pipelineHash(hash, element.SemanticName, strlen(element.SemanticName) + 1);
+            hash = pipelineHash(hash, &element.SemanticIndex, sizeof(element.SemanticIndex));
+            hash = pipelineHash(hash, &element.Format, sizeof(element.Format));
+            hash = pipelineHash(hash, &element.InputSlot, sizeof(element.InputSlot));
+            hash = pipelineHash(hash, &element.AlignedByteOffset, sizeof(element.AlignedByteOffset));
+            hash = pipelineHash(hash, &element.InputSlotClass, sizeof(element.InputSlotClass));
+            hash = pipelineHash(hash, &element.InstanceDataStepRate, sizeof(element.InstanceDataStepRate));
+        }
+
+        wchar_t name[17];
+        swprintf(name, _countof(name), L"%016llx", static_cast<unsigned long long>(hash));
+        return name;
+    }
 
     // D3D12Pipeline
 
@@ -3531,7 +3853,9 @@ namespace plume {
         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
         const D3D12Shader *geometryShader = static_cast<const D3D12Shader *>(desc.geometryShader);
         const D3D12Shader *pixelShader = static_cast<const D3D12Shader *>(desc.pixelShader);
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+        // Zeroed whole, padding included: the pipeline's cache name hashes these bytes.
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+        memset(&psoDesc, 0, sizeof(psoDesc));
         psoDesc.pRootSignature = pipelineLayout->rootSignature;
         psoDesc.VS.pShaderBytecode = (vertexShader != nullptr) ? vertexShader->d3d.data() : nullptr;
         psoDesc.VS.BytecodeLength = (vertexShader != nullptr) ? vertexShader->d3d.size() : 0;
@@ -3592,6 +3916,9 @@ namespace plume {
         psoDesc.DepthStencilState.BackFace.StencilFunc = toD3D12(desc.stencilBackFace.compareFunction);
         psoDesc.NumRenderTargets = desc.renderTargetCount;
         psoDesc.BlendState.AlphaToCoverageEnable = desc.alphaToCoverageEnabled;
+        // Honor each attachment's blend/write mask. Logic operations require
+        // independent blending disabled by the D3D12 pipeline contract.
+        psoDesc.BlendState.IndependentBlendEnable = desc.renderTargetCount > 1 && !desc.logicOpEnabled;
 
         for (uint32_t i = 0; i < desc.renderTargetCount; i++) {
             psoDesc.RTVFormats[i] = toDXGI(desc.renderTargetFormat[i]);
@@ -3645,7 +3972,10 @@ namespace plume {
             inputSlots.emplace_back(desc.inputSlots[i]);
         }
 
-        psoDesc.InputLayout = { inputElements.data(), UINT(inputElements.size()) };
+        // Member-wise: assigning a braced temporary would copy its stack padding
+        // over the zeroed bytes the pipeline's cache name hashes.
+        psoDesc.InputLayout.pInputElementDescs = inputElements.data();
+        psoDesc.InputLayout.NumElements = UINT(inputElements.size());
 
         HRESULT res;
         if (independentStencilRefs) {
@@ -3687,16 +4017,40 @@ namespace plume {
             const D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = { sizeof(stream), &stream };
             res = device->d3d->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&d3d));
         }
+        else if (device->pipelineLibrary != nullptr) {
+            // The library hands back a pipeline the driver compiled in an earlier
+            // run; otherwise build it and keep it for the next one.
+            const std::wstring name = graphicsPipelineName(psoDesc, pipelineLayout, inputElements);
+            res = device->pipelineLibrary->LoadGraphicsPipeline(name.c_str(), &psoDesc, IID_PPV_ARGS(&d3d));
+            if (SUCCEEDED(res)) {
+                device->pipelineCacheHits.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                d3d = nullptr;
+                res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
+                if (SUCCEEDED(res)) {
+                    // A name already stored with a different description stays as it is.
+                    device->pipelineLibrary->StorePipeline(name.c_str(), d3d);
+                    device->pipelineCacheMisses.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
         else {
             res = device->d3d->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&d3d));
         }
 
         if (FAILED(res)) {
-            fprintf(stderr, "CreateGraphicsPipelineState failed with error code 0x%lX.\n", res);
-            if (res == DXGI_ERROR_DEVICE_REMOVED) {
-                fprintf(stderr, "  GetDeviceRemovedReason: 0x%lX\n", device->d3d->GetDeviceRemovedReason());
-            }
-            d3d = nullptr;
+            const HRESULT removed = device->d3d->GetDeviceRemovedReason();
+            fprintf(stderr,
+                    "CreateGraphicsPipelineState failed: hr=0x%08lX "
+                    "device_removed=0x%08lX topology=%u rt=0x%X "
+                    "depth=0x%X inputs=%u.\n",
+                    static_cast<unsigned long>(res),
+                    static_cast<unsigned long>(removed),
+                    static_cast<unsigned>(desc.primitiveTopology),
+                    static_cast<unsigned>(desc.renderTargetFormat[0]),
+                    static_cast<unsigned>(desc.depthTargetFormat),
+                    desc.inputElementsCount);
         }
     }
 
@@ -3960,7 +4314,7 @@ namespace plume {
             rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
             rootParameter.Constants.ShaderRegister = range.binding;
-            rootParameter.Constants.RegisterSpace = range.set;
+            rootParameter.Constants.RegisterSpace = device->flatRegisterSpaces ? 0 : range.set;
             rootParameter.Constants.Num32BitValues = (range.size + sizeof(uint32_t) - 1) / sizeof(uint32_t);
             rootParameters.emplace_back(rootParameter);
             pushConstantRanges.emplace_back(range);
@@ -4021,7 +4375,7 @@ namespace plume {
                         staticSampler.MinLOD = samplerDesc.MinLOD;
                         staticSampler.MaxLOD = samplerDesc.MaxLOD;
                         staticSampler.ShaderRegister = renderRange.binding;
-                        staticSampler.RegisterSpace = i;
+                        staticSampler.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                         staticSampler.ShaderVisibility = toD3D12(sampler->shaderVisibility);
                         staticSamplers.emplace_back(staticSampler);
                     }
@@ -4032,7 +4386,7 @@ namespace plume {
                     descriptorRange.RangeType = toRangeType(renderRange.type);
                     descriptorRange.NumDescriptors = isRangeBoundless ? UINT_MAX : renderRange.count;
                     descriptorRange.BaseShaderRegister = renderRange.binding;
-                    descriptorRange.RegisterSpace = i;
+                    descriptorRange.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                     descriptorRange.OffsetInDescriptorsFromTableStart = samplerTableOffset;
                     samplerTableSize++;
                     samplerTableOffset += renderRange.count;
@@ -4042,7 +4396,7 @@ namespace plume {
                     descriptorRange.RangeType = toRangeType(renderRange.type);
                     descriptorRange.NumDescriptors = isRangeBoundless ? UINT_MAX : renderRange.count;
                     descriptorRange.BaseShaderRegister = renderRange.binding;
-                    descriptorRange.RegisterSpace = i;
+                    descriptorRange.RegisterSpace = device->flatRegisterSpaces ? 0 : i;
                     descriptorRange.OffsetInDescriptorsFromTableStart = viewTableOffset;
                     viewTableSize++;
                     viewTableOffset += renderRange.count;
@@ -4125,9 +4479,11 @@ namespace plume {
 
         res = device->d3d->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
         if (FAILED(res)) {
-            fprintf(stderr, "CreateRootSignature failed with error code 0x%lX.\n", res);
+            fprintf(stderr, "CreateRootSignature failed: hr=0x%08lX device_removed=0x%08lX.\n", res, device->d3d->GetDeviceRemovedReason());
             return;
         }
+
+        signatureHash = pipelineHash(kPipelineHashSeed, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize());
     }
 
     D3D12PipelineLayout::~D3D12PipelineLayout() {
@@ -4147,12 +4503,21 @@ namespace plume {
         HRESULT res;
         UINT adapterIndex = 0;
         IDXGIAdapter1 *adapterOption = nullptr;
-        while (renderInterface->dxgiFactory->EnumAdapters1(adapterIndex++, &adapterOption) != DXGI_ERROR_NOT_FOUND) {
+        // The software interface offers WARP alone; otherwise every hardware adapter.
+        auto nextAdapter = [&]() {
+            if (renderInterface->softwareAdapter) {
+                return (adapterIndex++ == 0) && SUCCEEDED(renderInterface->dxgiFactory->EnumWarpAdapter(IID_PPV_ARGS(&adapterOption)));
+            }
+
+            return renderInterface->dxgiFactory->EnumAdapters1(adapterIndex++, &adapterOption) != DXGI_ERROR_NOT_FOUND;
+        };
+
+        while (nextAdapter()) {
             DXGI_ADAPTER_DESC1 adapterDesc;
             adapterOption->GetDesc1(&adapterDesc);
 
             // Ignore remote or software adapters.
-            if (adapterDesc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            if (!renderInterface->softwareAdapter && (adapterDesc.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE))) {
                 adapterOption->Release();
                 continue;
             }
@@ -4164,7 +4529,8 @@ namespace plume {
                 continue;
             }
 
-            // Determine the shader model supported by the device.
+            // Determine the shader model supported by the device. A device below
+            // Shader Model 6 takes DXBC shaders instead of DXIL.
             const D3D_SHADER_MODEL supportedShaderModels[] = { D3D_SHADER_MODEL_6_0, D3D_SHADER_MODEL_5_1 };
             D3D12_FEATURE_DATA_SHADER_MODEL dataShaderModel = {};
             for (D3D_SHADER_MODEL model : supportedShaderModels) {
@@ -4184,6 +4550,14 @@ namespace plume {
                 deviceOption->Release();
                 adapterOption->Release();
                 continue;
+            }
+
+            // Determine if the device supports double-precision shader arithmetic.
+            bool float64Option = false;
+            D3D12_FEATURE_DATA_D3D12_OPTIONS d3d12Options = {};
+            res = deviceOption->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &d3d12Options, sizeof(d3d12Options));
+            if (SUCCEEDED(res)) {
+                float64Option = d3d12Options.DoublePrecisionFloatShaderOps;
             }
 
             // Determine if the device supports sample locations.
@@ -4262,6 +4636,8 @@ namespace plume {
                 shaderModel = dataShaderModel.HighestShaderModel;
                 capabilities.shaderFormat = shaderModel >= D3D_SHADER_MODEL_6_0 ? RenderShaderFormat::DXIL : RenderShaderFormat::DXBC;
                 capabilities.geometryShader = true;
+                capabilities.shaderFloat64 = float64Option;
+                capabilities.queryOutsideRenderPass = true;
                 capabilities.raytracing = rtSupportOption;
                 capabilities.raytracingStateUpdate = rtStateUpdateSupportOption;
                 capabilities.sampleLocations = samplePositionsOption;
@@ -4301,6 +4677,13 @@ namespace plume {
             fprintf(stderr, "Unable to create a D3D12 device with the required features.\n");
             return;
         }
+
+        // PGR4's DXBC shaders are Shader Model 5.1 and keep their register
+        // spaces, so flatRegisterSpaces stays off.
+        if (renderInterface->forceDxbc) {
+            capabilities.shaderFormat = RenderShaderFormat::DXBC;
+        }
+        renderInterface->capabilities.shaderFormat = capabilities.shaderFormat;
 
         #ifdef D3D12_DEBUG_SET_STABLE_POWER_STATE
             d3d->SetStablePowerState(TRUE);
@@ -4374,6 +4757,7 @@ namespace plume {
 
         // Create descriptor heaps allocator.
         viewHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, ShaderDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        cpuViewHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, ShaderDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, false);
         samplerHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, SamplerDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
         colorTargetHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, TargetDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         depthTargetHeapAllocator = std::make_unique<D3D12DescriptorHeapAllocator>(this, TargetDescriptorHeapSize, D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -4394,6 +4778,12 @@ namespace plume {
     }
 
     D3D12Device::~D3D12Device() {
+        if (pipelineLibrary != nullptr) {
+            pipelineLibrary->Release();
+            pipelineLibrary = nullptr;
+        }
+
+        cpuViewHeapAllocator.reset();
         viewHeapAllocator.reset();
         samplerHeapAllocator.reset();
         rtDummyGlobalPipelineLayout.reset();
@@ -4418,18 +4808,18 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> D3D12Device::createComputePipeline(const RenderComputePipelineDesc &desc) {
-        auto pipeline = std::make_unique<D3D12ComputePipeline>(this, desc);
-        if (pipeline->d3d == nullptr) {
+        std::unique_ptr<D3D12ComputePipeline> pipeline =
+            std::make_unique<D3D12ComputePipeline>(this, desc);
+        if (!pipeline->d3d)
             return nullptr;
-        }
         return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> D3D12Device::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
-        auto pipeline = std::make_unique<D3D12GraphicsPipeline>(this, desc);
-        if (pipeline->d3d == nullptr) {
+        std::unique_ptr<D3D12GraphicsPipeline> pipeline =
+            std::make_unique<D3D12GraphicsPipeline>(this, desc);
+        if (!pipeline->d3d)
             return nullptr;
-        }
         return pipeline;
     }
 
@@ -4438,29 +4828,20 @@ namespace plume {
     }
 
     std::unique_ptr<RenderCommandQueue> D3D12Device::createCommandQueue(RenderCommandListType type) {
-        return std::make_unique<D3D12CommandQueue>(this, type);
+        return checkedResource(std::make_unique<D3D12CommandQueue>(this, type), &D3D12CommandQueue::d3d, this);
     }
     
     std::unique_ptr<RenderBuffer> D3D12Device::createBuffer(const RenderBufferDesc &desc) {
-        std::unique_ptr<D3D12Buffer> buffer;
         if ((desc.heapType == RenderHeapType::GPU_UPLOAD) && gpuUploadHeapFallback) {
-            buffer = std::make_unique<D3D12Buffer>(this, customUploadPool.get(), desc);
+            return checkedResource(std::make_unique<D3D12Buffer>(this, customUploadPool.get(), desc), &D3D12Buffer::d3d, this);
         }
         else {
-            buffer = std::make_unique<D3D12Buffer>(this, nullptr, desc);
+            return checkedResource(std::make_unique<D3D12Buffer>(this, nullptr, desc), &D3D12Buffer::d3d, this);
         }
-        if (buffer->d3d == nullptr) {
-            return nullptr;
-        }
-        return buffer;
     }
 
     std::unique_ptr<RenderTexture> D3D12Device::createTexture(const RenderTextureDesc &desc) {
-        auto texture = std::make_unique<D3D12Texture>(this, nullptr, desc);
-        if (texture->d3d == nullptr) {
-            return nullptr;
-        }
-        return texture;
+        return checkedResource(std::make_unique<D3D12Texture>(this, nullptr, desc), &D3D12Texture::d3d, this);
     }
 
     std::unique_ptr<RenderAccelerationStructure> D3D12Device::createAccelerationStructure(const RenderAccelerationStructureDesc &desc) {
@@ -4472,23 +4853,32 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipelineLayout> D3D12Device::createPipelineLayout(const RenderPipelineLayoutDesc &desc) {
-        return std::make_unique<D3D12PipelineLayout>(this, desc);
+        return checkedResource(std::make_unique<D3D12PipelineLayout>(this, desc), &D3D12PipelineLayout::rootSignature, this);
     }
 
     std::unique_ptr<RenderCommandFence> D3D12Device::createCommandFence() {
-        return std::make_unique<D3D12CommandFence>(this);
+        auto fence = checkedResource(std::make_unique<D3D12CommandFence>(this), &D3D12CommandFence::d3d, this);
+        if (fence && !fence->fenceEvent) return nullptr;
+        return fence;
     }
 
     std::unique_ptr<RenderCommandSemaphore> D3D12Device::createCommandSemaphore() {
-        return std::make_unique<D3D12CommandSemaphore>(this);
+        return checkedResource(std::make_unique<D3D12CommandSemaphore>(this), &D3D12CommandSemaphore::d3d, this);
     }
 
     std::unique_ptr<RenderFramebuffer> D3D12Device::createFramebuffer(const RenderFramebufferDesc &desc) {
-        return std::make_unique<D3D12Framebuffer>(this, desc);
+        if (checkDeviceLoss("framebuffer creation")) return nullptr;
+        auto framebuffer = std::make_unique<D3D12Framebuffer>(this, desc);
+        if (framebuffer->colorHandles.size() != desc.colorAttachmentsCount
+            || std::any_of(framebuffer->colorHandles.begin(), framebuffer->colorHandles.end(),
+                [](D3D12_CPU_DESCRIPTOR_HANDLE handle) { return handle.ptr == 0; })
+            || (desc.depthAttachment && framebuffer->depthHandle.ptr == 0)) return nullptr;
+        return framebuffer;
     }
 
-    std::unique_ptr<RenderQueryPool> D3D12Device::createQueryPool(uint32_t queryCount) {
-        return std::make_unique<D3D12QueryPool>(this, queryCount);
+    std::unique_ptr<RenderQueryPool> D3D12Device::createQueryPool(
+        uint32_t queryCount, RenderQueryType type) {
+        return std::make_unique<D3D12QueryPool>(this, queryCount, type);
     }
 
     void D3D12Device::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
@@ -4693,6 +5083,56 @@ namespace plume {
         return d3d != nullptr;
     }
 
+    bool D3D12Device::setPipelineCacheData(const void *data, uint64_t size) {
+        if (pipelineLibrary != nullptr) {
+            pipelineLibrary->Release();
+            pipelineLibrary = nullptr;
+        }
+
+        pipelineLibraryBlob.clear();
+        if (data != nullptr && size != 0) {
+            pipelineLibraryBlob.assign(static_cast<const uint8_t *>(data), static_cast<const uint8_t *>(data) + size);
+        }
+
+        // A blob from another driver or adapter fails here; start empty instead.
+        HRESULT res = d3d->CreatePipelineLibrary(pipelineLibraryBlob.data(), pipelineLibraryBlob.size(), IID_PPV_ARGS(&pipelineLibrary));
+        if (FAILED(res) && !pipelineLibraryBlob.empty()) {
+            pipelineLibraryBlob.clear();
+            res = d3d->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipelineLibrary));
+        }
+
+        if (FAILED(res)) {
+            pipelineLibrary = nullptr;
+            return false;
+        }
+
+        pipelineCacheHits = 0;
+        pipelineCacheMisses = 0;
+        return true;
+    }
+
+    std::vector<uint8_t> D3D12Device::getPipelineCacheData() {
+        std::vector<uint8_t> data;
+        if (pipelineLibrary == nullptr) {
+            return data;
+        }
+
+        data.resize(pipelineLibrary->GetSerializedSize());
+        if (data.empty() || FAILED(pipelineLibrary->Serialize(data.data(), data.size()))) {
+            data.clear();
+        }
+
+        return data;
+    }
+
+    RenderPipelineCacheStats D3D12Device::getPipelineCacheStats() const {
+        RenderPipelineCacheStats stats;
+        stats.hits = pipelineCacheHits.load(std::memory_order_relaxed);
+        stats.misses = pipelineCacheMisses.load(std::memory_order_relaxed);
+        stats.tracked = pipelineLibrary != nullptr;
+        return stats;
+    }
+
     bool D3D12Device::beginCapture() {
         assert(false && "Captures are not currently implemented in D3D12.");
         return false;
@@ -4780,8 +5220,18 @@ namespace plume {
 
     // Global creation function.
     
-    std::unique_ptr<RenderInterface> CreateD3D12Interface() {
+    std::unique_ptr<RenderInterface> CreateD3D12Interface(bool softwareAdapter, bool forceDxbc) {
         std::unique_ptr<D3D12Interface> createdInterface = std::make_unique<D3D12Interface>();
-        return createdInterface->isValid() ? std::move(createdInterface) : nullptr;
+        if (!createdInterface->isValid()) {
+            return nullptr;
+        }
+
+        createdInterface->softwareAdapter = softwareAdapter;
+        createdInterface->forceDxbc = forceDxbc;
+        return createdInterface;
+    }
+
+    std::unique_ptr<RenderInterface> CreateD3D12Interface() {
+        return CreateD3D12Interface(false, false);
     }
 };

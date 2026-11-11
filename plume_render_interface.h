@@ -8,11 +8,28 @@
 #pragma once
 
 #include <climits>
+#include <atomic>
 
 #include "plume_render_interface_types.h"
 
 namespace plume {
     // Interfaces.
+
+    // Descriptor cache keys must distinguish resources whose addresses are reused.
+    // Reading an identity needs no registry/lock. Copying or replacing a resource
+    // wrapper (including a swapchain image) receives a fresh identity too.
+    class RenderResourceIdentity {
+        inline static std::atomic<uint64_t> nextId{1};
+        uint64_t resourceId = nextId.fetch_add(1, std::memory_order_relaxed);
+    public:
+        RenderResourceIdentity() = default;
+        RenderResourceIdentity(const RenderResourceIdentity &) : RenderResourceIdentity() { }
+        RenderResourceIdentity &operator=(const RenderResourceIdentity &other) {
+            if (this != &other) resourceId = nextId.fetch_add(1, std::memory_order_relaxed);
+            return *this;
+        }
+        uint64_t getResourceId() const { return resourceId; }
+    };
 
     struct RenderBufferFormattedView {
         virtual ~RenderBufferFormattedView() { }
@@ -32,11 +49,11 @@ namespace plume {
         }
     };
 
-    struct RenderTextureView {
+    struct RenderTextureView : RenderResourceIdentity {
         virtual ~RenderTextureView() { }
     };
 
-    struct RenderTexture {
+    struct RenderTexture : RenderResourceIdentity {
         virtual ~RenderTexture() { }
         virtual std::unique_ptr<RenderTextureView> createTextureView(const RenderTextureViewDesc &desc) const = 0;
         virtual void setName(const std::string &name) = 0;
@@ -51,7 +68,7 @@ namespace plume {
         virtual void setName(const std::string &name) = 0;
     };
 
-    struct RenderSampler {
+    struct RenderSampler : RenderResourceIdentity {
         virtual ~RenderSampler() { }
     };
 
@@ -79,9 +96,15 @@ namespace plume {
         // assume it was all allocated in one contiguous array. This allows efficient mapping between Vulkan and D3D12's descriptor models.
 
         virtual ~RenderDescriptorSet() { }
-        virtual void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr) = 0;
+        virtual void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize = 0, const RenderBufferStructuredView *bufferStructuredView = nullptr, const RenderBufferFormattedView *bufferFormattedView = nullptr, uint64_t bufferOffset = 0) = 0;
         virtual void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView = nullptr) = 0;
         virtual void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) = 0;
+        virtual void setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+            for (uint32_t i = 0; i < count; ++i) setTexture(first + i, textures[i], layout, views ? views[i] : nullptr);
+        }
+        virtual void setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+            for (uint32_t i = 0; i < count; ++i) setSampler(first + i, samplers[i]);
+        }
         virtual void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) = 0;
     };
 
@@ -137,6 +160,8 @@ namespace plume {
         virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
         virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
+        // Constant used by RenderBlend::BLEND_FACTOR / INV_BLEND_FACTOR (RGBA). Dynamic on every backend.
+        virtual void setBlendFactor(const float *rgba) = 0;
         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
@@ -150,6 +175,8 @@ namespace plume {
         virtual void discardTexture(const RenderTexture* texture) = 0; // D3D12 only.
         virtual void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) = 0;
         virtual void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
+        virtual void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
+        virtual void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
 
         // Concrete implementation shortcuts.
         inline void barriers(RenderBarrierStages stages, const RenderBufferBarrier &barrier) {
@@ -203,6 +230,13 @@ namespace plume {
         virtual std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) = 0;
         virtual void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores = nullptr, uint32_t waitSemaphoreCount = 0, RenderCommandSemaphore **signalSemaphores = nullptr, uint32_t signalSemaphoreCount = 0, RenderCommandFence *signalFence = nullptr) = 0;
         virtual void waitForCommandFence(RenderCommandFence *fence) = 0;
+        // Nonblocking counterpart to waitForCommandFence. A true result
+        // consumes/resets the completed fence so it can be submitted again.
+        virtual bool pollCommandFence(RenderCommandFence *fence) = 0;
+        // Wait for previously submitted queue work, including queued presents.
+        // Use before destructive swap-chain/resource changes; this does not
+        // consume command fences. The caller must serialize new submissions.
+        virtual void waitForIdle() = 0;
 
         // Concrete implementation shortcuts.
         inline void executeCommandLists(const RenderCommandList *commandList, RenderCommandFence *signalFence = nullptr) {
@@ -218,9 +252,21 @@ namespace plume {
 
     struct RenderQueryPool {
         virtual ~RenderQueryPool() { }
-        virtual void queryResults() = 0;
+        virtual void queryResults(uint32_t queryCount = 0) = 0;
+        // Read only the specified nonempty range into getResults()[firstQuery...].
+        // The caller must first observe completion of the submission that wrote
+        // these queries. False means no valid result should be consumed.
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) = 0;
         virtual const uint64_t *getResults() const = 0;
         virtual uint32_t getCount() const = 0;
+    };
+
+    // Graphics pipelines served from the persisted driver cache versus built by
+    // the driver. `tracked` is false where the driver cannot say which.
+    struct RenderPipelineCacheStats {
+        uint32_t hits = 0;
+        uint32_t misses = 0;
+        bool tracked = false;
     };
 
     struct RenderDevice {
@@ -240,7 +286,9 @@ namespace plume {
         virtual std::unique_ptr<RenderCommandFence> createCommandFence() = 0;
         virtual std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() = 0;
         virtual std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) = 0;
-        virtual std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) = 0;
+        virtual std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount,
+            RenderQueryType type = RenderQueryType::TIMESTAMP) = 0;
         virtual void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
         virtual void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
         virtual void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) = 0;
@@ -249,6 +297,13 @@ namespace plume {
         virtual RenderSampleCounts getSampleCountsSupported(RenderFormat format) const = 0;
         virtual bool beginCapture() = 0;
         virtual bool endCapture() = 0;
+        // Driver pipeline cache the host persists between runs. Call before the
+        // first pipeline; the device then caches every graphics pipeline it builds.
+        // `data` is a blob from getPipelineCacheData() (or empty); a blob the driver
+        // rejects is ignored. Returns whether the device is now caching.
+        virtual bool setPipelineCacheData(const void *data, uint64_t size) { return false; }
+        virtual std::vector<uint8_t> getPipelineCacheData() { return {}; }
+        virtual RenderPipelineCacheStats getPipelineCacheStats() const { return {}; }
     };
 
     struct RenderInterface {

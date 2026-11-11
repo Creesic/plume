@@ -12,6 +12,11 @@
 #include <regex>
 #include <sstream>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 static std::vector<uint32_t> read_spirv_file_stdin() {
 #ifdef _WIN32
     setmode(fileno(stdin), O_BINARY);
@@ -118,8 +123,9 @@ static std::string pad_descriptor_sets(const std::string& source) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input.spv> <output.metal>\n";
+    if (argc != 3 && argc != 4) {
+        std::cerr << "Usage: " << argv[0]
+                  << " <input.spv> <output.metal> [output.entry]\n";
         return 1;
     }
 
@@ -165,16 +171,29 @@ int main(int argc, char* argv[]) {
 
         // Configure common options
         spirv_cross::CompilerGLSL::Options common_options;
-        common_options.vertex.flip_vert_y = true;
+        // xrecomp compiles D3D-convention HLSL straight to SPIR-V (no
+        // -fvk-invert-y); Metal's clip space already matches D3D, so the
+        // vertex Y flip must stay off or every frame renders upside down.
+        common_options.vertex.flip_vert_y = false;
         msl.set_common_options(common_options);
 
-        // Generate MSL source
+        const auto entry_points = msl.get_entry_points_and_stages();
+        if (entry_points.size() != 1)
+            throw std::runtime_error("Expected exactly one SPIR-V entry point");
+
+        // Generate MSL source. MSL reserves names such as `main`, so the
+        // compiler may cleanse the SPIR-V entry point (typically to `main0`).
         std::string source = msl.compile();
+        const std::string emitted_entry = msl.get_cleansed_entry_point_name(
+            entry_points[0].name, entry_points[0].execution_model);
 
         // Pad descriptor sets to ensure contiguous IDs
         std::string padded_source = pad_descriptor_sets(source);
 
-        write_string_to_file(argv[2], padded_source.c_str());
+        if (!write_string_to_file(argv[2], padded_source.c_str()))
+            return 1;
+        if (argc == 4 && !write_string_to_file(argv[3], emitted_entry.c_str()))
+            return 1;
 
         return 0;
     } catch (const std::exception& e) {

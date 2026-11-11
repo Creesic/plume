@@ -118,6 +118,7 @@ namespace plume {
                 uint32_t depthBias : 1;
                 uint32_t depthStencil : 1;
                 uint32_t rasterizer : 1;
+                uint32_t blendColor : 1;
             };
             uint32_t value;
         };
@@ -129,7 +130,7 @@ namespace plume {
         uint32_t vertexBufferSlots;
 
         void setAll() {
-            value = 0x1FF; // All 9 bits set
+            value = 0x3FF; // All 10 bits set
             descriptorSetDirtyIndex = 0;
             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
         }
@@ -145,7 +146,7 @@ namespace plume {
 
     struct BufferDescriptor: Descriptor {
         MTL::Buffer *buffer;
-        uint32_t offset = 0;
+        uint64_t offset = 0;
     };
 
     struct TextureDescriptor: Descriptor {
@@ -221,7 +222,7 @@ namespace plume {
         MetalDescriptorSet(MetalDevice *device, const RenderDescriptorSetDesc &desc);
         MetalDescriptorSet(MetalDevice *device, uint32_t entryCount);
         ~MetalDescriptorSet() override;
-        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) override;
+        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) override;
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
@@ -299,10 +300,14 @@ namespace plume {
         MetalDevice *device = nullptr;
         MTL::CounterSampleBuffer *sampleBuffer = nullptr;
         std::vector<uint64_t> results;
+        std::unique_ptr<RenderBuffer> visibilityBuffer;
+        RenderQueryType type = RenderQueryType::TIMESTAMP;
 
-        MetalQueryPool(MetalDevice *device, uint32_t queryCount);
+        MetalQueryPool(MetalDevice *device, uint32_t queryCount,
+                       RenderQueryType type);
         virtual ~MetalQueryPool() override;
-        virtual void queryResults() override;
+        virtual void queryResults(uint32_t queryCount) override;
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -431,6 +436,8 @@ namespace plume {
             float slopeScaledDepthBias;
         } dynamicDepthBias;
 
+        float dynamicBlendColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
         struct {
             uint32_t updateDirtyBits = ~0;
             int update[MetalBarrierStage::COUNT] = {};
@@ -449,6 +456,7 @@ namespace plume {
         MetalDescriptorSet* computeDescriptorSets[MAX_DESCRIPTOR_SET_BINDINGS] = {};
 
         MTL::Fence *timestampQueryFence = nullptr;
+        const MetalQueryPool *visibilityQueryPool = nullptr;
 
         std::unordered_set<MetalDescriptorSet*> currentEncoderDescriptorSets;
         void bindEncoderResources(MTL::CommandEncoder* encoder, bool isCompute);
@@ -484,6 +492,7 @@ namespace plume {
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+        void setBlendFactor(const float *rgba) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
@@ -497,6 +506,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void endOtherEncoders(EncoderType type);
         void checkActiveComputeEncoder();
         void endActiveComputeEncoder();
@@ -527,6 +538,7 @@ namespace plume {
 
     struct MetalCommandFence : RenderCommandFence {
         dispatch_semaphore_t semaphore;
+        std::atomic<bool> failed = false;
 
         MetalCommandFence(MetalDevice *device);
         ~MetalCommandFence() override;
@@ -550,6 +562,8 @@ namespace plume {
         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
+        bool pollCommandFence(RenderCommandFence *fence) override;
+        void waitForIdle() override;
     };
 
     struct MetalBuffer : RenderBuffer {
@@ -749,7 +763,8 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
-        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount, RenderQueryType type) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;

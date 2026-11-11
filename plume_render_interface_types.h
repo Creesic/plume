@@ -37,7 +37,7 @@ namespace plume {
 #if defined(_WIN64)
     // Native HWND handle to the target window.
     typedef HWND RenderWindow;
-#elif defined(__ANDROID__)
+#elif defined(__ANDROID__) && !defined(PLUME_SDL_VULKAN_ENABLED)
     typedef ANativeWindow* RenderWindow;
 #elif defined(PLUME_SDL_VULKAN_ENABLED)
     typedef SDL_Window *RenderWindow;
@@ -82,6 +82,11 @@ namespace plume {
         NVIDIA = 0x10DE,
         INTEL = 0x8086,
         APPLE = 0x106B,
+    };
+
+    enum class RenderQueryType {
+        TIMESTAMP,
+        OCCLUSION
     };
     
     enum class RenderFormat {
@@ -373,6 +378,9 @@ namespace plume {
         DXIL,
         SPIRV,
         METAL,
+        METAL_SOURCE,
+        // DXBC bytecode for devices without Shader Model 6: Shader Model 5.1
+        // with register spaces on D3D12, 5.0 with every register in space 0 on D3D11.
         DXBC
     };
 
@@ -1036,6 +1044,8 @@ namespace plume {
         uint32_t arraySize = UINT32_MAX;
         uint32_t arrayIndex = 0;
         RenderComponentMapping componentMapping;
+        // 0 = depth or color plane. 1 = stencil plane of a depth-stencil texture.
+        uint32_t planeSlice = 0;
 
         RenderTextureViewDesc() = default;
 
@@ -1106,6 +1116,7 @@ namespace plume {
             struct {
                 uint32_t mipLevel;
                 uint32_t arrayIndex;
+                uint32_t planeIndex;
             } subresource;
         };
 
@@ -1122,12 +1133,13 @@ namespace plume {
             return loc;
         }
 
-        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0) {
+        static RenderTextureCopyLocation Subresource(const RenderTexture *texture, uint32_t mipLevel = 0, uint32_t arrayIndex = 0, uint32_t planeIndex = 0) {
             RenderTextureCopyLocation loc;
             loc.texture = texture;
             loc.type = RenderTextureCopyType::SUBRESOURCE;
             loc.subresource.mipLevel = mipLevel;
             loc.subresource.arrayIndex = arrayIndex;
+            loc.subresource.planeIndex = planeIndex;
             return loc;
         }
     };
@@ -1773,6 +1785,13 @@ namespace plume {
     struct RenderDeviceCapabilities {
         // Geometry shaders.
         bool geometryShader = false;
+
+        // 64-bit float arithmetic, including division, in shaders.
+        bool shaderFloat64 = false;
+
+        // Occlusion queries may begin and end outside a render pass and span
+        // several (Metal scopes visibility to one render encoder).
+        bool queryOutsideRenderPass = false;
 
         // Raytracing.
         bool raytracing = false;

@@ -15,9 +15,11 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <mutex>
 
 #include "plume_metal.h"
+#include "plume_copy_layout.h"
 
 extern "C" {
     void *objc_autoreleasePoolPush(void);
@@ -1333,7 +1335,8 @@ namespace plume {
         assert(device != nullptr);
         assert(data != nullptr);
         assert(size > 0);
-        assert(format == RenderShaderFormat::METAL);
+        assert((format == RenderShaderFormat::METAL) ||
+               (format == RenderShaderFormat::METAL_SOURCE));
 
         this->format = format;
 
@@ -1342,11 +1345,21 @@ namespace plume {
         functionName->retain();
 
         NS::Error *error = nullptr;
-        const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
-        library = device->mtl->newLibrary(dispatchData, &error);
+        if (format == RenderShaderFormat::METAL_SOURCE) {
+            const std::string source(static_cast<const char *>(data), size);
+            const NS::String *sourceString =
+                NS::String::string(source.c_str(), NS::UTF8StringEncoding);
+            library = device->mtl->newLibrary(sourceString, nullptr, &error);
+        }
+        else {
+            const dispatch_data_t dispatchData =
+                dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
+            library = device->mtl->newLibrary(dispatchData, &error);
+        }
 
         if (error != nullptr) {
-            fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
+            fprintf(stderr, "MTLDevice newLibrary: failed with error %s.\n",
+                    error->localizedDescription()->utf8String());
             return;
         }
     }
@@ -1354,7 +1367,9 @@ namespace plume {
     MetalShader::~MetalShader() {
         MetalAutoreleasePool releasePool;
         functionName->release();
-        library->release();
+        if (library != nullptr) {
+            library->release();
+        }
 
         if (debugName != nullptr) {
             debugName->release();
@@ -1461,14 +1476,13 @@ namespace plume {
         state.threadGroupSizeY = desc.threadGroupSizeY;
         state.threadGroupSizeZ = desc.threadGroupSizeZ;
 
+        descriptor->release();
+        function->release();
+
         if (error != nullptr) {
             fprintf(stderr, "MTLDevice newComputePipelineStateWithDescriptor: failed with error %s.\n", error->localizedDescription()->utf8String());
             return;
         }
-
-        // Release resources
-        descriptor->release();
-        function->release();
     }
 
     MetalComputePipeline::~MetalComputePipeline() {
@@ -1574,7 +1588,11 @@ namespace plume {
         MTL::StencilDescriptor *backFaceStencilDescriptor = nullptr;
 
         if (desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            depthStencilDescriptor->setDepthWriteEnabled(desc.depthWriteEnabled);
+            // Match D3D12/Vulkan: a disabled depth test also disables depth
+            // writes. Metal's flags are independent, and writing through a
+            // test-disabled pipeline (e.g. a skybox) would clobber the depth
+            // buffer under everything drawn afterwards.
+            depthStencilDescriptor->setDepthWriteEnabled(desc.depthEnabled && desc.depthWriteEnabled);
             depthStencilDescriptor->setDepthCompareFunction(desc.depthEnabled ? mapCompareFunction(desc.depthFunction) : MTL::CompareFunctionAlways);
 
             if (desc.stencilEnabled) {
@@ -1618,12 +1636,8 @@ namespace plume {
             state.depthBiasSlopeFactor = desc.slopeScaledDepthBias;
         }
 
-        if (error != nullptr) {
-            fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
-            return;
-        }
-
-        // Release resources
+        // All descriptor/function objects above are owned (+1) because they
+        // came from alloc/new APIs. Release them on both success and failure.
         vertexDescriptor->release();
         vertexFunction->release();
         descriptor->release();
@@ -1635,6 +1649,11 @@ namespace plume {
 
         if (backFaceStencilDescriptor != nullptr) {
             backFaceStencilDescriptor->release();
+        }
+
+        if (error != nullptr) {
+            fprintf(stderr, "MTLDevice newRenderPipelineState: failed with error %s.\n", error->localizedDescription()->utf8String());
+            return;
         }
     }
 
@@ -1739,7 +1758,7 @@ namespace plume {
         }
     }
 
-    void MetalDescriptorSet::setBuffer(const uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void MetalDescriptorSet::setBuffer(const uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         MetalAutoreleasePool releasePool;
         if (buffer == nullptr) {
             setDescriptor(descriptorIndex, nullptr);
@@ -1747,6 +1766,9 @@ namespace plume {
         }
 
         const MetalBuffer *interfaceBuffer = static_cast<const MetalBuffer *>(buffer);
+        assert(bufferOffset <= interfaceBuffer->desc.size);
+        assert((bufferSize == 0) ||
+               (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
 
         if (bufferFormattedView != nullptr) {
             assert((bufferStructuredView == nullptr) && "Can't use structured views and formatted views at the same time.");
@@ -1755,13 +1777,14 @@ namespace plume {
             const TextureDescriptor descriptor = { .texture = interfaceBufferFormattedView->texture };
             setDescriptor(descriptorIndex, &descriptor);
         } else {
-            uint32_t offset = 0;
+            uint64_t offset = bufferOffset;
 
             if (bufferStructuredView != nullptr) {
                 assert((bufferFormattedView == nullptr) && "Can't use structured views and formatted views at the same time.");
                 assert(bufferStructuredView->structureByteStride > 0);
 
-                offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
+                offset += bufferStructuredView->firstElement *
+                    bufferStructuredView->structureByteStride;
             }
 
             const BufferDescriptor descriptor = { .buffer = interfaceBuffer->mtl, .offset = offset };
@@ -1811,10 +1834,16 @@ namespace plume {
 
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
         const uint32_t bindingIndex = setLayout->descriptorBindingIndices[descriptorIndex];
-        const auto &setLayoutBinding = setLayout->setBindings[indexBase];
-        const MTL::DataType dtype = mapDataType(setLayoutBinding.descriptorType);
+        const MetalDescriptorSetLayout::DescriptorSetLayoutBinding *setLayoutBinding =
+            setLayout->getBinding(bindingIndex);
+        assert(setLayoutBinding != nullptr);
+        if (setLayoutBinding == nullptr) {
+            return;
+        }
+
+        const MTL::DataType dtype = mapDataType(setLayoutBinding->descriptorType);
         MTL::Resource *nativeResource = nullptr;
-        RenderDescriptorRangeType descriptorType = getDescriptorType(bindingIndex);
+        RenderDescriptorRangeType descriptorType = setLayoutBinding->descriptorType;
 
         if (descriptor != nullptr) {
             const uint32_t argumentIndex = descriptorIndex - indexBase + bindingIndex;
@@ -2194,12 +2223,22 @@ namespace plume {
 
     // MetalQueryPool
 
-    MetalQueryPool::MetalQueryPool(MetalDevice *device, uint32_t queryCount) {
+    MetalQueryPool::MetalQueryPool(MetalDevice *device, uint32_t queryCount,
+                                   RenderQueryType type) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
         MetalAutoreleasePool releasePool;
         this->device = device;
+        this->type = type;
+
+        results.resize(queryCount, 0);
+        if (type == RenderQueryType::OCCLUSION) {
+            visibilityBuffer = device->createBuffer(
+                RenderBufferDesc::ReadbackBuffer(
+                    sizeof(uint64_t) * queryCount));
+            return;
+        }
 
         MTL::CounterSampleBufferDescriptor *sampleBufferDesc = MTL::CounterSampleBufferDescriptor::alloc()->init();
         sampleBufferDesc->setCounterSet(device->timestampCounterSet);
@@ -2208,18 +2247,42 @@ namespace plume {
         sampleBuffer = device->mtl->newCounterSampleBuffer(sampleBufferDesc, nullptr);
         sampleBufferDesc->release();
 
-        results.resize(queryCount, 0);
     }
 
     MetalQueryPool::~MetalQueryPool() {
         MetalAutoreleasePool releasePool;
-        sampleBuffer->release();
+        if (sampleBuffer != nullptr) {
+            sampleBuffer->release();
+        }
     }
 
-    void MetalQueryPool::queryResults() {
+    void MetalQueryPool::queryResults(uint32_t queryCount) {
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool MetalQueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
         MetalAutoreleasePool releasePool;
-        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(0, results.size()));
-        std::memcpy(results.data(), data->mutableBytes(), results.size() * sizeof(uint64_t));
+        if (type == RenderQueryType::OCCLUSION) {
+            if (!visibilityBuffer) { return false; }
+            void *data = visibilityBuffer->map();
+            if (data == nullptr) { return false; }
+            std::memcpy(results.data() + firstQuery, static_cast<const uint64_t *>(data) + firstQuery,
+                        queryCount * sizeof(uint64_t));
+            visibilityBuffer->unmap();
+            return true;
+        }
+
+        if (sampleBuffer == nullptr) { return false; }
+        const NS::Data* data = sampleBuffer->resolveCounterRange(NS::Range(firstQuery, queryCount));
+        if (data == nullptr || data->mutableBytes() == nullptr || data->length() < queryCount * sizeof(uint64_t)) { return false; }
+        std::memcpy(results.data() + firstQuery, data->mutableBytes(), queryCount * sizeof(uint64_t));
+        return true;
     }
 
     const uint64_t *MetalQueryPool::getResults() const {
@@ -2262,6 +2325,7 @@ namespace plume {
 
         MetalAutoreleasePool releasePool;
         startedEncoding = false;
+        visibilityQueryPool = nullptr;
         mtl = queue->mtl->commandBufferWithUnretainedReferences();
         mtl->retain();
         mtl->setLabel(MTLSTR("RT64 Command List"));
@@ -2758,6 +2822,13 @@ namespace plume {
         dirtyGraphicsState.depthBias = 1;
     }
 
+    void MetalCommandList::setBlendFactor(const float *rgba) {
+        for (int i = 0; i < 4; i++) {
+            dynamicBlendColor[i] = rgba[i];
+        }
+        dirtyGraphicsState.blendColor = 1;
+    }
+
     void MetalCommandList::setCommonClearState() const {
         activeRenderEncoder->setViewport({ 0, 0, static_cast<float>(targetFramebuffer->width), static_cast<float>(targetFramebuffer->height), 0.0f, 1.0f });
         activeRenderEncoder->setScissorRect(clampScissorRectIfNecessary({ 0, 0, static_cast<int32_t>(targetFramebuffer->width), static_cast<int32_t>(targetFramebuffer->height) }, targetFramebuffer));
@@ -2988,44 +3059,134 @@ namespace plume {
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
 
-        const MetalTexture *dstTexture = static_cast<const MetalTexture *>(dstLocation.texture);
-        const MetalTexture *srcTexture = static_cast<const MetalTexture *>(srcLocation.texture);
+        const ExtendedRenderTexture *dstTexture =
+            static_cast<const ExtendedRenderTexture *>(dstLocation.texture);
+        const ExtendedRenderTexture *srcTexture =
+            static_cast<const ExtendedRenderTexture *>(srcLocation.texture);
         const MetalBuffer *dstBuffer = static_cast<const MetalBuffer *>(dstLocation.buffer);
         const MetalBuffer *srcBuffer = static_cast<const MetalBuffer *>(srcLocation.buffer);
 
-        if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE && srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
+        if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
+            srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
+            assert((dstTexture->desc.format == srcLocation.placedFootprint.format &&
+                    dstLocation.subresource.planeIndex == 0) ||
+                   (dstLocation.subresource.planeIndex == 0 &&
+                    ((dstTexture->desc.format == RenderFormat::D16_UNORM &&
+                      srcLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (dstTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((dstLocation.subresource.planeIndex == 0 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (dstLocation.subresource.planeIndex == 1 &&
+                      srcLocation.placedFootprint.format == RenderFormat::R8_UINT))));
 
-            // Calculate block size based on destination texture format
-            const uint32_t blockWidth = RenderFormatBlockWidth(dstTexture->desc.format);
-
-            // Use actual dimensions for the copy size
-            const MTL::Size size = { srcLocation.placedFootprint.width, srcLocation.placedFootprint.height, srcLocation.placedFootprint.depth};
-
-            const uint32_t horizontalBlocks = (srcLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth;
-            const uint32_t verticalBlocks = (srcLocation.placedFootprint.height + blockWidth - 1) / blockWidth;
-            const uint32_t bytesPerRow = horizontalBlocks * RenderFormatSize(dstTexture->desc.format);
-            const uint32_t bytesPerImage = bytesPerRow * verticalBlocks;
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    srcLocation.placedFootprint.format,
+                    srcLocation.placedFootprint.width,
+                    srcLocation.placedFootprint.height,
+                    srcLocation.placedFootprint.depth,
+                    srcLocation.placedFootprint.rowWidth, 0,
+                    srcLocation.placedFootprint.offset,
+                    dstLocation.subresource.mipLevel,
+                    dstLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   srcBuffer->desc.size);
+            const MTL::Size size = { copy.width, copy.height, copy.depth };
 
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                dstTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (dstLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
             activeBlitEncoder->copyFromBuffer(
                 srcBuffer->mtl,
-                srcLocation.placedFootprint.offset,
-                bytesPerRow,
-                bytesPerImage,
+                copy.offset,
+                copy.rowPitch,
+                copy.bytesPerImage,
                 size,
-                dstTexture->mtl,
-                dstLocation.subresource.arrayIndex,
-                dstLocation.subresource.mipLevel,
-                dstOrigin
+                dstTexture->getTexture(),
+                copy.arrayIndex,
+                copy.mipLevel,
+                dstOrigin,
+                copyOption
             );
             activeBlitEncoder->popDebugGroup();
-        } else {
+        } else if (dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT &&
+                   srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
+            assert(dstBuffer != nullptr);
+            assert(srcTexture != nullptr);
+            assert((srcTexture->desc.format == dstLocation.placedFootprint.format &&
+                    srcLocation.subresource.planeIndex == 0) ||
+                   (srcLocation.subresource.planeIndex == 0 &&
+                    ((srcTexture->desc.format == RenderFormat::D16_UNORM &&
+                      dstLocation.placedFootprint.format == RenderFormat::R16_UNORM) ||
+                     (srcTexture->desc.format == RenderFormat::D32_FLOAT &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT))) ||
+                   (srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT &&
+                    ((srcLocation.subresource.planeIndex == 0 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R32_FLOAT) ||
+                     (srcLocation.subresource.planeIndex == 1 &&
+                      dstLocation.placedFootprint.format == RenderFormat::R8_UINT))));
+            assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
+
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    dstLocation.placedFootprint.format,
+                    dstLocation.placedFootprint.width,
+                    dstLocation.placedFootprint.height,
+                    dstLocation.placedFootprint.depth,
+                    dstLocation.placedFootprint.rowWidth, 0,
+                    dstLocation.placedFootprint.offset,
+                    srcLocation.subresource.mipLevel,
+                    srcLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   dstBuffer->desc.size);
+
+            MTL::Origin srcOrigin = { 0, 0, 0 };
+            MTL::Size size = { copy.width, copy.height, copy.depth };
+            if (srcBox != nullptr) {
+                srcOrigin = { NS::UInteger(srcBox->left),
+                              NS::UInteger(srcBox->top),
+                              NS::UInteger(srcBox->front) };
+                size = { NS::UInteger(srcBox->right - srcBox->left),
+                         NS::UInteger(srcBox->bottom - srcBox->top),
+                         NS::UInteger(srcBox->back - srcBox->front) };
+            }
+
+            activeBlitEncoder->pushDebugGroup(MTLSTR("CopyTextureRegion"));
+            const MTL::BlitOption copyOption =
+                srcTexture->desc.format == RenderFormat::D32_FLOAT_S8_UINT
+                    ? (srcLocation.subresource.planeIndex == 1
+                           ? MTL::BlitOptionStencilFromDepthStencil
+                           : MTL::BlitOptionDepthFromDepthStencil)
+                    : MTL::BlitOptionNone;
+            activeBlitEncoder->copyFromTexture(
+                srcTexture->getTexture(),
+                copy.arrayIndex,
+                copy.mipLevel,
+                srcOrigin,
+                size,
+                dstBuffer->mtl,
+                copy.offset,
+                copy.rowPitch,
+                copy.bytesPerImage,
+                copyOption
+            );
+            activeBlitEncoder->popDebugGroup();
+        } else if (dstLocation.type == RenderTextureCopyType::SUBRESOURCE &&
+                   srcLocation.type == RenderTextureCopyType::SUBRESOURCE) {
             assert(dstTexture != nullptr);
             assert(srcTexture != nullptr);
+            assert(srcLocation.subresource.planeIndex == 0);
+            assert(dstLocation.subresource.planeIndex == 0);
 
             MTL::Origin srcOrigin;
             MTL::Size size;
@@ -3041,17 +3202,19 @@ namespace plume {
             const MTL::Origin dstOrigin = { dstX, dstY, dstZ };
 
             activeBlitEncoder->copyFromTexture(
-                srcTexture->mtl,                    // source texture
+                srcTexture->getTexture(),           // source texture
                 srcLocation.subresource.arrayIndex, // source slice (baseArrayLayer)
                 srcLocation.subresource.mipLevel,   // source mipmap level
                 srcOrigin,                          // source origin
                 size,                               // copy size
-                dstTexture->mtl,                    // destination texture
+                dstTexture->getTexture(),           // destination texture
                 dstLocation.subresource.arrayIndex, // destination slice (baseArrayLayer)
                 dstLocation.subresource.mipLevel,   // destination mipmap level
                 dstOrigin                           // destination origin
             );
-          }
+        } else {
+            assert(false && "Unsupported Metal texture copy location pair.");
+        }
     }
 
     void MetalCommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
@@ -3080,10 +3243,12 @@ namespace plume {
         checkActiveBlitEncoder();
         activeType = EncoderType::Blit;
 
-        const MetalTexture *dst = static_cast<const MetalTexture *>(dstTexture);
-        const MetalTexture *src = static_cast<const MetalTexture *>(srcTexture);
+        // Swap chain drawables are ExtendedRenderTextures too; resolve through
+        // the virtual accessor so a whole-texture copy into a drawable works.
+        const ExtendedRenderTexture *dst = static_cast<const ExtendedRenderTexture *>(dstTexture);
+        const ExtendedRenderTexture *src = static_cast<const ExtendedRenderTexture *>(srcTexture);
 
-        activeBlitEncoder->copyFromTexture(src->mtl, dst->mtl);
+        activeBlitEncoder->copyFromTexture(src->getTexture(), dst->getTexture());
     }
 
     void MetalCommandList::resolveTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
@@ -3204,6 +3369,7 @@ namespace plume {
 
         MetalAutoreleasePool releasePool;
         const MetalQueryPool *interfaceQueryPool = static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::TIMESTAMP);
 
         MTL::ComputeCommandEncoder *computeEncoder = activeComputeEncoder != nullptr ? activeComputeEncoder : activeResolveComputeEncoder;
         if (computeEncoder != nullptr && device->mtl->supportsCounterSampling(MTL::CounterSamplingPointAtDispatchBoundary)) {
@@ -3240,6 +3406,35 @@ namespace plume {
             encoder->fillBuffer(nullBuffer->mtl, NS::Range(0, 1), 0);
             encoder->endEncoding();
         }
+    }
+
+    void MetalCommandList::beginQuery(const RenderQueryPool *queryPool,
+                                      uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const MetalQueryPool *interfaceQueryPool =
+            static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+
+        if (visibilityQueryPool != interfaceQueryPool) {
+            endActiveRenderEncoder();
+            visibilityQueryPool = interfaceQueryPool;
+        }
+
+        checkActiveRenderEncoder();
+        activeRenderEncoder->setVisibilityResultMode(
+            MTL::VisibilityResultModeCounting,
+            queryIndex * sizeof(uint64_t));
+    }
+
+    void MetalCommandList::endQuery(const RenderQueryPool *queryPool,
+                                    uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const MetalQueryPool *interfaceQueryPool =
+            static_cast<const MetalQueryPool *>(queryPool);
+        assert(interfaceQueryPool == visibilityQueryPool);
+        checkActiveRenderEncoder();
+        activeRenderEncoder->setVisibilityResultMode(
+            MTL::VisibilityResultModeDisabled, 0);
     }
 
     void MetalCommandList::endOtherEncoders(EncoderType type) {
@@ -3374,6 +3569,14 @@ namespace plume {
                 renderDescriptor->setSamplePositions(targetFramebuffer->samplePositions, targetFramebuffer->sampleCount);
             }
 
+            if (visibilityQueryPool != nullptr) {
+                const MetalBuffer *visibilityBuffer =
+                    static_cast<const MetalBuffer *>(
+                        visibilityQueryPool->visibilityBuffer.get());
+                renderDescriptor->setVisibilityResultBuffer(
+                    visibilityBuffer->mtl);
+            }
+
             activeRenderEncoder = mtl->renderCommandEncoder(renderDescriptor);
             activeRenderEncoder->setLabel(MTLSTR("Graphics Render Encoder"));
 
@@ -3461,6 +3664,11 @@ namespace plume {
                 stateCache.lastDepthBiasClamp = newClamp;
             }
             dirtyGraphicsState.depthBias = 0;
+        }
+
+        if (dirtyGraphicsState.blendColor) {
+            activeRenderEncoder->setBlendColor(dynamicBlendColor[0], dynamicBlendColor[1], dynamicBlendColor[2], dynamicBlendColor[3]);
+            dirtyGraphicsState.blendColor = 0;
         }
 
         // Viewports
@@ -3716,8 +3924,16 @@ namespace plume {
         interfaceCommandList->mtl->enqueue();
 
         if (signalFence != nullptr) {
+            MetalCommandFence *metalFence =
+                static_cast<MetalCommandFence *>(signalFence);
+            metalFence->failed.store(false, std::memory_order_release);
             interfaceCommandList->mtl->addCompletedHandler([signalFence](MTL::CommandBuffer* cmdBuffer) {
-                dispatch_semaphore_signal(static_cast<MetalCommandFence *>(signalFence)->semaphore);
+                MetalCommandFence *metalFence =
+                    static_cast<MetalCommandFence *>(signalFence);
+                metalFence->failed.store(
+                    cmdBuffer->status() == MTL::CommandBufferStatusError,
+                    std::memory_order_release);
+                dispatch_semaphore_signal(metalFence->semaphore);
             });
         }
 
@@ -3730,10 +3946,42 @@ namespace plume {
         mutableCommandList->commit();
     }
 
+    void MetalCommandQueue::waitForIdle() {
+        MetalAutoreleasePool releasePool;
+        MTL::CommandBuffer *buffer = mtl->commandBuffer();
+        if (buffer == nullptr) {
+            fprintf(stderr, "Metal idle command buffer creation failed.\n");
+            std::abort();
+        }
+        buffer->commit();
+        buffer->waitUntilCompleted();
+        if (buffer->status() == MTL::CommandBufferStatusError) {
+            fprintf(stderr, "Metal idle command buffer completed with an error.\n");
+            std::abort();
+        }
+    }
+
     void MetalCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         MetalAutoreleasePool releasePool;
         const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);
         dispatch_semaphore_wait(metalFence->semaphore, DISPATCH_TIME_FOREVER);
+        if (metalFence->failed.load(std::memory_order_acquire)) {
+            fprintf(stderr, "Metal command buffer completed with an error.\n");
+            std::abort();
+        }
+    }
+
+    bool MetalCommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        MetalAutoreleasePool releasePool;
+        const MetalCommandFence *metalFence = static_cast<MetalCommandFence *>(fence);
+        if (dispatch_semaphore_wait(
+                metalFence->semaphore, DISPATCH_TIME_NOW) != 0)
+            return false;
+        if (metalFence->failed.load(std::memory_order_acquire)) {
+            fprintf(stderr, "Metal command buffer completed with an error.\n");
+            std::abort();
+        }
+        return true;
     }
 
     // MetalPipelineLayout
@@ -3860,6 +4108,12 @@ namespace plume {
 
     MetalDevice::~MetalDevice() {
         MetalAutoreleasePool releasePool;
+
+        // MetalBuffer unregisters itself through resourcesMutex. Destroy the
+        // device-owned placeholder while the residency state and mutex are
+        // still alive instead of relying on reverse member destruction order.
+        nullBuffer.reset();
+
         if (timestampCounterSet != nullptr) {
             timestampCounterSet->release();
         }
@@ -3887,7 +4141,13 @@ namespace plume {
     }
 
     std::unique_ptr<RenderShader> MetalDevice::createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) {
-        return std::make_unique<MetalShader>(this, data, size, entryPointName, format);
+        auto shader = std::make_unique<MetalShader>(this, data, size, entryPointName, format);
+        // A failed library compile leaves no function to bind; report it as a
+        // missing shader instead of handing back an object that crashes later.
+        if (shader->library == nullptr) {
+            return nullptr;
+        }
+        return shader;
     }
 
     std::unique_ptr<RenderSampler> MetalDevice::createSampler(const RenderSamplerDesc &desc) {
@@ -3895,11 +4155,22 @@ namespace plume {
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
-        return std::make_unique<MetalComputePipeline>(this, desc);
+        std::unique_ptr<MetalComputePipeline> pipeline =
+            std::make_unique<MetalComputePipeline>(this, desc);
+        if (pipeline->state.pipelineState == nullptr) {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
-        return std::make_unique<MetalGraphicsPipeline>(this, desc);
+        auto pipeline = std::make_unique<MetalGraphicsPipeline>(this, desc);
+        // newRenderPipelineState failures are already logged; a null state
+        // must surface as a null pipeline so callers can skip the draw.
+        if (pipeline->state.renderPipelineState == nullptr) {
+            return nullptr;
+        }
+        return pipeline;
     }
 
     std::unique_ptr<RenderPipeline> MetalDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
@@ -3943,8 +4214,9 @@ namespace plume {
         return std::make_unique<MetalFramebuffer>(this, desc);
     }
 
-    std::unique_ptr<RenderQueryPool> MetalDevice::createQueryPool(uint32_t queryCount) {
-        return std::make_unique<MetalQueryPool>(this, queryCount);
+    std::unique_ptr<RenderQueryPool> MetalDevice::createQueryPool(
+        uint32_t queryCount, RenderQueryType type) {
+        return std::make_unique<MetalQueryPool>(this, queryCount, type);
     }
 
     void MetalDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
@@ -4192,7 +4464,7 @@ namespace plume {
 
     MetalInterface::MetalInterface() {
         MetalAutoreleasePool releasePool;
-        capabilities.shaderFormat = RenderShaderFormat::METAL;
+        capabilities.shaderFormat = RenderShaderFormat::METAL_SOURCE;
 
         // Fill device names.
         const NS::Array* devices = MTL::CopyAllDevices();

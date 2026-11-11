@@ -9,6 +9,7 @@
 
 #include "plume_render_interface.h"
 
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -42,6 +43,10 @@
 #endif
 
 namespace plume {
+    // Commands recorded since the host last took them: render passes begun,
+    // pipeline barriers, copies, draws.
+    extern std::atomic<uint32_t> vulkanCommandCounts[4];
+
     struct VulkanCommandQueue;
     struct VulkanDevice;
     struct VulkanInterface;
@@ -213,9 +218,13 @@ namespace plume {
 
         VulkanDescriptorSet(VulkanDevice *device, const RenderDescriptorSetDesc &desc);
         ~VulkanDescriptorSet() override;
-        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) override;
+        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) override;
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
+        void setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) override;
+        void setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) override;
+        VkWriteDescriptorSet descriptorWrite(uint32_t descriptorIndex) const;
+        void setImageDescriptors(uint32_t first, uint32_t count, const VkDescriptorImageInfo *images);
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
         void setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext);
         static VkDescriptorPool createDescriptorPool(VulkanDevice *device, const std::unordered_map<VkDescriptorType, uint32_t> &typeCounts, bool lastRangeIsBoundless);
@@ -285,10 +294,13 @@ namespace plume {
         VulkanDevice *device = nullptr;
         std::vector<uint64_t> results;
         VkQueryPool vk = VK_NULL_HANDLE;
+        RenderQueryType type = RenderQueryType::TIMESTAMP;
 
-        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount);
+        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount,
+                        RenderQueryType type);
         virtual ~VulkanQueryPool() override;
-        virtual void queryResults() override;
+        virtual void queryResults(uint32_t queryCount) override;
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -329,6 +341,7 @@ namespace plume {
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+        void setBlendFactor(const float *rgba) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
@@ -342,6 +355,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void checkActiveRenderPass();
         void endActiveRenderPass();
         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
@@ -377,6 +392,8 @@ namespace plume {
         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
+        bool pollCommandFence(RenderCommandFence *fence) override;
+        void waitForIdle() override;
     };
 
     struct VulkanPool : RenderPool {
@@ -403,6 +420,12 @@ namespace plume {
     };
 
     struct VulkanDevice : RenderDevice {
+        // Installed before the device is published to rendering workers.
+        void (*deviceLostCallback)(const char *operation, int32_t result) = nullptr;
+        void reportDeviceLost(VkResult result, const char *operation) const {
+            if (result == VK_ERROR_DEVICE_LOST && deviceLostCallback)
+                deviceLostCallback(operation, static_cast<int32_t>(result));
+        }
         VkDevice vk = VK_NULL_HANDLE;
         VulkanInterface *renderInterface = nullptr;
         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -417,6 +440,11 @@ namespace plume {
         std::unique_ptr<RenderBuffer> nullBuffer;
         bool loadStoreOpNoneSupported = false;
         bool nullDescriptorSupported = false;
+        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
+        bool pipelineCreationFeedbackSupported = false;
+        bool fullScreenExclusiveSupported = false;
+        std::atomic<uint32_t> pipelineCacheHits{0};
+        std::atomic<uint32_t> pipelineCacheMisses{0};
 
         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
         ~VulkanDevice() override;
@@ -435,7 +463,8 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
-        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount, RenderQueryType type) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;
@@ -446,6 +475,9 @@ namespace plume {
         bool isValid() const;
         bool beginCapture() override;
         bool endCapture() override;
+        bool setPipelineCacheData(const void *data, uint64_t size) override;
+        std::vector<uint8_t> getPipelineCacheData() override;
+        RenderPipelineCacheStats getPipelineCacheStats() const override;
     };
 
     struct VulkanInterface : RenderInterface {
@@ -453,6 +485,7 @@ namespace plume {
         VkApplicationInfo appInfo = {};
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
+        bool surfaceCapabilities2Supported = false;
 
 #   if PLUME_SDL_VULKAN_ENABLED
         VulkanInterface(RenderWindow sdlWindow);

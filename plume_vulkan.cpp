@@ -9,10 +9,12 @@
 #define VOLK_IMPLEMENTATION 
 
 #include "plume_vulkan.h"
+#include "plume_copy_layout.h"
 
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <cstdlib>
 #include <unordered_map>
 
 #if DLSS_ENABLED
@@ -28,6 +30,8 @@
 // - Fix resource pools.
 
 namespace plume {
+    std::atomic<uint32_t> vulkanCommandCounts[4];
+
     // Backend constants.
 
     // Required buffer alignment for acceleration structures.
@@ -62,6 +66,10 @@ namespace plume {
     };
 
     static const std::unordered_set<std::string> OptionalInstanceExtensions = {
+#   if defined(_WIN64)
+        // Needed by VK_EXT_full_screen_exclusive.
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+#   endif
 #   if defined(__APPLE__)
         // Tells the system Vulkan loader to enumerate portability drivers, if supported.
         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
@@ -73,6 +81,11 @@ namespace plume {
     };
     
     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+        VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME,
+        VK_KHR_16BIT_STORAGE_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME,
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
         VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
@@ -87,6 +100,11 @@ namespace plume {
         VK_KHR_PRESENT_ID_EXTENSION_NAME,
         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME,
+#   if defined(_WIN64)
+        // Lets swap chains refuse exclusive fullscreen (see VulkanSwapChain::resize).
+        VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
+#   endif
         // Vulkan spec requires this to be enabled if supported by the driver.
         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
     };
@@ -636,6 +654,24 @@ namespace plume {
         return flags;
     }
 
+    // MEMORY_READ/WRITE already cover every access, but some mobile drivers
+    // only flush or invalidate for the specific bits (Adreno sampled garbage
+    // tiles from just-rendered targets), so name each access the stages allow.
+    static VkAccessFlags toAccessFlags(VkPipelineStageFlags stages) {
+        VkAccessFlags access = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT) access |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        if (stages & VK_PIPELINE_STAGE_VERTEX_INPUT_BIT) access |= VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+        if (stages & (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
+            access |= VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) access |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+        if (stages & (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT))
+            access |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) access |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_TRANSFER_BIT) access |= VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (stages & VK_PIPELINE_STAGE_HOST_BIT) access |= VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        return access;
+    }
+
     static VkShaderStageFlagBits toStage(RenderRaytracingPipelineLibrarySymbolType type) {
         switch (type) {
         case RenderRaytracingPipelineLibrarySymbolType::RAYGEN:
@@ -731,6 +767,36 @@ namespace plume {
             aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
         }
         return aspect;
+    }
+
+    static VkImageAspectFlags toCopyAspectFlags(const RenderFormat format,
+                                                const RenderTextureFlags flags,
+                                                const uint32_t planeIndex) {
+        if ((flags & RenderTextureFlag::DEPTH_TARGET) == 0) {
+            assert(planeIndex == 0);
+            return VK_IMAGE_ASPECT_COLOR_BIT;
+        }
+        if (planeIndex == 0)
+            return VK_IMAGE_ASPECT_DEPTH_BIT;
+        assert(planeIndex == 1 && RenderFormatIsStencil(format));
+        return VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+
+    static bool copyFootprintCompatible(const RenderFormat textureFormat,
+                                        const RenderFormat footprintFormat,
+                                        const uint32_t planeIndex) {
+        if (textureFormat == footprintFormat && planeIndex == 0)
+            return true;
+        if (planeIndex == 0 &&
+            ((textureFormat == RenderFormat::D16_UNORM &&
+              footprintFormat == RenderFormat::R16_UNORM) ||
+             (textureFormat == RenderFormat::D32_FLOAT &&
+              footprintFormat == RenderFormat::R32_FLOAT)))
+            return true;
+        if (textureFormat != RenderFormat::D32_FLOAT_S8_UINT)
+            return false;
+        return (planeIndex == 0 && footprintFormat == RenderFormat::R32_FLOAT) ||
+               (planeIndex == 1 && footprintFormat == RenderFormat::R8_UINT);
     }
 
     static VkComponentSwizzle toVk(RenderSwizzle swizzle) {
@@ -1094,6 +1160,12 @@ namespace plume {
         viewInfo.components.b = toVk(desc.componentMapping.b);
         viewInfo.components.a = toVk(desc.componentMapping.a);
         viewInfo.subresourceRange.aspectMask = toViewAspectFlags(texture->desc.flags);
+        if (desc.planeSlice == 1) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        } else if ((texture->desc.flags & RenderTextureFlag::DEPTH_TARGET)
+            && (desc.format == RenderFormat::R32_FLOAT || desc.format == RenderFormat::D32_FLOAT)) {
+            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
         viewInfo.subresourceRange.baseMipLevel = desc.mipSlice;
         viewInfo.subresourceRange.levelCount = mipLevels;
         viewInfo.subresourceRange.baseArrayLayer = desc.arrayIndex;
@@ -1497,15 +1569,10 @@ namespace plume {
             inputAssembly.primitiveRestartEnable = VK_TRUE;
         }
 
-        uint32_t renderTargetCount = desc.renderTargetCount;
-        if (renderTargetCount == 0 && desc.depthTargetFormat != RenderFormat::UNKNOWN) {
-            renderTargetCount = 1;
-        }
-
         VkPipelineViewportStateCreateInfo viewportState = {};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = renderTargetCount;
-        viewportState.scissorCount = renderTargetCount;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rasterization = {};
         rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -1612,6 +1679,9 @@ namespace plume {
         dynamicStates.clear();
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
+        // Every graphics pipeline takes its blend constants from setBlendFactor;
+        // begin() sets the D3D default (1,1,1,1) so draws never see them unset.
+        dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
 
         if (desc.dynamicDepthBiasEnabled) {
             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
@@ -1649,10 +1719,34 @@ namespace plume {
         pipelineInfo.layout = pipelineLayout->vk;
         pipelineInfo.renderPass = renderPass;
 
-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
+        // With the host's cache attached, ask the driver whether it was served from it.
+        const bool cached = device->pipelineCache != VK_NULL_HANDLE;
+        const bool tracked = cached && device->pipelineCreationFeedbackSupported;
+        VkPipelineCreationFeedback feedback = {};
+        std::vector<VkPipelineCreationFeedback> stageFeedback(stages.size());
+        VkPipelineCreationFeedbackCreateInfoEXT feedbackInfo = {};
+        if (tracked) {
+            feedbackInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO_EXT;
+            feedbackInfo.pPipelineCreationFeedback = &feedback;
+            feedbackInfo.pipelineStageCreationFeedbackCount = uint32_t(stageFeedback.size());
+            feedbackInfo.pPipelineStageCreationFeedbacks = stageFeedback.data();
+            pipelineInfo.pNext = &feedbackInfo;
+        }
+
+        VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
             return;
+        }
+
+        if (cached) {
+            const VkPipelineCreationFeedbackFlags hit = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT | VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+            if (tracked && (feedback.flags & hit) == hit) {
+                device->pipelineCacheHits.fetch_add(1, std::memory_order_relaxed);
+            }
+            else {
+                device->pipelineCacheMisses.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -1944,7 +2038,7 @@ namespace plume {
         delete setLayout;
     }
     
-    void VulkanDescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) {
+    void VulkanDescriptorSet::setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) {
         if (buffer == nullptr) {
             return;
         }
@@ -1953,7 +2047,11 @@ namespace plume {
         const VkBufferView *bufferView = nullptr;
         VkDescriptorBufferInfo bufferInfo = {};
         bufferInfo.buffer = interfaceBuffer->vk;
-        bufferInfo.range = (bufferSize > 0) ? bufferSize : interfaceBuffer->desc.size;
+        assert(bufferOffset <= interfaceBuffer->desc.size);
+        assert((bufferSize == 0) ||
+               (bufferSize <= interfaceBuffer->desc.size - bufferOffset));
+        bufferInfo.range = (bufferSize > 0)
+            ? bufferSize : interfaceBuffer->desc.size - bufferOffset;
 
         if (bufferFormattedView != nullptr) {
             assert((bufferStructuredView == nullptr) && "Can't use structured views and formatted views at the same time.");
@@ -1965,10 +2063,12 @@ namespace plume {
             assert((bufferFormattedView == nullptr) && "Can't use structured views and formatted views at the same time.");
             assert(bufferStructuredView->structureByteStride > 0);
 
-            bufferInfo.offset = bufferStructuredView->firstElement * bufferStructuredView->structureByteStride;
+            bufferInfo.offset = bufferOffset +
+                bufferStructuredView->firstElement *
+                    bufferStructuredView->structureByteStride;
         }
         else {
-            bufferInfo.offset = 0;
+            bufferInfo.offset = bufferOffset;
         }
 
         setDescriptor(descriptorIndex, &bufferInfo, nullptr, bufferView, nullptr);
@@ -2018,7 +2118,46 @@ namespace plume {
         setDescriptor(descriptorIndex, nullptr, nullptr, nullptr, &setAccelerationStructure);
     }
 
-    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+    void VulkanDescriptorSet::setTextures(uint32_t first, uint32_t count, const RenderTexture *const *textures, RenderTextureLayout layout, const RenderTextureView *const *views) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *texture = static_cast<const VulkanTexture *>(textures[base + i]);
+                if (!texture) continue;
+                const auto *view = views ? static_cast<const VulkanTextureView *>(views[base + i]) : nullptr;
+                images[i].imageLayout = toImageLayout(layout);
+                images[i].imageView = view ? view->vk : texture->imageView;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setSamplers(uint32_t first, uint32_t count, const RenderSampler *const *samplers) {
+        for (uint32_t base = 0; base < count; base += 4) {
+            VkDescriptorImageInfo images[4] = {};
+            const uint32_t n = std::min(4u, count - base);
+            for (uint32_t i = 0; i < n; ++i) {
+                const auto *sampler = static_cast<const VulkanSampler *>(samplers[base + i]);
+                if (sampler) images[i].sampler = sampler->vk;
+            }
+            setImageDescriptors(first + base, n, images);
+        }
+    }
+
+    void VulkanDescriptorSet::setImageDescriptors(uint32_t first, uint32_t count, const VkDescriptorImageInfo *images) {
+        assert(count <= 4);
+        VkWriteDescriptorSet writes[4] = {};
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!images[i].imageView && !images[i].sampler) continue;
+            writes[n] = descriptorWrite(first + i);
+            writes[n++].pImageInfo = &images[i];
+        }
+        if (n) vkUpdateDescriptorSets(device->vk, n, writes, 0, nullptr);
+    }
+
+    VkWriteDescriptorSet VulkanDescriptorSet::descriptorWrite(uint32_t descriptorIndex) const {
         assert(descriptorIndex < setLayout->descriptorBindingIndices.size());
 
         const uint32_t indexBase = setLayout->descriptorIndexBases[descriptorIndex];
@@ -2026,12 +2165,17 @@ namespace plume {
         const VkDescriptorSetLayoutBinding &setLayoutBinding = setLayout->setBindings[bindingIndex];
         VkWriteDescriptorSet writeDescriptor = {};
         writeDescriptor.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptor.pNext = pNext;
         writeDescriptor.dstSet = vk;
         writeDescriptor.dstBinding = setLayoutBinding.binding;
         writeDescriptor.dstArrayElement = descriptorIndex - indexBase;
         writeDescriptor.descriptorCount = 1;
         writeDescriptor.descriptorType = setLayoutBinding.descriptorType;
+        return writeDescriptor;
+    }
+
+    void VulkanDescriptorSet::setDescriptor(uint32_t descriptorIndex, const VkDescriptorBufferInfo *bufferInfo, const VkDescriptorImageInfo *imageInfo, const VkBufferView *texelBufferView, void *pNext) {
+        VkWriteDescriptorSet writeDescriptor = descriptorWrite(descriptorIndex);
+        writeDescriptor.pNext = pNext;
         writeDescriptor.pBufferInfo = bufferInfo;
         writeDescriptor.pImageInfo = imageInfo;
         writeDescriptor.pTexelBufferView = texelBufferView;
@@ -2204,6 +2348,15 @@ namespace plume {
             }
         }
 
+        // Android surfaces offer RGBA but no BGRA: take RGBA and record it, so
+        // copies of BGRA images into the swap chain blit (see blitsChannels).
+        for (uint32_t i = 0; compatibleSurfaceFormats.empty() && (i < surfaceFormatCount); i++) {
+            if ((requestedFormat == VK_FORMAT_B8G8R8A8_UNORM) && (surfaceFormats[i].format == VK_FORMAT_R8G8B8A8_UNORM)) {
+                compatibleSurfaceFormats.emplace_back(surfaceFormats[i]);
+                this->desc.format = RenderFormat::R8G8B8A8_UNORM;
+            }
+        }
+
         if (compatibleSurfaceFormats.empty()) {
             fprintf(stderr, "No compatible surface formats were found.\n");
             return;
@@ -2294,6 +2447,7 @@ namespace plume {
 #else
         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
 #endif
+            commandQueue->device->reportDeviceLost(res, "vkQueuePresentKHR");
             return false;
         }
 
@@ -2345,6 +2499,16 @@ namespace plume {
         createInfo.presentMode = requiredPresentMode;
         createInfo.clipped = VK_TRUE;
         createInfo.oldSwapchain = vk;
+
+        // A borderless window covering the monitor must stay composited: drivers
+        // that present natively (NVIDIA "Prefer native") otherwise take it into
+        // exclusive fullscreen, which also switches an HDR display's mode.
+#   if defined(_WIN64)
+        VkSurfaceFullScreenExclusiveInfoEXT fullScreenInfo = {};
+        fullScreenInfo.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
+        fullScreenInfo.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT;
+        createInfo.pNext = commandQueue->device->fullScreenExclusiveSupported ? &fullScreenInfo : nullptr;
+#   endif
 
         VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
         if (res != VK_SUCCESS) {
@@ -2488,6 +2652,7 @@ namespace plume {
         VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphore);
         VkResult res = vkAcquireNextImageKHR(commandQueue->device->vk, vk, UINT64_MAX, interfaceSemaphore->vk, VK_NULL_HANDLE, textureIndex);
         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
+            commandQueue->device->reportDeviceLost(res, "vkAcquireNextImageKHR");
             return false;
         }
 
@@ -2679,15 +2844,19 @@ namespace plume {
 
     // VulkanQueryPool
 
-    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount) {
+    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount,
+                                     RenderQueryType type) {
         assert(device != nullptr);
         assert(queryCount > 0);
 
         this->device = device;
+        this->type = type;
 
         VkQueryPoolCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-        createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        createInfo.queryType = type == RenderQueryType::OCCLUSION
+            ? VK_QUERY_TYPE_OCCLUSION
+            : VK_QUERY_TYPE_TIMESTAMP;
         createInfo.queryCount = queryCount;
         
         VkResult res = vkCreateQueryPool(device->vk, &createInfo, nullptr, &vk);
@@ -2703,11 +2872,27 @@ namespace plume {
         vkDestroyQueryPool(device->vk, vk, nullptr);
     }
 
-    void VulkanQueryPool::queryResults() {
-	    VkResult res = vkGetQueryPoolResults(device->vk, vk, 0, uint32_t(results.size()), sizeof(uint64_t) * results.size(), results.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+    void VulkanQueryPool::queryResults(uint32_t queryCount) {
+        const uint32_t resultCount = queryCount == 0
+            ? uint32_t(results.size())
+            : std::min(queryCount, uint32_t(results.size()));
+        queryResultsRange(0, resultCount);
+    }
+
+    bool VulkanQueryPool::queryResultsRange(uint32_t firstQuery, uint32_t queryCount) {
+        if (queryCount == 0 || firstQuery >= results.size() || queryCount > results.size() - firstQuery) {
+            return false;
+        }
+        VkResult res = vkGetQueryPoolResults(device->vk, vk, firstQuery, queryCount, sizeof(uint64_t) * queryCount, results.data() + firstQuery, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
         if (res != VK_SUCCESS) {
-            fprintf(stderr, "vkGetQueryPoolResults failed with error code 0x%X.\n", res);
-            return;
+            if (res != VK_NOT_READY) {
+                fprintf(stderr, "vkGetQueryPoolResults failed with error code 0x%X.\n", res);
+            }
+            return false;
+        }
+
+        if (type != RenderQueryType::TIMESTAMP) {
+            return true;
         }
 
         // Conversion sourced from Godot Engine's Vulkan Rendering Driver.
@@ -2735,12 +2920,13 @@ namespace plume {
         constexpr uint64_t shift_bits = 16;
         double timestampPeriod = double(device->physicalDeviceProperties.limits.timestampPeriod);
         uint64_t h = 0, l = 0;
-        for (uint64_t &result : results) {
-            mult64to128(result, uint64_t(timestampPeriod * double(1 << shift_bits)), h, l);
-            result = l;
-            result >>= shift_bits;
-            result |= h << (64 - shift_bits);
+        for (uint32_t i = firstQuery; i < firstQuery + queryCount; ++i) {
+            mult64to128(results[i], uint64_t(timestampPeriod * double(1 << shift_bits)), h, l);
+            results[i] = l;
+            results[i] >>= shift_bits;
+            results[i] |= h << (64 - shift_bits);
         }
+        return true;
     }
 
     const uint64_t *VulkanQueryPool::getResults() const {
@@ -2804,6 +2990,9 @@ namespace plume {
             fprintf(stderr, "vkBeginCommandBuffer failed with error code 0x%X.\n", res);
             return;
         }
+
+        const float defaultBlendFactor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        vkCmdSetBlendConstants(vk, defaultBlendFactor);
     }
 
     void VulkanCommandList::end() {
@@ -2845,8 +3034,8 @@ namespace plume {
             VulkanBuffer *interfaceBuffer = static_cast<VulkanBuffer *>(bufferBarrier.buffer);
             VkBufferMemoryBarrier bufferMemoryBarrier = {};
             bufferMemoryBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-            bufferMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
-            bufferMemoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
+            bufferMemoryBarrier.srcAccessMask = toAccessFlags(toStageFlags(interfaceBuffer->barrierStages, geometryEnabled, rtEnabled));
+            bufferMemoryBarrier.dstAccessMask = toAccessFlags(dstStageMask);
             bufferMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             bufferMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             bufferMemoryBarrier.buffer = interfaceBuffer->vk;
@@ -2863,8 +3052,8 @@ namespace plume {
             VkImageMemoryBarrier imageMemoryBarrier = {};
             imageMemoryBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             imageMemoryBarrier.image = interfaceTexture->vk;
-            imageMemoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
-            imageMemoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT; // TODO
+            imageMemoryBarrier.srcAccessMask = toAccessFlags(toStageFlags(interfaceTexture->barrierStages, geometryEnabled, rtEnabled));
+            imageMemoryBarrier.dstAccessMask = toAccessFlags(dstStageMask);
             imageMemoryBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             imageMemoryBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             imageMemoryBarrier.oldLayout = toImageLayout(interfaceTexture->textureLayout);
@@ -2882,6 +3071,7 @@ namespace plume {
             return;
         }
 
+        vulkanCommandCounts[1].fetch_add(1, std::memory_order_relaxed);
         vkCmdPipelineBarrier(vk, srcStageMask, dstStageMask, 0, 0, nullptr, uint32_t(bufferMemoryBarriers.size()), bufferMemoryBarriers.data(), uint32_t(imageMemoryBarriers.size()), imageMemoryBarriers.data());
     }
 
@@ -2929,6 +3119,7 @@ namespace plume {
         assert(activeGraphicsPipelineLayout != nullptr);
         checkActiveRenderPass();
 
+        vulkanCommandCounts[3].fetch_add(1, std::memory_order_relaxed);
         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
     }
     
@@ -2936,6 +3127,7 @@ namespace plume {
         assert(activeGraphicsPipelineLayout != nullptr);
         checkActiveRenderPass();
 
+        vulkanCommandCounts[3].fetch_add(1, std::memory_order_relaxed);
         vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
     }
 
@@ -3112,6 +3304,10 @@ namespace plume {
         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
     }
 
+    void VulkanCommandList::setBlendFactor(const float *rgba) {
+        vkCmdSetBlendConstants(vk, rgba);
+    }
+
     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
         rectVector.clear();
 
@@ -3184,6 +3380,7 @@ namespace plume {
     }
 
     void VulkanCommandList::copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstBuffer.ref != nullptr);
@@ -3198,7 +3395,15 @@ namespace plume {
         vkCmdCopyBuffer(vk, interfaceSrcBuffer->vk, interfaceDstBuffer->vk, 1, &bufferCopy);
     }
 
+    // BGRA and RGBA 8-bit differ only in channel order: a blit converts between
+    // them (a BGRA scene into an RGBA swap chain), a raw copy would swap red and blue.
+    static bool blitsChannels(RenderFormat a, RenderFormat b) {
+        auto rgba8 = [](RenderFormat f) { return (f == RenderFormat::B8G8R8A8_UNORM) || (f == RenderFormat::R8G8B8A8_UNORM); };
+        return (a != b) && rgba8(a) && rgba8(b);
+    }
+
     void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
         
         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
@@ -3208,34 +3413,107 @@ namespace plume {
         const VulkanTexture *srcTexture = static_cast<const VulkanTexture *>(srcLocation.texture);
         const VulkanBuffer *dstBuffer = static_cast<const VulkanBuffer *>(dstLocation.buffer);
         const VulkanBuffer *srcBuffer = static_cast<const VulkanBuffer *>(srcLocation.buffer);
-        if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) && (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
+        if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) &&
+            (srcLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT)) {
             assert(dstTexture != nullptr);
             assert(srcBuffer != nullptr);
+            assert(copyFootprintCompatible(
+                dstTexture->desc.format, srcLocation.placedFootprint.format,
+                dstLocation.subresource.planeIndex));
 
-            const uint32_t blockWidth = RenderFormatBlockWidth(dstTexture->desc.format);
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    srcLocation.placedFootprint.format,
+                    srcLocation.placedFootprint.width,
+                    srcLocation.placedFootprint.height,
+                    srcLocation.placedFootprint.depth,
+                    srcLocation.placedFootprint.rowWidth, 0,
+                    srcLocation.placedFootprint.offset,
+                    dstLocation.subresource.mipLevel,
+                    dstLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   srcBuffer->desc.size);
             VkBufferImageCopy imageCopy = {};
-            imageCopy.bufferOffset = srcLocation.placedFootprint.offset;
-            imageCopy.bufferRowLength = ((srcLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
-            imageCopy.bufferImageHeight = ((srcLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
-            imageCopy.imageSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
-            imageCopy.imageSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
+            imageCopy.bufferOffset = copy.offset;
+            imageCopy.bufferRowLength = copy.rowWidth;
+            imageCopy.bufferImageHeight = copy.bufferImageHeight;
+            imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
+                dstTexture->desc.format, dstTexture->desc.flags,
+                dstLocation.subresource.planeIndex);
+            imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
             imageCopy.imageSubresource.layerCount = 1;
-            imageCopy.imageSubresource.mipLevel = dstLocation.subresource.mipLevel;
+            imageCopy.imageSubresource.mipLevel = copy.mipLevel;
             imageCopy.imageOffset.x = dstX;
             imageCopy.imageOffset.y = dstY;
             imageCopy.imageOffset.z = dstZ;
-            imageCopy.imageExtent.width = srcLocation.placedFootprint.width;
-            imageCopy.imageExtent.height = srcLocation.placedFootprint.height;
-            imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+            imageCopy.imageExtent.width = copy.width;
+            imageCopy.imageExtent.height = copy.height;
+            imageCopy.imageExtent.depth = copy.depth;
             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
         }
-        else {
+        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) &&
+                 (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
+            assert(dstBuffer != nullptr);
+            assert(srcTexture != nullptr);
+            assert(copyFootprintCompatible(
+                srcTexture->desc.format, dstLocation.placedFootprint.format,
+                srcLocation.subresource.planeIndex));
+            assert((dstX == 0) && (dstY == 0) && (dstZ == 0));
+
+            const NormalizedTextureToBufferCopy copy =
+                NormalizeTextureToBufferCopy(
+                    dstLocation.placedFootprint.format,
+                    dstLocation.placedFootprint.width,
+                    dstLocation.placedFootprint.height,
+                    dstLocation.placedFootprint.depth,
+                    dstLocation.placedFootprint.rowWidth, 0,
+                    dstLocation.placedFootprint.offset,
+                    srcLocation.subresource.mipLevel,
+                    srcLocation.subresource.arrayIndex);
+            assert(copy.offset + copy.bytesPerImage * copy.depth <=
+                   dstBuffer->desc.size);
+
+            VkBufferImageCopy imageCopy = {};
+            imageCopy.bufferOffset = copy.offset;
+            imageCopy.bufferRowLength = copy.rowWidth;
+            imageCopy.bufferImageHeight = copy.bufferImageHeight;
+            imageCopy.imageSubresource.aspectMask = toCopyAspectFlags(
+                srcTexture->desc.format, srcTexture->desc.flags,
+                srcLocation.subresource.planeIndex);
+            imageCopy.imageSubresource.baseArrayLayer = copy.arrayIndex;
+            imageCopy.imageSubresource.layerCount = 1;
+            imageCopy.imageSubresource.mipLevel = copy.mipLevel;
+            if (srcBox != nullptr) {
+                imageCopy.imageOffset.x = srcBox->left;
+                imageCopy.imageOffset.y = srcBox->top;
+                imageCopy.imageOffset.z = srcBox->front;
+                imageCopy.imageExtent.width = srcBox->right - srcBox->left;
+                imageCopy.imageExtent.height = srcBox->bottom - srcBox->top;
+                imageCopy.imageExtent.depth = srcBox->back - srcBox->front;
+            }
+            else {
+                imageCopy.imageExtent.width = copy.width;
+                imageCopy.imageExtent.height = copy.height;
+                imageCopy.imageExtent.depth = copy.depth;
+            }
+            vkCmdCopyImageToBuffer(vk, srcTexture->vk,
+                                   toImageLayout(srcTexture->textureLayout),
+                                   dstBuffer->vk, 1, &imageCopy);
+        }
+        else if ((dstLocation.type == RenderTextureCopyType::SUBRESOURCE) &&
+                 (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
+            assert(dstTexture != nullptr);
+            assert(srcTexture != nullptr);
             VkImageCopy imageCopy = {};
-            imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+            imageCopy.srcSubresource.aspectMask = toCopyAspectFlags(
+                srcTexture->desc.format, srcTexture->desc.flags,
+                srcLocation.subresource.planeIndex);
             imageCopy.srcSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
             imageCopy.srcSubresource.layerCount = 1;
             imageCopy.srcSubresource.mipLevel = srcLocation.subresource.mipLevel;
-            imageCopy.dstSubresource.aspectMask = toAspectFlags(dstTexture->desc.format, dstTexture->desc.flags);
+            imageCopy.dstSubresource.aspectMask = toCopyAspectFlags(
+                dstTexture->desc.format, dstTexture->desc.flags,
+                dstLocation.subresource.planeIndex);
             imageCopy.dstSubresource.baseArrayLayer = dstLocation.subresource.arrayIndex;
             imageCopy.dstSubresource.layerCount = 1;
             imageCopy.dstSubresource.mipLevel = dstLocation.subresource.mipLevel;
@@ -3260,11 +3538,27 @@ namespace plume {
                 imageCopy.extent.depth = srcTexture->desc.depth;
             }
 
-            vkCmdCopyImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+            if (blitsChannels(dstTexture->desc.format, srcTexture->desc.format)) {
+                VkImageBlit blit = {};
+                blit.srcSubresource = imageCopy.srcSubresource;
+                blit.dstSubresource = imageCopy.dstSubresource;
+                blit.srcOffsets[0] = imageCopy.srcOffset;
+                blit.srcOffsets[1] = { imageCopy.srcOffset.x + int32_t(imageCopy.extent.width), imageCopy.srcOffset.y + int32_t(imageCopy.extent.height), imageCopy.srcOffset.z + int32_t(imageCopy.extent.depth) };
+                blit.dstOffsets[0] = imageCopy.dstOffset;
+                blit.dstOffsets[1] = { imageCopy.dstOffset.x + int32_t(imageCopy.extent.width), imageCopy.dstOffset.y + int32_t(imageCopy.extent.height), imageCopy.dstOffset.z + int32_t(imageCopy.extent.depth) };
+                vkCmdBlitImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &blit, VK_FILTER_NEAREST);
+            }
+            else {
+                vkCmdCopyImage(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+            }
+        }
+        else {
+            assert(false && "Unsupported Vulkan texture copy location pair.");
         }
     }
 
     void VulkanCommandList::copyBuffer(const RenderBuffer *dstBuffer, const RenderBuffer *srcBuffer) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstBuffer != nullptr);
@@ -3280,6 +3574,7 @@ namespace plume {
     }
 
     void VulkanCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
+        vulkanCommandCounts[2].fetch_add(1, std::memory_order_relaxed);
         endActiveRenderPass();
 
         assert(dstTexture != nullptr);
@@ -3302,6 +3597,16 @@ namespace plume {
         imageCopy.extent.width = uint32_t(dst->desc.width);
         imageCopy.extent.height = dst->desc.height;
         imageCopy.extent.depth = dst->desc.depth;
+
+        if (blitsChannels(dst->desc.format, src->desc.format)) {
+            VkImageBlit blit = {};
+            blit.srcSubresource = imageCopy.srcSubresource;
+            blit.dstSubresource = imageCopy.dstSubresource;
+            blit.srcOffsets[1] = { int32_t(src->desc.width), int32_t(src->desc.height), 1 };
+            blit.dstOffsets[1] = { int32_t(dst->desc.width), int32_t(dst->desc.height), 1 };
+            vkCmdBlitImage(vk, src->vk, srcLayout, dst->vk, dstLayout, 1, &blit, VK_FILTER_NEAREST);
+            return;
+        }
 
         assert(dst->desc.mipLevels > 0);
         assert(src->desc.mipLevels == dst->desc.mipLevels);
@@ -3456,6 +3761,7 @@ namespace plume {
         assert(queryPool != nullptr);
 
         const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
+        endActiveRenderPass();
         vkCmdResetQueryPool(vk, interfaceQueryPool->vk, queryFirstIndex, queryCount);
     }
 
@@ -3463,7 +3769,34 @@ namespace plume {
         assert(queryPool != nullptr);
 
         const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::TIMESTAMP);
         vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
+    }
+
+    void VulkanCommandList::beginQuery(const RenderQueryPool *queryPool,
+                                       uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const VulkanQueryPool *interfaceQueryPool =
+            static_cast<const VulkanQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        // Without a target framebuffer the query begins outside any render
+        // pass: it may then span several passes and must end outside one too.
+        if (targetFramebuffer != nullptr) {
+            checkActiveRenderPass();
+        }
+        vkCmdBeginQuery(vk, interfaceQueryPool->vk, queryIndex, 0);
+    }
+
+    void VulkanCommandList::endQuery(const RenderQueryPool *queryPool,
+                                     uint32_t queryIndex) {
+        assert(queryPool != nullptr);
+        const VulkanQueryPool *interfaceQueryPool =
+            static_cast<const VulkanQueryPool *>(queryPool);
+        assert(interfaceQueryPool->type == RenderQueryType::OCCLUSION);
+        if (targetFramebuffer != nullptr) {
+            checkActiveRenderPass();
+        }
+        vkCmdEndQuery(vk, interfaceQueryPool->vk, queryIndex);
     }
 
     void VulkanCommandList::checkActiveRenderPass() {
@@ -3476,6 +3809,7 @@ namespace plume {
             beginInfo.framebuffer = targetFramebuffer->vk;
             beginInfo.renderArea.extent.width = targetFramebuffer->width;
             beginInfo.renderArea.extent.height = targetFramebuffer->height;
+            vulkanCommandCounts[0].fetch_add(1, std::memory_order_relaxed);
             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
             activeRenderPass = targetFramebuffer->renderPass;
         }
@@ -3575,6 +3909,7 @@ namespace plume {
         thread_local std::vector<VkSemaphore> waitSemaphoreVector;
         thread_local std::vector<VkSemaphore> signalSemaphoreVector;
         thread_local std::vector<VkCommandBuffer> commandBuffers;
+        thread_local std::vector<VkPipelineStageFlags> waitStages;
         waitSemaphoreVector.clear();
         signalSemaphoreVector.clear();
         commandBuffers.clear();
@@ -3601,11 +3936,13 @@ namespace plume {
         submitInfo.pCommandBuffers = commandBuffers.data();
         submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
 
-        const VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         if (!waitSemaphoreVector.empty()) {
+            // The public API does not restrict the first use to a color
+            // attachment: swap-chain copies and compute also wait here.
+            waitStages.assign(waitSemaphoreVector.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             submitInfo.pWaitSemaphores = waitSemaphoreVector.data();
             submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoreVector.size());
-            submitInfo.pWaitDstStageMask = &waitStages;
+            submitInfo.pWaitDstStageMask = waitStages.data();
         }
 
         if (!signalSemaphoreVector.empty()) {
@@ -3627,10 +3964,22 @@ namespace plume {
 
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
-            return;
+            device->reportDeviceLost(res, "vkQueueSubmit");
+            std::abort();
         }
     }
     
+    void VulkanCommandQueue::waitForIdle() {
+        // Unlike a submission fence, this also covers later queued presents.
+        const std::scoped_lock queueLock(*queue->mutex);
+        const VkResult res = vkQueueWaitIdle(queue->vk);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "vkQueueWaitIdle failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkQueueWaitIdle");
+            std::abort();
+        }
+    }
+
     void VulkanCommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         assert(fence != nullptr);
 
@@ -3638,10 +3987,38 @@ namespace plume {
         VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk, VK_TRUE, UINT64_MAX);
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
-            return;
+            device->reportDeviceLost(res, "vkWaitForFences");
+            std::abort();
         }
 
-        vkResetFences(device->vk, 1, &interfaceFence->vk);
+        res = vkResetFences(device->vk, 1, &interfaceFence->vk);
+        if (res != VK_SUCCESS) {
+            fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", res);
+            device->reportDeviceLost(res, "vkResetFences");
+            std::abort();
+        }
+    }
+
+    bool VulkanCommandQueue::pollCommandFence(RenderCommandFence *fence) {
+        assert(fence != nullptr);
+
+        VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
+        const VkResult status = vkGetFenceStatus(device->vk, interfaceFence->vk);
+        if (status == VK_NOT_READY)
+            return false;
+        if (status != VK_SUCCESS) {
+            fprintf(stderr, "vkGetFenceStatus failed with error code 0x%X.\n", status);
+            device->reportDeviceLost(status, "vkGetFenceStatus");
+            std::abort();
+        }
+        const VkResult reset = vkResetFences(
+            device->vk, 1, &interfaceFence->vk);
+        if (reset != VK_SUCCESS) {
+            fprintf(stderr, "vkResetFences failed with error code 0x%X.\n", reset);
+            device->reportDeviceLost(reset, "vkResetFences");
+            std::abort();
+        }
+        return true;
     }
 
     // VulkanPool
@@ -3732,6 +4109,54 @@ namespace plume {
         queues[virtualQueue->queueIndex].virtualQueues.erase(virtualQueue);
     }
 
+    // Enumeration can race a changing device list. Never inspect handles from a
+    // failed or incomplete query: the loader may abort on an invalid handle.
+    static bool enumeratePhysicalDevices(VkInstance instance, std::vector<VkPhysicalDevice> &physicalDevices) {
+        constexpr uint32_t MaxAttempts = 3;
+        for (uint32_t attempt = 0; attempt < MaxAttempts; attempt++) {
+            uint32_t deviceCount = 0;
+            VkResult res = vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+            if (res != VK_SUCCESS) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices (count) failed with error code 0x%X.\n", res);
+                return false;
+            }
+
+            if (deviceCount == 0) {
+                fprintf(stderr, "Unable to find devices that support Vulkan.\n");
+                return false;
+            }
+
+            physicalDevices.assign(deviceCount, VK_NULL_HANDLE);
+            res = vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
+            if (res == VK_INCOMPLETE) {
+                continue;
+            }
+
+            if (res != VK_SUCCESS) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices (list) failed with error code 0x%X.\n", res);
+                return false;
+            }
+
+            if ((deviceCount == 0) || (deviceCount > physicalDevices.size())) {
+                fprintf(stderr, "vkEnumeratePhysicalDevices returned an invalid device count: %u.\n", deviceCount);
+                return false;
+            }
+
+            physicalDevices.resize(deviceCount);
+            for (VkPhysicalDevice physicalDevice : physicalDevices) {
+                if (physicalDevice == VK_NULL_HANDLE) {
+                    fprintf(stderr, "vkEnumeratePhysicalDevices returned a null physical device.\n");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        fprintf(stderr, "vkEnumeratePhysicalDevices remained incomplete after %u attempts.\n", MaxAttempts);
+        return false;
+    }
+
     // VulkanDevice
     
     VulkanDevice::VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName) {
@@ -3739,15 +4164,10 @@ namespace plume {
 
         this->renderInterface = renderInterface;
 
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, nullptr);
-        if (deviceCount == 0) {
-            fprintf(stderr, "Unable to find devices that support Vulkan.\n");
+        std::vector<VkPhysicalDevice> physicalDevices;
+        if (!enumeratePhysicalDevices(renderInterface->instance, physicalDevices)) {
             return;
         }
-        
-        std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-        vkEnumeratePhysicalDevices(renderInterface->instance, &deviceCount, physicalDevices.data());
 
         uint32_t currentDeviceTypeScore = 0;
         uint32_t deviceTypeScoreTable[] = {
@@ -3758,7 +4178,7 @@ namespace plume {
             1   // VK_PHYSICAL_DEVICE_TYPE_CPU
         };
 
-        for (uint32_t i = 0; i < deviceCount; i++) {
+        for (uint32_t i = 0; i < physicalDevices.size(); i++) {
             VkPhysicalDeviceProperties deviceProperties;
             vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
 
@@ -3816,6 +4236,12 @@ namespace plume {
             }
 #       endif
         }
+
+#   if defined(_WIN64)
+        if (!renderInterface->surfaceCapabilities2Supported) {
+            supportedOptionalExtensions.erase(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+        }
+#   endif
         
         if (!missingRequiredExtensions.empty()) {
             for (const std::string &extension : missingRequiredExtensions) {
@@ -3831,10 +4257,34 @@ namespace plume {
 
         // Check for supported features.
         void *featuresChain = nullptr;
+        // External compute effects (including FSR) query physical-device FP16
+        // support. Enable the supported features on the logical device too.
+        VkPhysicalDeviceShaderFloat16Int8Features float16Features = {};
+        const bool float16Found = supportedOptionalExtensions.count(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) != 0;
+        if (float16Found) {
+            float16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+            float16Features.pNext = featuresChain;
+            featuresChain = &float16Features;
+        }
+        VkPhysicalDevice16BitStorageFeatures storage16Features = {};
+        const bool storage16Found = supportedOptionalExtensions.count(VK_KHR_16BIT_STORAGE_EXTENSION_NAME) != 0;
+        if (storage16Found) {
+            storage16Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+            storage16Features.pNext = featuresChain;
+            featuresChain = &storage16Features;
+        }
         VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures = {};
+        VkPhysicalDeviceSubgroupSizeControlFeaturesEXT subgroupFeatures = {};
+        const bool subgroupFound = supportedOptionalExtensions.count(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME) != 0;
+        if (subgroupFound) {
+            subgroupFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES_EXT;
+            subgroupFeatures.pNext = featuresChain;
+            featuresChain = &subgroupFeatures;
+        }
         const bool descriptorIndexingFound = supportedOptionalExtensions.find(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) != supportedOptionalExtensions.end();
         if (descriptorIndexingFound) {
             indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+            indexingFeatures.pNext = featuresChain;
             featuresChain = &indexingFeatures;
         }
 
@@ -3923,6 +4373,18 @@ namespace plume {
 
         // Build the device creation chain.
         void *createDeviceChain = nullptr;
+        if (subgroupFound) {
+            subgroupFeatures.pNext = createDeviceChain;
+            createDeviceChain = &subgroupFeatures;
+        }
+        if (float16Found) {
+            float16Features.pNext = createDeviceChain;
+            createDeviceChain = &float16Features;
+        }
+        if (storage16Found) {
+            storage16Features.pNext = createDeviceChain;
+            createDeviceChain = &storage16Features;
+        }
         const bool rayTracingSupported = rayTracingPipelineFeatures.rayTracingPipeline && accelerationStructureFeatures.accelerationStructure;
         if (rayTracingSupported) {
             rayTracingPipelineFeatures.pNext = createDeviceChain;
@@ -4122,6 +4584,9 @@ namespace plume {
         // Fill capabilities.
         capabilities.geometryShader = deviceFeatures.features.geometryShader;
         capabilities.shaderFormat = RenderShaderFormat::SPIRV;
+        // Every supported core feature is enabled (pEnabledFeatures above).
+        capabilities.shaderFloat64 = deviceFeatures.features.shaderFloat64;
+        capabilities.queryOutsideRenderPass = true;
         capabilities.raytracing = rayTracingSupported;
         capabilities.raytracingStateUpdate = false;
         capabilities.sampleLocations = (sampleLocationProperties.sampleLocationSampleCounts != 0);
@@ -4151,6 +4616,10 @@ namespace plume {
 
         // Fill Vulkan-only capabilities.
         loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
+        pipelineCreationFeedbackSupported = supportedOptionalExtensions.find(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME) != supportedOptionalExtensions.end();
+#   if defined(_WIN64)
+        fullScreenExclusiveSupported = supportedOptionalExtensions.count(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME) != 0;
+#   endif
 
         if (!nullDescriptorSupported) {
             nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
@@ -4221,8 +4690,9 @@ namespace plume {
         return std::make_unique<VulkanFramebuffer>(this, desc);
     }
 
-    std::unique_ptr<RenderQueryPool> VulkanDevice::createQueryPool(uint32_t queryCount) {
-        return std::make_unique<VulkanQueryPool>(this, queryCount);
+    std::unique_ptr<RenderQueryPool> VulkanDevice::createQueryPool(
+        uint32_t queryCount, RenderQueryType type) {
+        return std::make_unique<VulkanQueryPool>(this, queryCount, type);
     }
 
     void VulkanDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
@@ -4433,6 +4903,11 @@ namespace plume {
     void VulkanDevice::release() {
         nullBuffer = nullptr; // force destruction before destroying allocator
 
+        if (pipelineCache != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
+
         if (allocator != VK_NULL_HANDLE) {
             vmaDestroyAllocator(allocator);
             allocator = VK_NULL_HANDLE;
@@ -4446,6 +4921,69 @@ namespace plume {
 
     bool VulkanDevice::isValid() const {
         return vk != nullptr;
+    }
+
+    bool VulkanDevice::setPipelineCacheData(const void *data, uint64_t size) {
+        if (vk == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        if (pipelineCache != VK_NULL_HANDLE) {
+            vkDestroyPipelineCache(vk, pipelineCache, nullptr);
+            pipelineCache = VK_NULL_HANDLE;
+        }
+
+        VkPipelineCacheCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        createInfo.initialDataSize = (data != nullptr) ? size_t(size) : 0;
+        createInfo.pInitialData = (data != nullptr && size != 0) ? data : nullptr;
+        VkResult res = vkCreatePipelineCache(vk, &createInfo, nullptr, &pipelineCache);
+        if (res != VK_SUCCESS && createInfo.initialDataSize != 0) {
+            // Keep caching with an empty cache when the driver refuses the blob.
+            createInfo.initialDataSize = 0;
+            createInfo.pInitialData = nullptr;
+            res = vkCreatePipelineCache(vk, &createInfo, nullptr, &pipelineCache);
+        }
+
+        if (res != VK_SUCCESS) {
+            pipelineCache = VK_NULL_HANDLE;
+            return false;
+        }
+
+        pipelineCacheHits = 0;
+        pipelineCacheMisses = 0;
+        return true;
+    }
+
+    std::vector<uint8_t> VulkanDevice::getPipelineCacheData() {
+        std::vector<uint8_t> data;
+        if (pipelineCache == VK_NULL_HANDLE) {
+            return data;
+        }
+
+        size_t size = 0;
+        if (vkGetPipelineCacheData(vk, pipelineCache, &size, nullptr) != VK_SUCCESS || size == 0) {
+            return data;
+        }
+
+        data.resize(size);
+        const VkResult res = vkGetPipelineCacheData(vk, pipelineCache, &size, data.data());
+        if (res != VK_SUCCESS && res != VK_INCOMPLETE) {
+            data.clear();
+        }
+        else {
+            data.resize(size);
+        }
+
+        return data;
+    }
+
+    RenderPipelineCacheStats VulkanDevice::getPipelineCacheStats() const {
+        RenderPipelineCacheStats stats;
+        stats.hits = pipelineCacheHits.load(std::memory_order_relaxed);
+        stats.misses = pipelineCacheMisses.load(std::memory_order_relaxed);
+        stats.tracked = (pipelineCache != VK_NULL_HANDLE) && pipelineCreationFeedbackSupported;
+        return stats;
     }
 
     bool VulkanDevice::beginCapture() {
@@ -4552,6 +5090,8 @@ namespace plume {
             enabledExtensions.push_back(extension.c_str());
         }
 
+        surfaceCapabilities2Supported = supportedOptionalExtensions.count(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) != 0;
+
         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
         createInfo.enabledExtensionCount = uint32_t(enabledExtensions.size());
 
@@ -4586,19 +5126,17 @@ namespace plume {
         capabilities.shaderFormat = RenderShaderFormat::SPIRV;
 
         // Fill device names.
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-        if (deviceCount > 0) {
-            std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-            vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
+        std::vector<VkPhysicalDevice> physicalDevices;
+        if (!enumeratePhysicalDevices(instance, physicalDevices)) {
+            return;
+        }
 
-            for (uint32_t i = 0; i < deviceCount; i++) {
-                VkPhysicalDeviceProperties deviceProperties;
-                vkGetPhysicalDeviceProperties(physicalDevices[i], &deviceProperties);
-                uint32_t deviceTypeIndex = deviceProperties.deviceType;
-                if (deviceTypeIndex <= 4) {
-                    deviceNames.emplace_back(deviceProperties.deviceName);
-                }
+        for (VkPhysicalDevice physicalDevice : physicalDevices) {
+            VkPhysicalDeviceProperties deviceProperties;
+            vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+            uint32_t deviceTypeIndex = deviceProperties.deviceType;
+            if (deviceTypeIndex <= 4) {
+                deviceNames.emplace_back(deviceProperties.deviceName);
             }
         }
     }
@@ -4610,6 +5148,10 @@ namespace plume {
     }
 
     std::unique_ptr<RenderDevice> VulkanInterface::createDevice(const std::string &preferredDeviceName) {
+        if (!isValid()) {
+            return nullptr;
+        }
+
         std::unique_ptr<VulkanDevice> createdDevice = std::make_unique<VulkanDevice>(this, preferredDeviceName);
         return createdDevice->isValid() ? std::move(createdDevice) : nullptr;
     }
@@ -4623,7 +5165,7 @@ namespace plume {
     }
 
     bool VulkanInterface::isValid() const {
-        return instance != nullptr;
+        return (instance != VK_NULL_HANDLE) && !deviceNames.empty();
     }
 
     // Global creation function.

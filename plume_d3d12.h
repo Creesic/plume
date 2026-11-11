@@ -106,7 +106,7 @@ namespace plume {
 
         D3D12DescriptorSet(D3D12Device *device, const RenderDescriptorSetDesc &desc);
         ~D3D12DescriptorSet() override;
-        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView) override;
+        void setBuffer(uint32_t descriptorIndex, const RenderBuffer *buffer, uint64_t bufferSize, const RenderBufferStructuredView *bufferStructuredView, const RenderBufferFormattedView *bufferFormattedView, uint64_t bufferOffset) override;
         void setTexture(uint32_t descriptorIndex, const RenderTexture *texture, RenderTextureLayout textureLayout, const RenderTextureView *textureView) override;
         void setSampler(uint32_t descriptorIndex, const RenderSampler *sampler) override;
         void setAccelerationStructure(uint32_t descriptorIndex, const RenderAccelerationStructure *accelerationStructure) override;
@@ -114,7 +114,7 @@ namespace plume {
         void copyDescriptors(uint32_t destinationIndex, const D3D12DescriptorSet *source, uint32_t sourceIndex, uint32_t count);
         void setSRV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_SHADER_RESOURCE_VIEW_DESC *viewDesc);
         void setUAV(uint32_t descriptorIndex, ID3D12Resource *resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC *viewDesc);
-        void setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize);
+        void setCBV(uint32_t descriptorIndex, ID3D12Resource *resource, uint64_t bufferSize, uint64_t bufferOffset);
     };
 
     struct D3D12SwapChain : RenderSwapChain {
@@ -175,10 +175,13 @@ namespace plume {
         ID3D12QueryHeap *d3d = nullptr;
         std::vector<uint64_t> results;
         std::unique_ptr<RenderBuffer> readbackBuffer;
+        RenderQueryType type = RenderQueryType::TIMESTAMP;
 
-        D3D12QueryPool(D3D12Device *device, uint32_t queryCount);
+        D3D12QueryPool(D3D12Device *device, uint32_t queryCount,
+                       RenderQueryType type);
         virtual ~D3D12QueryPool() override;
-        virtual void queryResults() override;
+        virtual void queryResults(uint32_t queryCount) override;
+        virtual bool queryResultsRange(uint32_t firstQuery, uint32_t queryCount) override;
         virtual const uint64_t *getResults() const override;
         virtual uint32_t getCount() const override;
     };
@@ -252,6 +255,7 @@ namespace plume {
         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
+        void setBlendFactor(const float *rgba) override;
         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
@@ -265,6 +269,8 @@ namespace plume {
         void discardTexture(const RenderTexture* texture) override;
         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
         void checkDescriptorHeaps();
         void notifyDescriptorHeapWasChangedExternally();
         void checkTopology();
@@ -307,6 +313,8 @@ namespace plume {
         std::unique_ptr<RenderSwapChain> createSwapChain(const RenderSwapChainDesc &desc) override;
         void executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) override;
         void waitForCommandFence(RenderCommandFence *fence) override;
+        bool pollCommandFence(RenderCommandFence *fence) override;
+        void waitForIdle() override;
     };
 
     struct D3D12Buffer : RenderBuffer {
@@ -353,6 +361,7 @@ namespace plume {
 
     struct D3D12TextureView : RenderTextureView {
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        D3D12Device *device = nullptr;
         const D3D12Texture *texture = nullptr;
         RenderTextureViewDesc desc;
         RenderTextureViewDimension dimension = RenderTextureViewDimension::UNKNOWN;
@@ -361,9 +370,15 @@ namespace plume {
         uint32_t arraySize = 0;
         uint32_t arrayIndex = 0;
         uint32_t shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        // Immutable CPU descriptor, copied into GPU tables. Owned by this view,
+        // so recycled resource/view addresses cannot return stale descriptors.
+        mutable std::once_flag srvOnce;
+        mutable uint32_t srvOffset = D3D12DescriptorHeapAllocator::INVALID_OFFSET;
 
         D3D12TextureView(const D3D12Texture *texture, const RenderTextureViewDesc &desc);
         ~D3D12TextureView() override;
+        D3D12_SHADER_RESOURCE_VIEW_DESC getSRVDesc() const;
+        D3D12_CPU_DESCRIPTOR_HANDLE getSRV() const;
     };
 
     struct D3D12AccelerationStructure :RenderAccelerationStructure {
@@ -469,6 +484,8 @@ namespace plume {
         std::vector<std::pair<uint32_t, RenderRootDescriptorType>> rootDescriptorRootIndicesAndTypes;
         uint32_t setCount = 0;
         uint32_t rootCount = 0;
+        // Identity of the serialized root signature, stable across runs.
+        uint64_t signatureHash = 0;
 
         D3D12PipelineLayout(D3D12Device *device, const RenderPipelineLayoutDesc &desc);
         ~D3D12PipelineLayout() override;
@@ -482,9 +499,13 @@ namespace plume {
         D3D12MA::Allocator *allocator = nullptr;
         D3D_SHADER_MODEL shaderModel = D3D_SHADER_MODEL(0);
         bool independentFrontAndBackStencilRefMaskSupported = false;
+        // DXBC (Shader Model 5.0) shaders declare every register in space 0, so
+        // root signatures place every descriptor set in space 0 too.
+        bool flatRegisterSpaces = false;
         std::unique_ptr<RenderPipelineLayout> rtDummyGlobalPipelineLayout;
         std::unique_ptr<RenderPipelineLayout> rtDummyLocalPipelineLayout;
         std::unique_ptr<D3D12DescriptorHeapAllocator> viewHeapAllocator;
+        std::unique_ptr<D3D12DescriptorHeapAllocator> cpuViewHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> samplerHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> colorTargetHeapAllocator;
         std::unique_ptr<D3D12DescriptorHeapAllocator> depthTargetHeapAllocator;
@@ -493,6 +514,14 @@ namespace plume {
         RenderDeviceDescription description;
         uint64_t timestampFrequency = 1;
         bool gpuUploadHeapFallback = false;
+        // The library reads the host's blob in place for its whole lifetime.
+        ID3D12PipelineLibrary *pipelineLibrary = nullptr;
+        std::vector<uint8_t> pipelineLibraryBlob;
+        std::atomic<uint32_t> pipelineCacheHits{0};
+        std::atomic<uint32_t> pipelineCacheMisses{0};
+        // Armed by the host after initialization; startup keeps its normal fallback.
+        std::atomic<void (*)(const char *, int32_t)> deviceLostCallback{nullptr};
+        bool checkDeviceLoss(const char *operation) const;
 
         D3D12Device(D3D12Interface *renderInterface, const std::string &preferredDeviceName);
         ~D3D12Device() override;
@@ -511,7 +540,8 @@ namespace plume {
         std::unique_ptr<RenderCommandFence> createCommandFence() override;
         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
-        std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
+        std::unique_ptr<RenderQueryPool> createQueryPool(
+            uint32_t queryCount, RenderQueryType type) override;
         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;
@@ -522,6 +552,9 @@ namespace plume {
         bool isValid() const;
         bool beginCapture() override;
         bool endCapture() override;
+        bool setPipelineCacheData(const void *data, uint64_t size) override;
+        std::vector<uint8_t> getPipelineCacheData() override;
+        RenderPipelineCacheStats getPipelineCacheStats() const override;
     };
 
     struct D3D12Interface : RenderInterface {
@@ -529,6 +562,10 @@ namespace plume {
         RenderInterfaceCapabilities capabilities;
         std::vector<std::string> deviceNames;
         bool allowTearing = false;
+        // Use the WARP software adapter instead of the hardware adapters.
+        bool softwareAdapter = false;
+        // Take DXBC shaders even when the device supports Shader Model 6.
+        bool forceDxbc = false;
 
         D3D12Interface();
         ~D3D12Interface() override;
