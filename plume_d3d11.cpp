@@ -24,6 +24,7 @@
 // texture was written after the last refresh.
 
 #include "plume_render_interface.h"
+#include "plume_d3d11.h"
 #include "plume_d3d11_shaders.h"
 
 #include <d3d11_1.h>
@@ -34,6 +35,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -477,6 +479,7 @@ namespace plume {
     struct D3D11CommandFence : RenderCommandFence {
         ComPtr<ID3D11Query> query;
         bool pending = false;
+        std::chrono::steady_clock::time_point submittedAt;
     };
 
     struct D3D11CommandSemaphore : RenderCommandSemaphore { };
@@ -622,6 +625,8 @@ namespace plume {
         bool constantOffsets = false;
         // Every use of the immediate context holds this.
         std::recursive_mutex contextMutex;
+        std::atomic<HRESULT> waitFailure{S_OK};
+        std::atomic<D3D11DeviceLostCallback> deviceLostCallback{nullptr};
         uint64_t epoch = 0;
         RenderDeviceCapabilities capabilities;
         RenderDeviceDescription description;
@@ -648,7 +653,9 @@ namespace plume {
         ComPtr<ID3D11DepthStencilState> internalDepthStencil[4]; // Bit 0 depth, bit 1 stencil.
 
         D3D11Device(D3D11Interface *renderInterface);
-        bool isValid() const { return d3d != nullptr; }
+        bool isValid() const { return d3d != nullptr && SUCCEEDED(waitFailure.load(std::memory_order_acquire)); }
+        void failWait(const char *operation, HRESULT result, uint64_t elapsedMs);
+        bool pollQuery(ID3D11Query *query, std::chrono::steady_clock::time_point submittedAt, const char *operation);
         void drainMessages(const char *where);
         void internalPass(InternalConstants constants, ID3D11RenderTargetView *target, ID3D11DepthStencilView *depth,
             const D3D11_VIEWPORT &viewport, const D3D11_RECT &scissor, ID3D11PixelShader *pixelShader,
@@ -1829,6 +1836,7 @@ namespace plume {
 
     void D3D11CommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **, uint32_t, RenderCommandSemaphore **, uint32_t, RenderCommandFence *signalFence) {
         std::lock_guard<std::recursive_mutex> lock(device->contextMutex);
+        if (!device->isValid()) return;
         D3D11Replay replay;
         replay.device = device;
         replay.context = device->context.Get();
@@ -1887,6 +1895,7 @@ namespace plume {
         if (signalFence != nullptr) {
             auto *fence = static_cast<D3D11CommandFence *>(signalFence);
             device->context->End(fence->query.Get());
+            fence->submittedAt = std::chrono::steady_clock::now();
             fence->pending = true;
         }
 
@@ -1896,20 +1905,19 @@ namespace plume {
 
     void D3D11CommandQueue::waitForCommandFence(RenderCommandFence *fence) {
         auto *native = static_cast<D3D11CommandFence *>(fence);
-        while (native->pending && !pollCommandFence(fence)) {
+        while (device->isValid() && native->pending && !pollCommandFence(fence)) {
             std::this_thread::yield();
         }
     }
 
     bool D3D11CommandQueue::pollCommandFence(RenderCommandFence *fence) {
         auto *native = static_cast<D3D11CommandFence *>(fence);
-        if (!native->pending) {
+        if (!device->isValid() || !native->pending) {
             return false;
         }
 
         std::lock_guard<std::recursive_mutex> lock(device->contextMutex);
-        BOOL done = FALSE;
-        if (device->context->GetData(native->query.Get(), &done, sizeof(done), 0) == S_OK) {
+        if (device->pollQuery(native->query.Get(), native->submittedAt, "command fence")) {
             native->pending = false;
             return true;
         }
@@ -2196,20 +2204,68 @@ namespace plume {
         constants[0].source = nullptr;
     }
 
+    void D3D11Device::failWait(const char *operation, HRESULT result, uint64_t elapsedMs) {
+        HRESULT expected = S_OK;
+        if (!waitFailure.compare_exchange_strong(expected, result, std::memory_order_acq_rel)) return;
+        const HRESULT removed = d3d->GetDeviceRemovedReason();
+        std::fprintf(stderr, "[D3D11] GPU wait failed: operation=%s result=0x%08lX device_removed=0x%08lX elapsed_ms=%llu timeout_ms=10000\n",
+            operation, result, removed, static_cast<unsigned long long>(elapsedMs));
+        std::fflush(stderr);
+        if (auto callback = deviceLostCallback.load(std::memory_order_acquire)) callback(operation, result);
+    }
+
+    bool D3D11Device::pollQuery(ID3D11Query *query, std::chrono::steady_clock::time_point submittedAt, const char *operation) {
+        std::lock_guard<std::recursive_mutex> lock(contextMutex);
+        if (!isValid()) return false;
+        BOOL done = FALSE;
+        const HRESULT result = context->GetData(query, &done, sizeof(done), 0);
+        const auto elapsed = std::chrono::steady_clock::now() - submittedAt;
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+        if (result == S_OK && done) return true;
+        if (FAILED(result)) {
+            failWait(operation, result, elapsedMs);
+        } else {
+            const HRESULT removed = d3d->GetDeviceRemovedReason();
+            if (FAILED(removed)) failWait(operation, removed, elapsedMs);
+            else if (elapsed >= std::chrono::seconds(10)) failWait(operation, DXGI_ERROR_WAIT_TIMEOUT, elapsedMs);
+        }
+        return false;
+    }
+
+    bool D3D11DeviceIsReady(RenderDevice *device) {
+        auto *native = dynamic_cast<D3D11Device *>(device);
+        if (native) {
+            if (!native->isValid()) return false;
+            const HRESULT removed = native->d3d->GetDeviceRemovedReason();
+            if (FAILED(removed)) native->failWait("device readiness", removed, 0);
+            return native->isValid();
+        }
+        return device != nullptr;
+    }
+
+    void SetD3D11DeviceLostCallback(RenderDevice *device, D3D11DeviceLostCallback callback) {
+        if (auto *native = dynamic_cast<D3D11Device *>(device)) {
+            native->deviceLostCallback.store(callback, std::memory_order_release);
+        }
+    }
+
     void D3D11Device::waitForGpu() {
+        if (!isValid()) return;
         D3D11_QUERY_DESC queryDesc = { D3D11_QUERY_EVENT, 0 };
         ComPtr<ID3D11Query> query;
+        const auto submittedAt = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::recursive_mutex> lock(contextMutex);
-            if (FAILED(d3d->CreateQuery(&queryDesc, query.GetAddressOf()))) return;
+            const HRESULT result = d3d->CreateQuery(&queryDesc, query.GetAddressOf());
+            if (FAILED(result)) {
+                failWait("queue idle query creation", result, 0);
+                return;
+            }
             context->End(query.Get());
             context->Flush();
         }
 
-        for (;;) {
-            std::lock_guard<std::recursive_mutex> lock(contextMutex);
-            BOOL done = FALSE;
-            if (context->GetData(query.Get(), &done, sizeof(done), 0) != S_FALSE) break;
+        while (isValid() && !pollQuery(query.Get(), submittedAt, "queue idle")) {
             std::this_thread::yield();
         }
     }

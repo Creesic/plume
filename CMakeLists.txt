@@ -82,7 +82,7 @@ if(PLUME_D3D12_ENABLED)
     )
 endif()
 if(PLUME_D3D11_ENABLED)
-    list(APPEND PLUME_SOURCES plume_d3d11.cpp plume_d3d11_shaders.h)
+    list(APPEND PLUME_SOURCES plume_d3d11.cpp plume_d3d11.h plume_d3d11_shaders.h)
 endif()
 
 # Create target
