@@ -1736,6 +1736,19 @@ namespace plume {
         }
 
         VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+        if (res != VK_SUCCESS && cached) {
+            // NVIDIA 621.01 intermittently fails creates made from several threads
+            // against the shared, seeded pipeline cache (VK_ERROR_UNKNOWN; xrecomp's
+            // 8-thread shader warm-up hit it in most launches, never with no cache).
+            // The same pipeline builds without the cache.
+            fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X; building it without the pipeline cache.\n", res);
+            vk = VK_NULL_HANDLE;
+            res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
+            if (res == VK_SUCCESS) {
+                device->pipelineCacheMisses.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        }
         if (res != VK_SUCCESS) {
             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
             return;
